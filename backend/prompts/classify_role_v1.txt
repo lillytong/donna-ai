@@ -1,0 +1,16 @@
+You classify a single block of text taken from the FRONT MATTER of a contract — the part before the operative numbered clauses begin.
+
+Assign exactly one role from this set:
+- title: the agreement's name or title-page heading
+- date: a date line (e.g. "Dated 8 January 2026")
+- parties: identifies the contracting parties (e.g. "BETWEEN Acme Corp and Beta Ltd")
+- recital: background or preamble prose (e.g. a WHEREAS clause, or any introductory passage)
+- agreement_statement: the line that opens the operative agreement (e.g. "NOW, THEREFORE IT IS AGREED AS FOLLOWS")
+
+Set "confident" to true only when the block clearly belongs to one role. If the block is unclear, mixed, or could fit several roles, set "confident" to false.
+
+Return ONLY this JSON object and nothing else — no prose, no code fences:
+{{"role": "<one of: title, date, parties, recital, agreement_statement>", "confident": true}}
+
+Block:
+{block_text}

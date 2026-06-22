@@ -24,3 +24,13 @@ venv/
 
 # Local Claude Code settings (machine-specific perms)
 .claude/settings.local.json
+
+# Dev/throwaway artifacts (screenshots, browser tool output, sample docs)
+*.png
+.playwright-mcp/
+sample-contract.docx
+
+# Node / Next.js
+node_modules/
+.next/
+frontend/.env*.local

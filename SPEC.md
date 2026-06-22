@@ -90,20 +90,20 @@ The principal portal is built in **v1.1** — ready even if not yet shown to the
 
 ## 5. Feature Registry
 
-Priority: P0 (MVP) · P1 · P2. Phase maps to the build plan (§12).
+Priority: P0 (MVP) · P1 · P2. Phase maps to the build plan (§13).
 
 | # | Feature | Priority | Phase | Status | Notes |
 |---|---------|----------|-------|--------|-------|
-| F01 | Client management (Settings → Clients) | P0 | 0 | planned | Add / edit / archive clients; required before first import |
-| F02 | Deal management (Settings → Deals, or inline on import) | P0 | 0 | planned | Group contracts under one deal; scope for shared parameters & defined terms |
-| F01b | Contract type management (Settings → Contract Types) | P0 | 0 | planned | User-configurable taxonomy; pre-seeded; never hardcoded |
+| F01 | Client management (Settings → Clients) | P0 | 0 | backend done | Add / edit / archive clients; required before first import. API CRUD built; Settings UI pending |
+| F02 | Deal management (Settings → Deals, or inline on import) | P0 | 0 | backend done | Group contracts under one deal; scope for shared parameters & defined terms. API CRUD built; UI pending |
+| F01b | Contract type management (Settings → Contract Types) | P0 | 0 | backend done | User-configurable taxonomy; pre-seeded; never hardcoded. API CRUD built; UI pending |
 | F01c | Style template management (Settings → Style Templates) | P0 | 1 | planned | Reusable formatting configs; contracts inherit + override; eliminates redundant style setup |
 | F01d | Home screen — client + deal + contract browser | P0 | 1 | planned | Top-level navigation: all clients → drill to deals → drill to contracts → open cockpit |
-| F03 | First import — new contract (.docx → structured node tree) | P0 | 0 | planned | One-time per contract; tree editor review; see §11 |
+| F03 | First import — new contract (.docx → structured node tree) | P0 | 0 | **built** | parse→tree→persist + import/get-tree routes; **live-DB verified** on real contracts (413-node round-trip). **DD-54 content-role classification landed** (backend): boundary/front-matter/operative split, TOC dropped, clause-only numbering — boundary validated at 57/41/17 on JVA/OA/TLA. F04 review UI (incl. role-region rendering) is the remaining piece. See §11 |
 | F03b | Counterparty revision import (incoming .docx → change list) | P0 | 2 | planned | Triggered from cockpit; diffs against last snapshot; two parse paths (tracked changes vs. clean diff); see §11 |
 | F03c | Counterparty change review — accept/reject/modify + Donna counter-language | P0 | 2 | planned | Inline tracked-change rendering; Donna drafts exact counter; four actions: Accept theirs / Use Donna's counter / Edit Donna's counter / Keep original; DD-26, DD-27 |
 | F03d | Negotiation decision logging (learning infrastructure) | P0 | 2 | planned | Every accept/reject/modify decision logged with rich context; feeds Phase 2 RAG and v2 pattern learning; DD-29 |
-| F04 | Import-review UI — first import (verify/correct parse before commit) | P0 | 0 | planned | Tree editor with multi-select level adjustment; uncertain nodes highlighted; never trust parse blindly |
+| F04 | Import-review UI — first import (verify/correct parse before commit) | P0 | 0 | in progress | **Function-first UI built** (Next.js, two-panel tree+source, confidence flags, inline level/type correction, triage counter, commit gating) on mock data; typecheck clean, visually verified. **Backend now emits `role` + `has_placeholder` per `CandidateNode` (DD-54)** for region rendering. Remaining: visual-identity pass + role-region rendering (non-clause roles as labeled regions, drafting-notes flagged, non-clause rows unnumbered). Tree editor with multi-select level adjustment; uncertain nodes highlighted; never trust parse blindly |
 | F05 | Clause tree browser (collapsible, issue badges, term hover) | P0 | 1 | planned | Driven by DB hierarchy |
 | F06 | Issue creation (select node → operator writes summary → open issue) | P0 | 1 | planned | Operator writes own title + summary; Donna's analysis loads when issue is opened from the list, not at creation |
 | F07 | Issue status tracking | P0 | 1 | planned | open / agreed / deferred / kicked |
@@ -130,6 +130,8 @@ Priority: P0 (MVP) · P1 · P2. Phase maps to the build plan (§12).
 | F25 | Operator organization identity (Settings → Your Organization) | P0 | 3 | planned | Configured org name (config value, not a DB entity); used as redline / export author; never "Donna" (DD-44) |
 | F26 | External revision sources — legal team / internal review (rides Mode B engine) | P1 | 2 | planned | `revision_session.source`; Donna moderates legal over-reach (DD-47); + `needs_legal_review` issue flag + legal review packet export |
 | F27 | Version pointers + lineage view (where-are-we tracking) | P1 | 3 | planned | 4 named snapshot pointers (DD-48); per-source diff baselines; v1→vN lineage view; recipient-driven export sets pointers |
+| F28 | First-pass auto-issue detection on import | P1 | 2+ | planned | On import, Donna drafts a ranked issue list (red flags, below-market terms, missing provisions, placeholders, missing exhibits, broken cross-refs) grounded in the F29 knowledge layer + deal `position`. Rides the issue engine (`initiator: donna`); **operator-confirmed, never authoritative, never auto-exported** (correctness, §2.4 — F1 ~0.62). Source-parameterized ranking (DD-50). Sequenced **after** the bulk-surface mechanism (DD-47) so the list is ranked, not a flood. Keep/dismiss logged via F03d/DD-29 from day one. DD-50 |
+| F29 | Knowledge layer — market benchmarks + risk taxonomy (reference data) | P1 | 2 | planned | Curated, static seed data: CUAD risk taxonomy (whole) + market-benchmark table + red-flag taxonomy + per-type checklists (Licence / Offtake / JV built fresh, NDA ported; attach to F01b contract types). Derived from CUAD/public sources — **not** a live legal database. Grounds F28 and turns many F11 live-research calls into local lookups. DD-49 |
 | — | Call mode / negotiation cockpit | — | — | merged | Folded into edit mode (DD-08) |
 | — | Separate appendices entity | — | — | dropped | Appendices are branches of the node tree (DD-05) |
 | — | Multi-user / team collaboration | — | — | out of scope v1 | Permissions designed for it (§4); not built |
@@ -145,7 +147,7 @@ Entities and relationships in plain English. Full SQL lives in `db/schema.sql`.
 
 **clients** — one row per counterparty organisation. Fields: id, name, relationship_type (counterparty / partner / licensee / other), status (active / archived), notes, created_at. Managed in Settings → Clients.
 
-**deals** — groups the contracts under one negotiation umbrella. The scope boundary for defined terms and deal parameters — both are shared across all contracts in the deal. Fields: id, client_id, name, description, status (active / signed / closed), created_at. A client may have multiple deals (e.g. separate deals in different years). Managed in Settings → Deals or inline when creating a contract.
+**deals** — groups the contracts under one negotiation umbrella. The scope boundary for defined terms and deal parameters — both are shared across all contracts in the deal. Fields: id, client_id, name, description, status (active / signed / closed), **position** (which party the operator is in this deal: `customer` | `vendor` | `buyer` | `seller` | `licensor` | `licensee` | `receiving_party` | `disclosing_party` — set once per deal; governs what Donna's auto-detection flags as unfavorable, DD-50), created_at. A client may have multiple deals (e.g. separate deals in different years). Managed in Settings → Deals or inline when creating a contract.
 
 **contract_types** — user-configurable taxonomy of agreement types. Pre-seeded with common types; operator can add custom. Fields: id, name (e.g. "Licence Agreement", "Offtake Agreement", "JV Agreement"), is_default, created_at. Managed in Settings → Contract Types. Never hardcoded in application logic.
 
@@ -161,7 +163,9 @@ Entities and relationships in plain English. Full SQL lives in `db/schema.sql`.
 - id (primary key), contract_id, parent_id
 - **order_index** (integer — position among siblings; gap-based allocation per OQ-07 resolved; unique within parent_id + contract_id)
 - content_type: `prose` | `table` | `attachment`
-- heading, body
+- **role**: the node's structural role (DD-54), default `clause`. **Front-matter:** `title` | `date` | `parties` | `recital` | `agreement_statement`. **Body:** `clause` (the only numbered region). **Back-matter:** `appendix` (DD-05) | `signature_block`. **Cross-cutting:** `drafting_note` (internal counsel/author commentary — kept but **excluded from every counterparty export**, §12). Front-matter + `signature_block` + `drafting_note` are excluded from the clause tree and numbering; clause numbering re-derives from the first `clause`. The **table of contents** is detected and dropped on import (regenerated on export, §10) — never stored, not a role.
+- **has_placeholder** (boolean) — node contains a fill-in blank (`[insert …]`, `___`, `[amount]`); drives a pre-signing "incomplete field" alert (ties F28). An inline marker, not a role.
+- heading, body (prose); **table_data** (JSONB | null — table nodes only; `[[cell, …], …]` rows, never flattened to a string)
 - **plain_text** (derived projection — regenerated from body on save; used for AI context, embeddings, search, diff display; never the source of truth)
 - **file_reference** (nullable — for attachment nodes: path or storage key to the binary file)
 - **is_deleted** (boolean, default false), **deleted_at** (nullable timestamp) — soft delete; deleted nodes excluded from live tree but included in snapshot diffs for tracked-deletion export
@@ -221,8 +225,9 @@ Inline `(i) X (ii) Y (iii) Z` enumerations within a single prose paragraph are p
 - our_position, their_position, options_on_table
 - **recommended_position** (Donna's proposed landing; may be a fallback ladder: ask / settle / floor)
 - **donna_counter_language** (exact counter-language drafted by Donna for counterparty-proposed changes)
-- status: `open` | `agreed` | `deferred` | `kicked`
-- initiator: `operator` | `counterparty`
+- status: `open` | `agreed` | `deferred` | `kicked` | `dismissed` (`dismissed` = operator rejected a Donna auto-flag; the dismissal is logged for learning, DD-50)
+- initiator: `operator` | `counterparty` | `donna` (`donna` = surfaced by first-pass auto-detection on import, DD-50)
+- **auto_flag** (JSONB | null — populated only when `initiator = donna`. `{flag_type: red_flag | below_market | missing_provision | internal_inconsistency | placeholder | missing_exhibit, benchmark_ref (FK into the knowledge layer, DD-49, null for non-benchmark flags), confidence, source_stance: counterparty | legal_team | first_import}`. `source_stance` drives ranking — legal_team surfaces over-reach first, counterparty surfaces unfavorable-to-us first, DD-50. Keep/dismiss outcome logs through the F03d/DD-29 decision path from day one.)
 - **authority**: `within-operator-authority` | `needs-principal`
 - **needs_legal_review** (boolean — clause requires legal/enforceability input; distinct from `authority`, which routes commercial decisions to the principal; an issue may need both. Drives the legal review packet export. DD-47)
 - **category**: `commercial` | `legal` | `operational` | `counterparty_proposed_edit`
@@ -367,7 +372,7 @@ Donna's four non-negotiable rules — her character:
 
 ## 8. Architecture & Design Decisions
 
-All design decision records (DD-01 … DD-48) live in **[`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md)** — see its index for the full list. Inline `DD-NN` references throughout this spec resolve there.
+All design decision records (DD-01 … DD-54) live in **[`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md)** — see its index for the full list. Inline `DD-NN` references throughout this spec resolve there.
 
 ---
 
@@ -637,7 +642,7 @@ Derived from structural analysis of real-world agreements (no confidential conte
 - **Cross-references are heavy and mixed** — up to ~270 in a single document, both typed text and reference fields → structured-link conversion is essential and import-intensive (DD-11).
 - **Tracked-change density varies from zero to 700+** in one file → handled in **Mode B** (counterparty revisions); **first import (Mode A) is clean in v1** (DD-46). Heavy first-import redlines (onboarding a mid-negotiation contract) are a v2 case (DD-34).
 - **House styles differ per document** (some emphasize underline, some bold, some both) → per-contract style config (DD-02).
-- **Tables, footnotes, and embedded counterparty comments are common** → table/attachment node types, footnote handling, and comments-→-issues seeding (§10).
+- **Tables, footnotes, and embedded counterparty comments are common** → table/attachment node types, footnote handling, and comments-→-issues seeding (§11).
 
 ---
 
@@ -649,6 +654,7 @@ One-time per contract. Creates the contract record, node tree, and all linked en
 
 1. **Parse** .docx → candidate node tree (prose/table/attachment), reading auto-numbering from list structure.
 1a. **Numbering-pattern inference pass** (DD-36) — re-parents any node whose tree position contradicts its heading-number prefix. Silent auto-correction; no operator action required. Nodes with no numeric prefix retain their parsed depth and are surfaced in structural triage if their position looks anomalous.
+1b. **Front-matter regionization** (DD-54) — find the operative-clause boundary: the first top-level numbered heading (e.g. "1. …"). Everything before it is front-matter — the first block is `role: title`, the rest `role: preamble`; these are preserved but excluded from the clause tree and clause numbering. The **table of contents is detected and dropped** (regenerated on export, §10) — never stored as clauses. Clause numbering re-derives from the first operative clause.
 2. **Detect & link** (AI-assisted, human-verified): cross-references → links (DD-11); defined terms → registry (DD-10); deal-parameter mentions → references (DD-12).
 3. **Clean-document guard** (DD-46) — scan the incoming .docx for tracked changes (`<w:ins>`/`<w:del>`). If any are present, block by default and warn: accept all changes in Word and re-upload, or explicitly confirm import-anyway (changes flattened to their accepted state). v1 first import assumes a clean draft; the Mode A two-tier tracked-change triage is deferred to v2 (DD-34).
 4. **Seed issues from existing Word comments** — extract and convert to internal issues anchored to their node.
@@ -771,7 +777,7 @@ donna.ai/
 │   ├── models/              ← Pydantic schemas (nodes, issues, parameters, state)
 │   ├── prompts/             ← versioned prompt templates + utils.py
 │   ├── config/              ← pydantic-settings
-│   └── agents/              ← RAG retrieval + Donna's two surfaces
+│   └── services/donna/      ← RAG retrieval + Donna's surfaces (no LangGraph in v1, DD-52)
 ├── db/
 │   └── schema.sql
 └── evals/                   ← AI output quality (separate from tests)

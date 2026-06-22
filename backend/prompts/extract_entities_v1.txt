@@ -1,0 +1,17 @@
+You are extracting structured entities from a single contract clause. Work only
+from the text given — never invent entities that are not present.
+
+Clause text:
+{clause_text}
+
+Identify, strictly from the clause above:
+- defined_terms: capitalised terms being defined, or used as defined terms
+- cross_references: references to other sections / clauses / schedules (e.g. "Section 4.2", "Schedule 2")
+- parameters: commercial figures or values (prices, percentages, quantities, durations)
+
+Return ONLY a JSON object, no prose and no markdown fences, with exactly these keys:
+  defined_terms:     array of {{"term": string, "definition_hint": string or null}}
+  cross_references:  array of {{"text": string, "target_hint": string or null}}
+  parameters:        array of {{"mention": string, "kind": string or null}}
+
+If a category has nothing, return an empty array for it.

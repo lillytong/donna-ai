@@ -1,0 +1,556 @@
+.screen {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #f4f5f7;
+  color: #1f2328;
+}
+
+/* ---- top bar ---- */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 0 20px;
+  height: 56px;
+  background: #ffffff;
+  border-bottom: 1px solid #e3e6ea;
+  flex-shrink: 0;
+}
+.brand {
+  font-weight: 650;
+  font-size: 16px;
+  letter-spacing: -0.01em;
+}
+.dot {
+  color: #2563eb;
+}
+.steps {
+  display: flex;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 12.5px;
+  color: #9aa1ab;
+}
+.steps li {
+  position: relative;
+  padding-right: 18px;
+}
+.steps li:not(:last-child)::after {
+  content: "›";
+  position: absolute;
+  right: 4px;
+  color: #cbd1d9;
+}
+.stepActive {
+  color: #1f2328;
+  font-weight: 600;
+}
+.right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.counter {
+  font-size: 13px;
+  color: #6b7280;
+}
+.counter strong {
+  color: #b45309;
+  font-variant-numeric: tabular-nums;
+}
+.counterDone {
+  color: #15803d;
+  font-weight: 600;
+}
+.commit {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background: #1f2328;
+  border: none;
+  border-radius: 7px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+.commit:disabled {
+  background: #c4c8cf;
+  cursor: not-allowed;
+}
+
+/* ---- panels ---- */
+.panels {
+  display: grid;
+  grid-template-columns: 2fr 3fr; /* 40 / 60 — source needs reading width */
+  flex: 1;
+  min-height: 0;
+}
+.tree,
+.source {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+.tree {
+  border-right: 1px solid #e3e6ea;
+  background: #fbfcfd;
+}
+.source {
+  background: #ffffff;
+}
+.panelHead {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 12px 18px;
+  background: inherit;
+  border-bottom: 1px solid #eceef1;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6b7280;
+  z-index: 1;
+}
+.panelHint {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+  color: #aab0b9;
+}
+
+/* ---- tree rows ---- */
+.rows {
+  padding: 6px 0 40px;
+}
+.row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 7px 18px 7px 0;
+  font-size: 13.5px;
+  line-height: 1.3;
+  border-left: 3px solid transparent;
+  cursor: pointer;
+}
+.row:hover {
+  background: #f1f4f8;
+}
+.flag {
+  width: 16px;
+  flex-shrink: 0;
+  text-align: center;
+  color: #b8c0cb;
+  font-size: 12px;
+}
+.num {
+  flex-shrink: 0;
+  min-width: 52px;
+  font-family: ui-monospace, "SF Mono", "Menlo", monospace;
+  font-size: 12px;
+  color: #8a929c;
+}
+.text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.badge {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #8a929c;
+  background: #eef1f4;
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.uncertain {
+  background: #fff8e8;
+  border-left-color: #e0a106;
+}
+.uncertain:hover {
+  background: #fff3d6;
+}
+.uncertain .flag {
+  color: #c47f0a;
+}
+
+.selected {
+  background: #eef4ff;
+  border-left-color: #2563eb;
+}
+.selected:hover {
+  background: #e6efff;
+}
+
+/* ---- inline correction tools ---- */
+.tools {
+  display: flex;
+  gap: 6px;
+  flex-basis: 100%;            /* full-width second line so it never crowds the clause text */
+  margin: 8px 0 2px;
+  padding-top: 8px;
+  border-top: 1px dashed #d7dce2;
+}
+.tools button {
+  font: inherit;
+  font-size: 12px;
+  background: #fff;
+  border: 1px solid #d4d9e0;
+  border-radius: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+  color: #374151;
+}
+.tools button:hover {
+  border-color: #2563eb;
+  color: #2563eb;
+}
+/* level buttons: equal fixed squares so ◄ and ► are identical in size */
+.lvl {
+  width: 30px;
+  min-width: 30px;
+  padding: 3px 0 !important;
+  text-align: center;
+  font-variant: normal;
+}
+.ok {
+  font-weight: 600;
+}
+
+/* ---- role regions (DD-54): front-matter above, back-matter below ---- */
+.region {
+  padding: 4px 0 10px;
+}
+.regionHead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 18px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #8a929c;
+}
+.regionHint {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11.5px;
+  color: #aab0b9;
+}
+
+/* labeled front/back-matter block — selectable, never numbered */
+.block {
+  margin: 4px 12px;
+  padding: 8px 12px;
+  border: 1px solid #e3e6ea;
+  border-left: 3px solid #e3e6ea;
+  border-radius: 7px;
+  background: #ffffff;
+  cursor: pointer;
+}
+.block:hover {
+  border-color: #cbd3dc;
+  border-left-color: #cbd3dc;
+}
+.blockHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+.roleLabel {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #6b7280;
+}
+.blockText {
+  font-size: 13px;
+  line-height: 1.4;
+  color: #2b2f36;
+}
+.titleBlock {
+  background: #f7f9fc;
+  border-left-color: #2563eb;
+}
+.titleText {
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+  color: #1f2328;
+}
+
+/* drafting note — internal commentary, never exported (DD-54 §12 guard) */
+.note {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 3px 12px 3px 0;
+  padding: 6px 12px;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: #6b5a3a;
+  background: repeating-linear-gradient(
+    -45deg,
+    #fbf7ef,
+    #fbf7ef 9px,
+    #f5efe2 9px,
+    #f5efe2 18px
+  );
+  border: 1px dashed #d9c9a3;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.note:hover {
+  border-color: #c9b074;
+}
+.noteLabel {
+  flex-shrink: 0;
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #9a7b3a;
+  background: #efe3c8;
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+.noteText {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: italic;
+}
+
+/* incomplete-field (placeholder) indicator on any node (DD-54 → F28) */
+.placeholder {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #9a3412;
+  background: #fde4d3;
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+/* ---- source doc ---- */
+.doc {
+  padding: 16px 34px 60px 26px;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #2b2f36;
+  max-width: 900px; /* readable measure, but uses the panel width instead of a 640px cap */
+}
+.sPara {
+  display: flex;
+  gap: 12px;
+  margin: 0 0 12px;
+  border-radius: 5px;
+  transition: background-color 0.5s ease;
+}
+/* transient highlight when a clause-tree row scrolls the source into view */
+.sFlash {
+  background: #fff3d6;
+  box-shadow: 0 0 0 6px #fff3d6;
+}
+.sNum {
+  flex-shrink: 0;
+  min-width: 56px;
+  font-family: ui-monospace, "SF Mono", "Menlo", monospace;
+  font-size: 11.5px;
+  color: #aab0b9;
+  padding-top: 2px;
+}
+
+/* ---- upload / empty state / banner ---- */
+.fileInput {
+  display: none;
+}
+.upload {
+  display: inline-flex;
+  align-items: center;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1f2328;
+  background: #fff;
+  border: 1px solid #d4d9e0;
+  border-radius: 7px;
+  padding: 7px 13px;
+  cursor: pointer;
+}
+.upload:hover {
+  border-color: #2563eb;
+  color: #2563eb;
+}
+.banner {
+  flex-shrink: 0;
+  padding: 9px 20px;
+  font-size: 13px;
+  color: #8a5a00;
+  background: #fff6e0;
+  border-bottom: 1px solid #f0dca6;
+}
+.empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  padding: 24px;
+}
+.emptyTitle {
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.emptyHint {
+  font-size: 14px;
+  color: #6b7280;
+  max-width: 420px;
+}
+.error {
+  font-size: 13px;
+  color: #c8102e;
+}
+.uploadBig {
+  display: inline-block;
+  margin-top: 10px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: #2563eb;
+  border: none;
+  border-radius: 8px;
+  padding: 11px 20px;
+  cursor: pointer;
+}
+
+/* ---- Step 1 — Context form (§9) ---- */
+.ctxWrap {
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  overflow-y: auto;
+  padding: 48px 24px;
+}
+.ctxCard {
+  width: 100%;
+  max-width: 460px;
+  background: #ffffff;
+  border: 1px solid #e3e6ea;
+  border-radius: 12px;
+  padding: 28px 28px 30px;
+  box-shadow: 0 1px 2px rgba(31, 35, 40, 0.04);
+}
+.ctxTitle {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.ctxLead {
+  margin: 6px 0 22px;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: #6b7280;
+}
+.ctxLoading {
+  font-size: 14px;
+  color: #6b7280;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+.fieldLabel {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #6b7280;
+}
+.control {
+  font: inherit;
+  font-size: 14px;
+  color: #1f2328;
+  background: #fff;
+  border: 1px solid #d4d9e0;
+  border-radius: 8px;
+  padding: 9px 11px;
+  width: 100%;
+}
+.control:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+.control:disabled {
+  background: #f4f5f7;
+  color: #9aa1ab;
+  cursor: not-allowed;
+}
+/* a revealed "create new" input sits just under its select */
+.field .control + .control {
+  margin-top: -2px;
+}
+.ctxSubmit {
+  margin-top: 8px;
+  width: 100%;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: #1f2328;
+  border: none;
+  border-radius: 8px;
+  padding: 11px 16px;
+  cursor: pointer;
+}
+.ctxSubmit:disabled {
+  background: #c4c8cf;
+  cursor: not-allowed;
+}
+
+/* ---- commit confirmation ---- */
+.doneMark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: #dcfce7;
+  color: #15803d;
+  font-size: 26px;
+  font-weight: 700;
+}

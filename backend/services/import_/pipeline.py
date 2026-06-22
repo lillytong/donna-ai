@@ -1,0 +1,184 @@
+"""Import orchestrator for a first import (Mode A) — a thin coordinator (DD-04/43).
+
+Chains the existing, separately-validated import pieces:
+    read_docx(path) -> build_tree(parsed) -> tree_to_node_rows(tree)
+        -> insert_nodes(conn, contract_id, rows)
+
+No business logic lives here; each step is owned by its own service. The
+synchronous parse (docx read + tree build + row mapping) is CPU/file-bound and
+runs in a thread executor so it never blocks the event loop (async standard).
+The persist step is the only awaited DB I/O.
+
+Entity detection (detect_entities, DD-10/11/12) is AI/Anthropic-dependent, so it
+is OPTIONAL and off by default: the core parse->persist path never touches the
+LLM. When `detect=True`, candidates are returned for the import-review UI; they
+are not persisted here (resolved into defined_terms / cross_references only after
+the operator confirms).
+"""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from typing import Any
+
+from backend.models.contract_tree import (
+    FRONT_MATTER_ROLES,
+    BlockClassification,
+    NodeRow,
+    ParsedDocument,
+    ParsedTree,
+)
+from backend.models.extraction import Extraction
+from backend.models.imports import (
+    CandidateNode,
+    ImportResult,
+    PreviewResponse,
+    TrackedChangeReport,
+)
+from backend.services.contract_repo import insert_nodes
+from backend.services.import_.classify import classify, classify_residue
+from backend.services.import_.detect import detect_entities
+from backend.services.import_.docx_reader import count_tracked_changes, read_docx
+from backend.services.import_.numbering import derive_numbers
+from backend.services.import_.persist import tree_to_node_rows
+from backend.services.import_.tree_builder import build_tree
+
+
+def _read_and_classify(
+    path: str | Path,
+) -> tuple[ParsedDocument, dict[int, BlockClassification]]:
+    doc = read_docx(path)
+    return doc, classify(doc.blocks)
+
+
+def _build_stamped(
+    doc: ParsedDocument, classifications: dict[int, BlockClassification]
+) -> ParsedTree:
+    """Drop TOC -> build_tree -> stamp each node with its role / has_placeholder.
+    TOC blocks are excluded before the tree is built; `drafting_note` and
+    front-matter are kept (only TOC is dropped). Node index maps one-to-one to its
+    kept block (build_tree emits one node per block in order). A node's final
+    `uncertain` is the OR of structural (DD-36) and classification uncertainty."""
+    kept = [b for b in doc.blocks if not classifications[b.order].is_toc]
+    tree = build_tree(
+        ParsedDocument(
+            blocks=kept,
+            extracted_chars=doc.extracted_chars,
+            ceiling_chars=doc.ceiling_chars,
+        )
+    )
+    for n in tree.nodes:
+        c = classifications[kept[n.index].order]
+        n.role = c.role
+        n.has_placeholder = c.has_placeholder
+        n.uncertain = n.uncertain or c.uncertain
+    return tree
+
+
+async def _apply_residue(
+    doc: ParsedDocument, classifications: dict[int, BlockClassification]
+) -> None:
+    """Run the Haiku residue pass (DD-54/DD-35) over the ambiguous front-matter
+    the deterministic rules flagged, overwriting role + clearing the
+    classification `uncertain` flag only where the model is confident. Mutates
+    `classifications` in place; blocks the model can't place keep their
+    deterministic role and flag. Deterministic-first: only the uncertain
+    front-matter residue is sent to the LLM."""
+    residue = {
+        b.order: b.text
+        for b in doc.blocks
+        if classifications[b.order].uncertain
+        and classifications[b.order].role in FRONT_MATTER_ROLES
+    }
+    if not residue:
+        return
+    for idx, role in (await classify_residue(residue)).items():
+        classifications[idx] = classifications[idx].model_copy(
+            update={"role": role, "uncertain": False}
+        )
+
+
+async def _classify_tree(path: str | Path, *, ai: bool) -> ParsedTree:
+    """Deterministic classify (free, instant) then, by default, the Haiku pass
+    over the uncertain front-matter residue (DD-54). The sync parse/build run in a
+    thread executor (async standard); only the residue pass awaits the LLM."""
+    doc, classifications = await asyncio.to_thread(_read_and_classify, path)
+    if ai:
+        await _apply_residue(doc, classifications)
+    return await asyncio.to_thread(_build_stamped, doc, classifications)
+
+
+def _preview_from_tree(tree: ParsedTree, path: str | Path) -> PreviewResponse:
+    rows = tree_to_node_rows(tree)
+    numbers = derive_numbers(tree)  # clause-role nodes only (DD-54)
+    depth_for = {n.index: n.depth for n in tree.nodes}
+    nodes = [
+        CandidateNode(
+            index=r.index,
+            parent_index=r.parent_index,
+            order_index=r.order_index,
+            depth=depth_for[r.index],
+            number=numbers.get(r.index, ""),  # non-clause roles are unnumbered
+            content_type=r.content_type,
+            heading=r.heading,
+            body=r.body,
+            table_data=r.table_data,
+            plain_text=r.plain_text,
+            uncertain=r.uncertain,
+            role=r.role,
+            has_placeholder=r.has_placeholder,
+        )
+        for r in rows
+    ]
+    insertions, deletions = count_tracked_changes(path)
+    return PreviewResponse(
+        nodes=nodes,
+        node_count=len(nodes),
+        uncertain_count=sum(1 for n in nodes if n.uncertain),
+        tracked_changes=TrackedChangeReport(
+            insertions=insertions,
+            deletions=deletions,
+            flattened=(insertions + deletions) > 0,
+        ),
+    )
+
+
+async def _detect_candidates(rows: list[NodeRow]) -> dict[int, Extraction]:
+    out: dict[int, Extraction] = {}
+    for r in rows:
+        if r.content_type != "prose" or not r.plain_text:
+            continue
+        out[r.index] = await detect_entities(r.plain_text)
+    return out
+
+
+async def preview_docx(path: str | Path, *, ai: bool = True) -> PreviewResponse:
+    """Parse a .docx into the F04 candidate tree (numbers + uncertain flags +
+    tracked-change report) without persisting. The sync parse runs in a thread
+    executor (async standard); no DB is touched. The Haiku residue pass (DD-54)
+    runs by default (`ai=True`) over the uncertain front-matter; pass `ai=False`
+    to skip the LLM entirely (offline/tests)."""
+    tree = await _classify_tree(path, ai=ai)
+    return await asyncio.to_thread(_preview_from_tree, tree, path)
+
+
+async def import_docx(
+    conn: Any,
+    contract_id: str,
+    path: str | Path,
+    *,
+    detect: bool = False,
+    ai: bool = True,
+) -> ImportResult:
+    tree = await _classify_tree(path, ai=ai)
+    rows = await asyncio.to_thread(tree_to_node_rows, tree)
+    await insert_nodes(conn, contract_id, rows)
+    entity_candidates = await _detect_candidates(rows) if detect else None
+    return ImportResult(
+        contract_id=contract_id,
+        node_count=len(rows),
+        root_count=sum(1 for r in rows if r.parent_index is None),
+        uncertain_count=sum(1 for r in rows if r.uncertain),
+        entity_candidates=entity_candidates,
+    )

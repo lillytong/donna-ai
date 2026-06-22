@@ -1,0 +1,60 @@
+[project]
+name = "donna-ai"
+version = "0.1.0"
+description = "AI-native legal contract review and negotiation management"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "asyncpg>=0.30",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "python-docx>=1.1",
+    "lxml>=5.3",
+    "litellm>=1.59",
+    "anthropic>=0.45",
+    "structlog>=24.4",
+]
+
+# Retrieval/embedding stack (LangChain + pgvector) is added at Phase 2, when
+# node_embeddings and semantic search are built — not needed for the Phase 0
+# import spine. Keeps the Phase 0 lockfile lean (DD-52: no LangGraph).
+
+[dependency-groups]
+dev = [
+    "ruff>=0.9",
+    "mypy>=1.14",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["backend"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["backend"]
+plugins = ["pydantic.mypy"]
+
+# python-docx and lxml ship no type stubs; XML-node boundaries are typed as Any.
+[[tool.mypy.overrides]]
+module = ["docx.*", "lxml.*", "asyncpg.*", "litellm.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend"]

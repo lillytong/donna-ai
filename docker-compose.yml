@@ -1,0 +1,20 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: donna
+      POSTGRES_PASSWORD: donna
+      POSTGRES_DB: donna
+    ports:
+      - "5432:5432"
+    volumes:
+      - donna_pgdata:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U donna -d donna"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  donna_pgdata:

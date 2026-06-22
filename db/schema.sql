@@ -1,0 +1,356 @@
+-- donna.ai schema — source of truth for the data model (SPEC §6).
+-- The DB is canonical; Word documents are an export artifact (principle §2.3).
+-- Loaded automatically by docker-compose on first DB init.
+--
+-- Conventions:
+--   * UUID primary keys (gen_random_uuid()).
+--   * timestamptz everywhere; created_at defaults to now().
+--   * Enumerations are TEXT + CHECK (cheaper to evolve than native ENUM types).
+--   * No users/accounts table in v1 — single-operator local, `actor` is a value
+--     not an FK (DD-53). Identity + auth arrive together at the v1.1 portal.
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;   -- gen_random_uuid()
+CREATE EXTENSION IF NOT EXISTS vector;     -- pgvector (embeddings; Phase 2)
+
+-- ============================================================================
+-- Phase 0 — clients, deals, contracts, the node tree, import-spine entities
+-- ============================================================================
+
+CREATE TABLE clients (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name              TEXT NOT NULL,
+    relationship_type TEXT NOT NULL DEFAULT 'counterparty'
+                      CHECK (relationship_type IN ('counterparty','partner','licensee','other')),
+    status            TEXT NOT NULL DEFAULT 'active'
+                      CHECK (status IN ('active','archived')),
+    notes             TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE deals (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id   UUID NOT NULL REFERENCES clients(id),
+    name        TEXT NOT NULL,
+    description TEXT,
+    status      TEXT NOT NULL DEFAULT 'active'
+                CHECK (status IN ('active','signed','closed')),
+    -- Which party the operator is in this deal; governs what Donna's
+    -- auto-detection flags as unfavorable (DD-50). Set once per deal.
+    position    TEXT CHECK (position IN
+                ('customer','vendor','buyer','seller',
+                 'licensor','licensee','receiving_party','disclosing_party')),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE contract_types (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name       TEXT NOT NULL,             -- e.g. "Licence Agreement", "Offtake Agreement"
+    is_default BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- style_templates.config / contracts.style_config JSONB schema is locked in
+-- DD-37: { font, numbering_scheme, body_font_size_pt, indent_per_level_pt,
+-- page_breaks_before_articles, levels: { "<depth>": { bold, caps, underline,
+-- font_size_pt } } }. `caps` is a render-time uppercase transform, never stored
+-- uppercase (content integrity §2.1, DD-37).
+CREATE TABLE style_templates (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name       TEXT NOT NULL,
+    config     JSONB NOT NULL,
+    is_default BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE contracts (
+    id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id             UUID NOT NULL REFERENCES clients(id),
+    deal_id               UUID NOT NULL REFERENCES deals(id),
+    contract_type_id      UUID NOT NULL REFERENCES contract_types(id),
+    name                  TEXT NOT NULL,
+    status                TEXT NOT NULL DEFAULT 'drafting'
+                          CHECK (status IN ('drafting','under negotiation','signed')),
+    current_version_label TEXT,
+    style_template_id     UUID REFERENCES style_templates(id),  -- nullable: inherits template
+    style_config          JSONB NOT NULL DEFAULT '{}'::jsonb,    -- per-contract overrides on top
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- The universal addressable unit. Self-referential adjacency list, arbitrary
+-- depth. NO stored clause number — derived from tree position (DD-02).
+CREATE TABLE nodes (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    contract_id    UUID NOT NULL REFERENCES contracts(id),
+    parent_id      UUID REFERENCES nodes(id),            -- null = root
+    order_index    INTEGER NOT NULL,                     -- gap-based (OQ-07)
+    content_type   TEXT NOT NULL DEFAULT 'prose'
+                   CHECK (content_type IN ('prose','table','attachment')),
+    -- Structural role (DD-54). Only `clause` is numbered; front-matter
+    -- (title/date/parties/recital/agreement_statement), back-matter
+    -- (appendix/signature_block), and the cross-cutting `drafting_note` are
+    -- excluded from the clause tree + numbering. `drafting_note` is also
+    -- export-excluded from any counterparty document (§12). TOC is dropped on
+    -- import, never stored. NOTE: an existing local DB needs these two columns
+    -- added (ALTER TABLE) or a recreate — schema.sql is the source of truth.
+    role           TEXT NOT NULL DEFAULT 'clause'
+                   CHECK (role IN ('title','date','parties','recital',
+                          'agreement_statement','clause','appendix',
+                          'signature_block','drafting_note')),
+    has_placeholder BOOLEAN NOT NULL DEFAULT false,      -- fill-in blank (F28 alert)
+    heading        TEXT,
+    body           TEXT,                                 -- prose nodes: semantic markup
+    table_data     JSONB,                                -- table nodes: [[cell,...],...] rows; never flattened
+    plain_text     TEXT,                                 -- derived projection; never source of truth
+    file_reference TEXT,                                 -- attachment nodes only
+    is_deleted     BOOLEAN NOT NULL DEFAULT false,
+    deleted_at     TIMESTAMPTZ,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (contract_id, parent_id, order_index)
+);
+CREATE INDEX nodes_contract_idx ON nodes (contract_id);
+CREATE INDEX nodes_parent_idx   ON nodes (parent_id);
+
+-- Structured footnote bodies, anchored to a node ([^N] markers, DD).
+CREATE TABLE footnotes (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    node_id      UUID NOT NULL REFERENCES nodes(id),
+    anchor_index INTEGER NOT NULL,        -- matches the [^N] marker in the body
+    body         TEXT NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Append-only history of every node-body change. Structural moves are NOT
+-- versioned here — they are reconstructed from snapshots (OQ-08).
+CREATE TABLE node_versions (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    node_id     UUID NOT NULL REFERENCES nodes(id),
+    snapshot_id UUID,                     -- nullable until next snapshot is cut; FK added below
+    body_before TEXT,
+    body_after  TEXT,
+    actor       TEXT NOT NULL CHECK (actor IN ('user','ai','principal')),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Deal-scoped defined terms (shared across all contracts in the deal).
+CREATE TABLE defined_terms (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    deal_id        UUID NOT NULL REFERENCES deals(id),
+    term           TEXT NOT NULL,
+    definition     TEXT,
+    source_node_id UUID REFERENCES nodes(id),
+    UNIQUE (deal_id, term)
+);
+
+-- Explicit links between nodes; may cross contracts within a deal. The displayed
+-- number renders from the target's CURRENT position, so refs never break on
+-- renumber and ripple-flag on change (DD-11).
+CREATE TABLE cross_references (
+    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    source_node_id     UUID NOT NULL REFERENCES nodes(id),
+    source_contract_id UUID NOT NULL REFERENCES contracts(id),
+    target_node_id     UUID REFERENCES nodes(id),       -- nullable: contract-name-only refs
+    target_contract_id UUID REFERENCES contracts(id)
+);
+
+-- Shared commercial values, defined once at the deal (DD-12).
+CREATE TABLE deal_parameters (
+    id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    deal_id UUID NOT NULL REFERENCES deals(id),
+    key     TEXT NOT NULL,
+    value   TEXT,
+    unit    TEXT,
+    notes   TEXT,
+    UNIQUE (deal_id, key)
+);
+
+CREATE TABLE parameter_references (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    node_id           UUID NOT NULL REFERENCES nodes(id),
+    deal_parameter_id UUID NOT NULL REFERENCES deal_parameters(id),
+    mention_text      TEXT NOT NULL,     -- the literal text in the clause
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ============================================================================
+-- Snapshots & version pointers (Phase 3 export / Mode B baselines)
+-- ============================================================================
+
+-- Immutable point-in-time capture. OQ-08 resolved: full-tree-dump — `tree`
+-- stores the complete node set (topology + bodies) so structural diffs (DD-03)
+-- can reconstruct insert/delete/move, which node_versions does not record.
+-- tree JSONB shape: [ { id, parent_id, order_index, content_type, heading,
+-- body, is_deleted } ] for every node in the contract at capture time.
+CREATE TABLE contract_snapshots (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    contract_id UUID NOT NULL REFERENCES contracts(id),
+    label       TEXT,
+    tree        JSONB NOT NULL,
+    origin      TEXT NOT NULL CHECK (origin IN ('export','as_received','manual')),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE node_versions
+    ADD CONSTRAINT node_versions_snapshot_fk
+    FOREIGN KEY (snapshot_id) REFERENCES contract_snapshots(id);
+
+-- Four named pointers per contract (DD-48). `shared` pointers double as the
+-- per-source diff baselines (DD-47); `received` are immutable as-sent records.
+CREATE TABLE snapshot_pointers (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    contract_id UUID NOT NULL REFERENCES contracts(id),
+    party       TEXT NOT NULL CHECK (party IN ('counterparty','legal_team','internal')),
+    direction   TEXT NOT NULL CHECK (direction IN ('shared','received')),
+    snapshot_id UUID NOT NULL REFERENCES contract_snapshots(id),
+    set_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (contract_id, party, direction)
+);
+
+-- ============================================================================
+-- Phase 2 — counterparty revision review (staging) & issues
+-- Table names keep the `counterparty_` prefix; the rename to revision_* with
+-- the source generalization is propagated at Phase 2 build (DD-47). The
+-- `source` column is added now per the SPEC §6 entity.
+-- ============================================================================
+
+CREATE TABLE counterparty_revision_sessions (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    contract_id             UUID NOT NULL REFERENCES contracts(id),
+    baseline_snapshot_id    UUID NOT NULL REFERENCES contract_snapshots(id),
+    source                  TEXT NOT NULL DEFAULT 'counterparty'
+                            CHECK (source IN ('counterparty','legal_team','internal')),  -- DD-47
+    source_filename         TEXT,
+    parse_path              TEXT NOT NULL CHECK (parse_path IN ('tracked_changes','clean_diff')),
+    status                  TEXT NOT NULL DEFAULT 'reviewing'
+                            CHECK (status IN ('reviewing','completed')),
+    changes_count           INTEGER NOT NULL DEFAULT 0,
+    changes_reviewed_count  INTEGER NOT NULL DEFAULT 0,
+    imported_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- One row per node with at least one edit (navigation unit). node_id nullable =
+-- a proposed new node not in the baseline.
+CREATE TABLE counterparty_revision_changes (
+    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id           UUID NOT NULL REFERENCES counterparty_revision_sessions(id),
+    node_id              UUID REFERENCES nodes(id),
+    proposed_parent_id   UUID REFERENCES nodes(id),    -- for new nodes: insert point
+    proposed_order_index INTEGER,                      -- for new nodes: sibling position
+    hunk_count           INTEGER NOT NULL DEFAULT 0,
+    hunks_decided        INTEGER NOT NULL DEFAULT 0,
+    status               TEXT NOT NULL DEFAULT 'pending'
+                         CHECK (status IN ('pending','partial','complete'))
+);
+
+-- One row per individual text edit within a node (decision unit).
+CREATE TABLE counterparty_revision_hunks (
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    change_id        UUID NOT NULL REFERENCES counterparty_revision_changes(id),
+    hunk_type        TEXT NOT NULL CHECK (hunk_type IN ('insertion','deletion','replacement')),
+    significance     TEXT NOT NULL CHECK (significance IN ('trivial','substantive')),
+    position_in_body INTEGER,                          -- char offset for inline rendering
+    original_text    TEXT,
+    proposed_text    TEXT,
+    donna_verdict    TEXT CHECK (donna_verdict IN ('accept','counter','keep')),
+    donna_counter_text TEXT,                           -- null for trivial hunks
+    verdict          TEXT NOT NULL DEFAULT 'pending'
+                     CHECK (verdict IN ('pending','accepted','rejected','modified')),
+    final_text       TEXT,
+    decided_at       TIMESTAMPTZ
+);
+
+-- An open negotiation point. decision/auto_flag/donna_research_citations JSONB
+-- shapes are documented in SPEC §6.
+CREATE TABLE issues (
+    id                              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    contract_id                     UUID NOT NULL REFERENCES contracts(id),
+    node_id                         UUID REFERENCES nodes(id),  -- nullable = free-floating; mutable
+    title                           TEXT NOT NULL,
+    our_position                    TEXT,
+    their_position                  TEXT,
+    options_on_table                TEXT,
+    recommended_position            TEXT,
+    donna_counter_language          TEXT,
+    status                          TEXT NOT NULL DEFAULT 'open'
+                                    CHECK (status IN ('open','agreed','deferred','kicked','dismissed')),
+    initiator                       TEXT NOT NULL
+                                    CHECK (initiator IN ('operator','counterparty','donna')),
+    auto_flag                       JSONB,    -- non-null only when initiator='donna' (DD-50)
+    authority                       TEXT NOT NULL DEFAULT 'within-operator-authority'
+                                    CHECK (authority IN ('within-operator-authority','needs-principal')),
+    needs_legal_review              BOOLEAN NOT NULL DEFAULT false,  -- DD-47
+    category                        TEXT NOT NULL DEFAULT 'commercial'
+                                    CHECK (category IN
+                                    ('commercial','legal','operational','counterparty_proposed_edit')),
+    counterparty_revision_session_id UUID REFERENCES counterparty_revision_sessions(id),
+    opened_in_snapshot_id           UUID REFERENCES contract_snapshots(id),
+    resolved_in_snapshot_id         UUID REFERENCES contract_snapshots(id),
+    decision                        JSONB,    -- populated on resolution (SPEC §6)
+    donna_research_citations        JSONB,    -- null unless live research invoked
+    impact                          TEXT,
+    priority                        INTEGER,
+    created_at                      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    resolved_at                     TIMESTAMPTZ
+);
+CREATE INDEX issues_contract_idx ON issues (contract_id);
+CREATE INDEX issues_node_idx     ON issues (node_id);
+
+CREATE TABLE issue_comments (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    issue_id    UUID NOT NULL REFERENCES issues(id),
+    actor       TEXT NOT NULL CHECK (actor IN ('user','ai','principal')),
+    content     TEXT NOT NULL,
+    snapshot_id UUID REFERENCES contract_snapshots(id),  -- which round
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ============================================================================
+-- Donna conversation state (DD-40) — windowed last-10-turns + rolling summary
+-- ============================================================================
+
+CREATE TABLE donna_conversations (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    contract_id     UUID NOT NULL REFERENCES contracts(id),
+    running_summary TEXT,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE donna_messages (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    conversation_id UUID NOT NULL REFERENCES donna_conversations(id),
+    role            TEXT NOT NULL CHECK (role IN ('user','assistant')),
+    content         TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ============================================================================
+-- Embeddings (pgvector) — built in Phase 2 (nodes) / Phase 2+ (comments).
+-- VECTOR DIMENSION IS PROVISIONAL: tied to the Phase-2 embedding-model choice
+-- (e.g. Voyage 1024, OpenAI 1536). Confirm/alter before first embed. [FLAGGED]
+-- ============================================================================
+
+CREATE TABLE node_embeddings (
+    node_id     UUID PRIMARY KEY REFERENCES nodes(id),
+    embedding   VECTOR(1024),
+    embedded_at TIMESTAMPTZ NOT NULL DEFAULT now()  -- staleness: nodes.updated_at > embedded_at
+);
+
+CREATE TABLE comment_embeddings (
+    comment_id UUID PRIMARY KEY REFERENCES issue_comments(id),
+    embedding  VECTOR(1024)
+);
+
+-- ============================================================================
+-- Audit log — append-only; never updated. Every content/issue mutation.
+-- ============================================================================
+
+CREATE TABLE audit_log (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_type  TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id   UUID,
+    actor       TEXT NOT NULL,
+    payload     JSONB,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX audit_log_entity_idx ON audit_log (entity_type, entity_id);
