@@ -12,7 +12,9 @@ an AI assistant (**Donna**) brainstorms and explains **grounded in the actual
 text**, and clean redlines are exported back to Word on demand.
 
 > Status: early build. Architecture and data model are locked (`SPEC.md`,
-> `DESIGN_DECISIONS.md`); the Phase 0 import spine is under construction.
+> `DESIGN_DECISIONS.md`). The Phase 0 import spine — parse → classify roles →
+> review → commit — and its import-review UI are **built and working**; issue
+> tracking, Donna's surfaces, and export are next.
 
 ## What it does
 
@@ -57,16 +59,25 @@ internet + an Anthropic API key.
 
 ## Run it locally
 
-Prerequisites: Docker, Python 3.12, [uv](https://docs.astral.sh/uv/).
+Prerequisites: Docker, Python 3.12, [uv](https://docs.astral.sh/uv/), Node 20+ (frontend).
 
 ```bash
-cp .env.example .env          # fill in ANTHROPIC_API_KEY (+ DONNA_REDLINE_AUTHOR)
-docker compose up -d db       # Postgres + pgvector; auto-loads db/schema.sql
-uv sync                       # install deps
-uv run uvicorn backend.main:app --reload
-
+cp .env.example .env          # fill in ANTHROPIC_API_KEY (DATABASE_URL has a local default)
+docker compose up -d db       # Postgres + pgvector; auto-loads db/schema.sql + db/seed.sql
+uv sync                       # backend deps
+uv run uvicorn backend.main:app --reload   # API → localhost:8000
 curl localhost:8000/health    # {"status":"ok","db":"ok"}
 ```
+
+Frontend, in a second terminal:
+
+```bash
+cd frontend && npm install && npm run dev   # UI → localhost:3000
+```
+
+Your data is yours and stays local: the public repo carries only schema + seed
+(`db/schema.sql`, `db/seed.sql` — no rows). Every clone runs its own Postgres;
+contracts you import live only in your machine's database.
 
 ## Project map
 
@@ -75,9 +86,9 @@ curl localhost:8000/health    # {"status":"ok","db":"ok"}
 | `SPEC.md` | The hub — overview, workflow, data model, phased build plan |
 | `DESIGN_DECISIONS.md` | ADR log (DD-NN), indexed in SPEC §8 |
 | `CLAUDE.md` | Project engineering rules + stack deviations |
-| `db/schema.sql` | Canonical data model |
+| `db/schema.sql` · `db/seed.sql` | Canonical data model + generic defaults (skeleton only — no data) |
 | `backend/` | FastAPI app — `api/` · `services/` (incl. `services/donna/`) · `models/` · `prompts/` · `config/` |
-| `frontend/` | Next.js UI (next increment) |
+| `frontend/` | Next.js UI — the import-review screen (parse → review → commit) is built |
 | `evals/` | AI output-quality harnesses (separate from `tests/`) |
 
 ## License
