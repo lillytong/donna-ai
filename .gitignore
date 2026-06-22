@@ -22,6 +22,19 @@ venv/
 .env.*
 !.env.example
 
+# Database: DATA stays local — never in the public repo. Each install runs its
+# own Postgres; only db/schema.sql (DDL skeleton) + a generic db/seed.sql are
+# tracked. No rows, dumps, or real client/deal/contract data ever leave a machine.
+*.dump
+*.sqlite
+*.sqlite3
+*.db
+*.sql.gz
+db/*_local.sql
+db/dump*.sql
+/pgdata/
+/data/
+
 # Local Claude Code settings (machine-specific perms)
 .claude/settings.local.json
 
