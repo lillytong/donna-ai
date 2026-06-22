@@ -1,6 +1,8 @@
 # donna.ai
 
-An open-source, AI-native system of record for legal contract review and
+Named after Donna Paulsen from Suits.
+
+donna.ai is an open-source, AI-native system of record for legal contract review and
 negotiation management — built for founders and business-development leads who
 run their own legal work without in-house counsel.
 
