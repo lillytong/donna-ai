@@ -52,6 +52,10 @@ const ROLE_LABEL: Record<Role, string> = {
   drafting_note: "Drafting note",
 };
 
+// Insertion order = front-matter → clause → back-matter → note; drives both the
+// per-node role selector and the bulk role picker.
+const ROLE_OPTIONS = Object.keys(ROLE_LABEL) as Role[];
+
 function toRow(n: ApiCandidateNode): Row {
   const text = n.heading ?? n.body ?? n.plain_text ?? "";
   const typeLabel = n.content_type === "table" ? "Table" : n.heading && !n.body ? "Heading" : "Body";
@@ -118,6 +122,7 @@ export default function ImportReview() {
   const [total, setTotal] = useState(0);
   const [committing, setCommitting] = useState(false);
   const [committed, setCommitted] = useState<ImportResult | null>(null);
+  const [checked, setChecked] = useState<Set<number>>(new Set());
 
   const sourceRefs = useRef(new Map<number, HTMLParagraphElement>());
 
@@ -139,6 +144,7 @@ export default function ImportReview() {
       setTotal(mapped.filter((r) => r.uncertain).length);
       setTracked(res.tracked_changes);
       setSelected(null);
+      setChecked(new Set());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Preview failed");
     } finally {
@@ -172,6 +178,28 @@ export default function ImportReview() {
       typeLabel: TYPE_CYCLE[(TYPE_CYCLE.indexOf(r.typeLabel) + 1) % TYPE_CYCLE.length],
     }));
   const confirm = (index: number) => patch(index, (r) => r);
+  // Changing a node's role re-buckets it live: the preamble/body/backmatter
+  // partitions below are derived from `rows` by role each render, so this single
+  // setter moves the node into the correct region and renumber() re-derives the
+  // clause tree (DD-02/DD-54). Clears uncertain like every other correction.
+  const setRole = (index: number, role: Role) => patch(index, (r) => ({ ...r, role }));
+
+  // Bulk variant of patch — one setRows so renumber runs once for the whole batch.
+  const patchMany = (indices: Set<number>, fn: (r: Row) => Row) =>
+    setRows((rs) =>
+      renumber(rs.map((r) => (indices.has(r.index) ? { ...fn(r), uncertain: false } : r))),
+    );
+  const bulkLevel = (delta: number) =>
+    patchMany(checked, (r) => ({ ...r, depth: Math.max(0, r.depth + delta) }));
+  const bulkType = (typeLabel: string) => patchMany(checked, (r) => ({ ...r, typeLabel }));
+  const bulkRole = (role: Role) => patchMany(checked, (r) => ({ ...r, role }));
+  const toggleCheck = (index: number) =>
+    setChecked((c) => {
+      const next = new Set(c);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
 
   async function onCommit() {
     if (!ctx || remaining > 0) return;
@@ -271,7 +299,61 @@ export default function ImportReview() {
           )}
         </div>
       ) : (
-        <div className={styles.panels}>
+        <>
+          {checked.size > 0 && (
+            <div className={styles.bulkBar}>
+              <span className={styles.bulkCount}>{checked.size} selected</span>
+              <div className={styles.bulkActions}>
+                <span className={styles.bulkLabel}>Level</span>
+                <button
+                  className={styles.lvl}
+                  onClick={() => bulkLevel(-1)}
+                  title="Promote all checked — up a level"
+                >
+                  ‹
+                </button>
+                <button
+                  className={styles.lvl}
+                  onClick={() => bulkLevel(1)}
+                  title="Demote all checked — down a level"
+                >
+                  ›
+                </button>
+                <select
+                  className={styles.bulkSelect}
+                  value=""
+                  onChange={(e) => e.target.value && bulkType(e.target.value)}
+                >
+                  <option value="" disabled>
+                    Set type…
+                  </option>
+                  {TYPE_CYCLE.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className={styles.bulkSelect}
+                  value=""
+                  onChange={(e) => e.target.value && bulkRole(e.target.value as Role)}
+                >
+                  <option value="" disabled>
+                    Set role…
+                  </option>
+                  {ROLE_OPTIONS.map((r) => (
+                    <option key={r} value={r}>
+                      {ROLE_LABEL[r]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button className={styles.bulkClear} onClick={() => setChecked(new Set())}>
+                Clear
+              </button>
+            </div>
+          )}
+          <div className={styles.panels}>
           <section className={styles.tree}>
             <div className={styles.panelHead}>
               Structure
@@ -288,7 +370,10 @@ export default function ImportReview() {
                     key={r.index}
                     row={r}
                     selected={selected === r.index}
+                    checked={checked.has(r.index)}
+                    onToggleCheck={() => toggleCheck(r.index)}
                     onSelect={() => selectRow(r.index)}
+                    onSetRole={(role) => setRole(r.index, role)}
                     onConfirm={() => confirm(r.index)}
                   />
                 ))}
@@ -302,7 +387,10 @@ export default function ImportReview() {
                     key={r.index}
                     row={r}
                     selected={selected === r.index}
+                    checked={checked.has(r.index)}
+                    onToggleCheck={() => toggleCheck(r.index)}
                     onSelect={() => selectRow(r.index)}
+                    onSetRole={(role) => setRole(r.index, role)}
                     onConfirm={() => confirm(r.index)}
                   />
                 ) : (
@@ -310,9 +398,12 @@ export default function ImportReview() {
                     key={r.index}
                     row={r}
                     selected={selected === r.index}
+                    checked={checked.has(r.index)}
+                    onToggleCheck={() => toggleCheck(r.index)}
                     onSelect={() => selectRow(r.index)}
                     onLevel={(d) => changeLevel(r.index, d)}
                     onCycleType={() => cycleType(r.index)}
+                    onSetRole={(role) => setRole(r.index, role)}
                     onConfirm={() => confirm(r.index)}
                   />
                 ),
@@ -329,7 +420,10 @@ export default function ImportReview() {
                     key={r.index}
                     row={r}
                     selected={selected === r.index}
+                    checked={checked.has(r.index)}
+                    onToggleCheck={() => toggleCheck(r.index)}
                     onSelect={() => selectRow(r.index)}
+                    onSetRole={(role) => setRole(r.index, role)}
                     onConfirm={() => confirm(r.index)}
                   />
                 ))}
@@ -357,7 +451,8 @@ export default function ImportReview() {
               ))}
             </div>
           </section>
-        </div>
+          </div>
+        </>
       )}
     </div>
   );
@@ -367,19 +462,56 @@ function PlaceholderTag() {
   return <span className={styles.placeholder}>incomplete field</span>;
 }
 
+// Multi-select checkbox — independent of row selection, so stop the click from
+// bubbling into the row's select/scroll handler.
+function RowCheck({ checked, onToggle }: { checked: boolean; onToggle: () => void }) {
+  return (
+    <input
+      type="checkbox"
+      className={styles.rowCheck}
+      checked={checked}
+      onClick={(e) => e.stopPropagation()}
+      onChange={onToggle}
+    />
+  );
+}
+
+// Per-node role selector (gap 1) — present on every node in every region.
+function RoleSelect({ value, onChange }: { value: Role; onChange: (role: Role) => void }) {
+  return (
+    <select
+      className={styles.roleSelect}
+      value={value}
+      onChange={(e) => onChange(e.target.value as Role)}
+    >
+      {ROLE_OPTIONS.map((r) => (
+        <option key={r} value={r}>
+          {ROLE_LABEL[r]}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 function ClauseRow({
   row,
   selected,
+  checked,
+  onToggleCheck,
   onSelect,
   onLevel,
   onCycleType,
+  onSetRole,
   onConfirm,
 }: {
   row: Row;
   selected: boolean;
+  checked: boolean;
+  onToggleCheck: () => void;
   onSelect: () => void;
   onLevel: (delta: number) => void;
   onCycleType: () => void;
+  onSetRole: (role: Role) => void;
   onConfirm: () => void;
 }) {
   return (
@@ -388,6 +520,7 @@ function ClauseRow({
       style={{ paddingLeft: 14 + row.depth * 22 }}
       onClick={onSelect}
     >
+      <RowCheck checked={checked} onToggle={onToggleCheck} />
       <span className={styles.flag}>{row.uncertain ? "⚠" : "✓"}</span>
       <span className={styles.num}>{row.number}</span>
       <span className={styles.text}>{row.text}</span>
@@ -396,9 +529,10 @@ function ClauseRow({
 
       {selected && (
         <div className={styles.tools} onClick={(e) => e.stopPropagation()}>
-          <button className={styles.lvl} onClick={() => onLevel(-1)} title="Promote — up a level">◄</button>
-          <button className={styles.lvl} onClick={() => onLevel(1)} title="Demote — down a level">►</button>
+          <button className={styles.lvl} onClick={() => onLevel(-1)} title="Promote — up a level">‹</button>
+          <button className={styles.lvl} onClick={() => onLevel(1)} title="Demote — down a level">›</button>
           <button onClick={onCycleType}>Type: {row.typeLabel}</button>
+          <RoleSelect value={row.role} onChange={onSetRole} />
           <button className={styles.ok} onClick={onConfirm}>Looks right ✓</button>
         </div>
       )}
@@ -409,12 +543,18 @@ function ClauseRow({
 function DraftingNote({
   row,
   selected,
+  checked,
+  onToggleCheck,
   onSelect,
+  onSetRole,
   onConfirm,
 }: {
   row: Row;
   selected: boolean;
+  checked: boolean;
+  onToggleCheck: () => void;
   onSelect: () => void;
+  onSetRole: (role: Role) => void;
   onConfirm: () => void;
 }) {
   return (
@@ -423,6 +563,7 @@ function DraftingNote({
       style={{ marginLeft: 14 + row.depth * 22 }}
       onClick={onSelect}
     >
+      <RowCheck checked={checked} onToggle={onToggleCheck} />
       <span className={styles.flag}>{row.uncertain ? "⚠" : "✓"}</span>
       <span className={styles.noteLabel}>Internal note — not exported</span>
       <span className={styles.noteText}>{row.text}</span>
@@ -430,6 +571,7 @@ function DraftingNote({
 
       {selected && (
         <div className={styles.tools} onClick={(e) => e.stopPropagation()}>
+          <RoleSelect value={row.role} onChange={onSetRole} />
           <button className={styles.ok} onClick={onConfirm}>Looks right ✓</button>
         </div>
       )}
@@ -440,12 +582,18 @@ function DraftingNote({
 function FrontBlock({
   row,
   selected,
+  checked,
+  onToggleCheck,
   onSelect,
+  onSetRole,
   onConfirm,
 }: {
   row: Row;
   selected: boolean;
+  checked: boolean;
+  onToggleCheck: () => void;
   onSelect: () => void;
+  onSetRole: (role: Role) => void;
   onConfirm: () => void;
 }) {
   const isTitle = row.role === "title";
@@ -460,6 +608,7 @@ function FrontBlock({
       onClick={onSelect}
     >
       <div className={styles.blockHead}>
+        <RowCheck checked={checked} onToggle={onToggleCheck} />
         <span className={styles.flag}>{row.uncertain ? "⚠" : "✓"}</span>
         <span className={styles.roleLabel}>{ROLE_LABEL[row.role]}</span>
         {row.hasPlaceholder && <PlaceholderTag />}
@@ -468,6 +617,7 @@ function FrontBlock({
 
       {selected && (
         <div className={styles.tools} onClick={(e) => e.stopPropagation()}>
+          <RoleSelect value={row.role} onChange={onSetRole} />
           <button className={styles.ok} onClick={onConfirm}>Looks right ✓</button>
         </div>
       )}

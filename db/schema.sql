@@ -73,6 +73,7 @@ CREATE TABLE contracts (
     current_version_label TEXT,
     style_template_id     UUID REFERENCES style_templates(id),  -- nullable: inherits template
     style_config          JSONB NOT NULL DEFAULT '{}'::jsonb,    -- per-contract overrides on top
+    origin                TEXT CHECK (origin IN ('us','our_legal','counterparty')),  -- who drafted the baseline (first upload); sets Donna's starting redline stance, distinct from per-revision source (DD-47)
     created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

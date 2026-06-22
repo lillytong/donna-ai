@@ -107,6 +107,9 @@ export type DealPosition =
   | "receiving_party"
   | "disclosing_party";
 export type ContractStatus = "drafting" | "under negotiation" | "signed";
+// Baseline authorship at first upload (DD-55). Sets Donna's starting redline
+// posture; later revisions' source-stance (DD-47) builds on it.
+export type Origin = "us" | "our_legal" | "counterparty";
 
 export interface ClientCreate {
   name: string;
@@ -157,6 +160,7 @@ export interface ContractCreate {
   contract_type_id: string;
   name: string;
   status?: ContractStatus;
+  origin?: Origin | null;
   current_version_label?: string | null;
   style_template_id?: string | null;
   style_config?: Record<string, unknown>;
@@ -168,6 +172,7 @@ export interface StoredContract {
   contract_type_id: string;
   name: string;
   status: string;
+  origin: string | null;
   current_version_label: string | null;
   style_template_id: string | null;
   style_config: Record<string, unknown>;

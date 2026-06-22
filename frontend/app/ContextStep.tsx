@@ -10,6 +10,7 @@ import {
   listClients,
   listContractTypes,
   listDeals,
+  type Origin,
   type StoredClient,
   type StoredContractType,
   type StoredDeal,
@@ -23,6 +24,14 @@ export interface ContractContext {
 }
 
 const NEW = "__new__";
+
+// Baseline authorship (DD-55) — who drafted this first version. Required because
+// it sets Donna's starting redline stance (own paper vs. counterparty paper).
+const ORIGIN_OPTIONS: { value: Origin; label: string }[] = [
+  { value: "us", label: "Us" },
+  { value: "our_legal", label: "Our legal team" },
+  { value: "counterparty", label: "Counterparty" },
+];
 
 // Step 1 — Context (§9). Tells donna.ai where to store the contract before any
 // parsing: select-or-create client, select-or-create deal (scoped to the client),
@@ -40,6 +49,7 @@ export default function ContextStep({ onReady }: { onReady: (ctx: ContractContex
   const [contractName, setContractName] = useState("");
   const [typeId, setTypeId] = useState("");
   const [newTypeName, setNewTypeName] = useState("");
+  const [origin, setOrigin] = useState<Origin | "">("");
 
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -69,7 +79,8 @@ export default function ContextStep({ onReady }: { onReady: (ctx: ContractContex
   const clientReady = creatingClient ? newClientName.trim() !== "" : clientId !== "";
   const dealReady = creatingDeal ? newDealName.trim() !== "" : dealId !== "";
   const typeReady = typeId === NEW ? newTypeName.trim() !== "" : typeId !== "";
-  const ready = clientReady && dealReady && contractName.trim() !== "" && typeReady && !submitting;
+  const ready =
+    clientReady && dealReady && contractName.trim() !== "" && typeReady && origin !== "" && !submitting;
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -95,6 +106,7 @@ export default function ContextStep({ onReady }: { onReady: (ctx: ContractContex
         deal_id: deal.id,
         contract_type_id: type.id,
         name: contractName.trim(),
+        origin: origin || null,
       });
 
       onReady({
@@ -248,6 +260,24 @@ export default function ContextStep({ onReady }: { onReady: (ctx: ContractContex
                     onChange={(e) => setNewTypeName(e.target.value)}
                   />
                 )}
+              </div>
+
+              <div className={styles.field}>
+                <span className={styles.fieldLabel}>Who drafted this first version?</span>
+                <div className={styles.segment} role="radiogroup" aria-label="Who drafted this first version?">
+                  {ORIGIN_OPTIONS.map((o) => (
+                    <button
+                      key={o.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={origin === o.value}
+                      className={[styles.segmentBtn, origin === o.value ? styles.segmentSelected : ""].join(" ")}
+                      onClick={() => setOrigin(o.value)}
+                    >
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {error && <p className={styles.error}>{error}</p>}

@@ -169,14 +169,14 @@ async def get_contract_type(conn: Any, contract_type_id: str) -> StoredContractT
 _INSERT_CONTRACT = """
 INSERT INTO contracts
     (client_id, deal_id, contract_type_id, name, status,
-     current_version_label, style_template_id, style_config)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+     current_version_label, style_template_id, style_config, origin)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
 RETURNING id
 """
 
 _SELECT_CONTRACT = """
 SELECT id, client_id, deal_id, contract_type_id, name, status,
-       current_version_label, style_template_id, style_config, created_at
+       current_version_label, style_template_id, style_config, origin, created_at
 FROM contracts
 """
 
@@ -199,6 +199,7 @@ def _to_contract(record: Any) -> StoredContract:
         current_version_label=record["current_version_label"],
         style_template_id=str(style_template_id) if style_template_id is not None else None,
         style_config=style_config,
+        origin=record["origin"],
         created_at=record["created_at"],
     )
 
@@ -214,6 +215,7 @@ async def create_contract(conn: Any, payload: ContractCreate) -> str:
         payload.current_version_label,
         payload.style_template_id,
         json.dumps(payload.style_config),
+        payload.origin,
     )
     return str(new_id)
 

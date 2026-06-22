@@ -1,0 +1,21 @@
+You are classifying the FRONT MATTER of a single contract — every block before the operative numbered clauses begin. You see the WHOLE front matter at once, in document order, so use the surrounding blocks as context. Assign exactly one role to EVERY block listed.
+
+Roles:
+- title: the contract's real name/title (e.g. "TECHNOLOGY LICENSING AGREEMENT", "JOINT VENTURE AGREEMENT").
+- date: a date line (e.g. "Dated 8 January 2026", "[insert date]").
+- parties: a block that identifies a contracting party or joins them — the "BETWEEN"/"BY AND BETWEEN" lead-in, each party's name/description, the "AND" connector between parties, and the "collectively the Parties" line.
+- recital: background/preamble prose — a "WHEREAS"/"RECITALS" lead-in and each recital paragraph.
+- agreement_statement: the single line that opens the operative agreement (e.g. "NOW, THEREFORE, IT IS AGREED AS FOLLOWS").
+- drafting_note: an internal counsel note, normally in square brackets (e.g. "[CAM Notes: …]", "[Trilegal Note: …]", "[Notes to Draft: …]"). These are NOT part of the contract text.
+
+Hard constraints:
+- At most ONE block may be "title" — the contract's actual title. If the first block is a bracketed note (e.g. "[Cam Notes: …]") or otherwise obviously not a title, it is NOT the title; label it drafting_note (or its real role) and pick the true title elsewhere, or omit a title entirely if none is present.
+- Recitals stay "recital": every paragraph in a WHEREAS/RECITALS run is recital, not parties.
+- Group the parties: all the party-identifying blocks get "parties", not just the "BETWEEN" line.
+- Bracketed internal notes are "drafting_note", never "title" and never "recital".
+
+Return ONLY this JSON object and nothing else — no prose, no code fences. Include every block's order exactly once:
+{{"blocks": [{{"order": 0, "role": "<one role>"}}, {{"order": 1, "role": "<one role>"}}]}}
+
+Front-matter blocks (order :: text):
+{blocks}

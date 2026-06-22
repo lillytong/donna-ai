@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Any
 
 from backend.models.contract_tree import (
-    FRONT_MATTER_ROLES,
     BlockClassification,
     NodeRow,
     ParsedDocument,
@@ -37,7 +36,11 @@ from backend.models.imports import (
     TrackedChangeReport,
 )
 from backend.services.contract_repo import insert_nodes
-from backend.services.import_.classify import classify, classify_residue
+from backend.services.import_.classify import (
+    classify,
+    classify_frontmatter_region,
+    find_boundary,
+)
 from backend.services.import_.detect import detect_entities
 from backend.services.import_.docx_reader import count_tracked_changes, read_docx
 from backend.services.import_.numbering import derive_numbers
@@ -76,36 +79,51 @@ def _build_stamped(
     return tree
 
 
-async def _apply_residue(
+async def _apply_region(
     doc: ParsedDocument, classifications: dict[int, BlockClassification]
 ) -> None:
-    """Run the Haiku residue pass (DD-54/DD-35) over the ambiguous front-matter
-    the deterministic rules flagged, overwriting role + clearing the
-    classification `uncertain` flag only where the model is confident. Mutates
-    `classifications` in place; blocks the model can't place keep their
-    deterministic role and flag. Deterministic-first: only the uncertain
-    front-matter residue is sent to the LLM."""
-    residue = {
+    """Whole-region front-matter classification pass (DD-54/DD-35). Sends ALL
+    front-matter blocks (everything up to and including the agreement-statement
+    boundary, TOC excluded) together — one Haiku call labels them with the full
+    front matter in view, fixing the per-block failure mode (a second title,
+    grouped recitals mislabeled `parties`). Mutates `classifications` in place.
+
+    Guard (§12 export-exclusion): a deterministic `drafting_note` is never
+    overridden, and a block the *model* newly calls `drafting_note` is set to that
+    role but left `uncertain` for operator confirmation — content is never
+    silently excluded from export on the model's say-so. A failed/empty answer
+    leaves the deterministic roles untouched."""
+    boundary = find_boundary(doc.blocks)
+    if boundary is None:
+        return
+    region = {
         b.order: b.text
         for b in doc.blocks
-        if classifications[b.order].uncertain
-        and classifications[b.order].role in FRONT_MATTER_ROLES
+        if b.order <= boundary and not classifications[b.order].is_toc
     }
-    if not residue:
+    if not region:
         return
-    for idx, role in (await classify_residue(residue)).items():
-        classifications[idx] = classifications[idx].model_copy(
-            update={"role": role, "uncertain": False}
-        )
+    for idx, role in (await classify_frontmatter_region(region)).items():
+        if classifications[idx].role == "drafting_note":
+            continue
+        if role == "drafting_note":
+            classifications[idx] = classifications[idx].model_copy(
+                update={"role": "drafting_note", "uncertain": True}
+            )
+        else:
+            classifications[idx] = classifications[idx].model_copy(
+                update={"role": role, "uncertain": False}
+            )
 
 
 async def _classify_tree(path: str | Path, *, ai: bool) -> ParsedTree:
-    """Deterministic classify (free, instant) then, by default, the Haiku pass
-    over the uncertain front-matter residue (DD-54). The sync parse/build run in a
-    thread executor (async standard); only the residue pass awaits the LLM."""
+    """Deterministic classify (free, instant) then, by default, the single
+    whole-region Haiku pass over the front matter (DD-54). The sync parse/build
+    run in a thread executor (async standard); only the region pass awaits the
+    LLM."""
     doc, classifications = await asyncio.to_thread(_read_and_classify, path)
     if ai:
-        await _apply_residue(doc, classifications)
+        await _apply_region(doc, classifications)
     return await asyncio.to_thread(_build_stamped, doc, classifications)
 
 

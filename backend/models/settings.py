@@ -31,6 +31,7 @@ DealPosition = Literal[
     "disclosing_party",
 ]
 ContractStatus = Literal["drafting", "under negotiation", "signed"]
+ContractOrigin = Literal["us", "our_legal", "counterparty"]
 
 
 class ClientCreate(BaseModel):
@@ -88,6 +89,7 @@ class ContractCreate(BaseModel):
     current_version_label: str | None = None
     style_template_id: str | None = None
     style_config: dict[str, Any] = Field(default_factory=dict)
+    origin: ContractOrigin | None = None
 
 
 class StoredContract(BaseModel):
@@ -100,4 +102,5 @@ class StoredContract(BaseModel):
     current_version_label: str | None = None
     style_template_id: str | None = None
     style_config: dict[str, Any] = Field(default_factory=dict)
+    origin: str | None = None
     created_at: datetime

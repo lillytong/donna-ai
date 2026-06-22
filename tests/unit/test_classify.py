@@ -10,8 +10,14 @@ from backend.models.contract_tree import ExtractedBlock
 from backend.services.import_.classify import classify, find_boundary
 
 
-def _p(order: int, text: str) -> ExtractedBlock:
-    return ExtractedBlock(order=order, kind="paragraph", text=text)
+def _p(order: int, text: str, *, num_id: int | None = None) -> ExtractedBlock:
+    return ExtractedBlock(
+        order=order,
+        kind="paragraph",
+        text=text,
+        has_autonumber=num_id is not None,
+        num_id=num_id,
+    )
 
 
 def _front_matter() -> list[ExtractedBlock]:
@@ -36,7 +42,9 @@ def test_find_boundary_none_when_absent() -> None:
 
 def test_frontmatter_roles_split_at_boundary() -> None:
     roles = {i: c.role for i, c in classify(_front_matter()).items()}
-    assert roles[0] == "title"
+    # The deterministic pass no longer guesses a title (the whole-region AI pass
+    # owns it, DD-54); the un-keyworded first block defaults to recital.
+    assert roles[0] == "recital"
     assert roles[1] == "date"
     assert roles[2] == "parties"
     assert roles[3] == "recital"
@@ -46,32 +54,71 @@ def test_frontmatter_roles_split_at_boundary() -> None:
     assert roles[6] == "clause"
 
 
-def test_first_block_is_title_even_if_keywords_match() -> None:
-    # Title page text could contain a year; the first front-matter block still wins.
+def test_deterministic_does_not_blindly_title_the_first_block() -> None:
+    # A leading bracketed note must NOT become the title (the real-data bug). The
+    # deterministic pass defers titling to the region pass; the note is a
+    # drafting_note.
     blocks = [
-        _p(0, "AGREEMENT DATED 2026"),
-        _p(1, "AGREED AS FOLLOWS:"),
-        _p(2, "1. Scope"),
+        _p(0, "[CAM Notes: confirm stamping before execution]"),
+        _p(1, "TECHNOLOGY LICENSING AGREEMENT"),
+        _p(2, "AGREED AS FOLLOWS:"),
+        _p(3, "1. Scope"),
     ]
-    roles = {i: c.role for i, c in classify(blocks).items()}
-    assert roles[0] == "title"
-    assert roles[1] == "agreement_statement"
-    assert roles[2] == "clause"
+    classified = classify(blocks)
+    assert classified[0].role == "drafting_note"
+    assert classified[1].role != "title"  # left for the region pass / F04
+    assert classified[2].role == "agreement_statement"
+    assert classified[3].role == "clause"
 
 
-def test_signature_block_and_appendix_detected_in_operative_region() -> None:
+def test_signature_block_structural_and_appendix() -> None:
     blocks = [
         _p(0, "TLA"),
         _p(1, "WITNESSETH:"),
-        _p(2, "1. Grant of Licence"),
+        _p(2, "1. Grant of Licence", num_id=7),
         _p(3, "IN WITNESS WHEREOF the parties have executed this Agreement."),
-        _p(4, "SCHEDULE 1 — Territory"),
+        _p(4, "FOR AND ON BEHALF OF ACME CORP"),
+        _p(5, "SCHEDULE 1 — Territory"),
     ]
     roles = {i: c.role for i, c in classify(blocks).items()}
     assert roles[1] == "agreement_statement"  # WITNESSETH is the boundary, not a recital
     assert roles[2] == "clause"
-    assert roles[3] == "signature_block"
-    assert roles[4] == "appendix"
+    assert roles[3] == "signature_block"  # trailing region + signature shape
+    assert roles[4] == "signature_block"  # the run continues
+    assert roles[5] == "appendix"
+
+
+def test_operative_clause_with_executed_keyword_stays_clause() -> None:
+    # The real-data false-positive: operative boilerplate that merely says
+    # "executed"/"signed" must NOT be pushed out of the clause tree (DD-54).
+    blocks = [
+        _p(0, "OFFTAKE AGREEMENT"),
+        _p(1, "AGREED AS FOLLOWS:"),
+        _p(2, "1. This Agreement may be executed in any number of counterparts.", num_id=7),
+        _p(3, "2. Any amendment must be in writing and signed by both Parties.", num_id=7),
+        _p(4, "3. Each Party represents it duly executed and delivered this Agreement.", num_id=7),
+        _p(5, "IN WITNESS WHEREOF the Parties have signed this Agreement."),
+    ]
+    roles = {i: c.role for i, c in classify(blocks).items()}
+    assert roles[2] == "clause"
+    assert roles[3] == "clause"
+    assert roles[4] == "clause"
+    assert roles[5] == "signature_block"  # only the genuine execution line
+
+
+def test_plural_drafting_note_detected() -> None:
+    # "\bNOTE\b" missed the plural; "[CAM Notes: …]" / "[Notes to Draft: …]" must
+    # still be drafting notes.
+    blocks = [
+        _p(0, "AGREEMENT"),
+        _p(1, "AGREED AS FOLLOWS:"),
+        _p(2, "1. Supply", num_id=7),
+        _p(3, "[CAM Notes: align defined terms across the Transaction Documents]"),
+        _p(4, "[Notes to Draft: confirm the volume with counsel before sending]"),
+    ]
+    classified = classify(blocks)
+    assert classified[3].role == "drafting_note"
+    assert classified[4].role == "drafting_note"
 
 
 def test_drafting_note_detected_anywhere_and_kept() -> None:
@@ -122,6 +169,60 @@ def test_no_boundary_falls_back_to_operative_and_flags() -> None:
     classified = classify(blocks)
     assert all(c.role == "clause" for c in classified.values())
     assert all(c.uncertain for c in classified.values())
+
+
+def test_schedule_heading_closes_operative_region() -> None:
+    # The operator-found bug: schedule BODY paragraphs were staying `clause` and
+    # getting numbered ("98.27" under the Schedules). The first schedule heading
+    # CLOSES the operative region — everything after is back-matter, unnumbered.
+    blocks = [
+        _p(0, "OFFTAKE AGREEMENT"),
+        _p(1, "AGREED AS FOLLOWS:"),
+        _p(2, "1. Supply", num_id=7),
+        _p(3, "2. Term", num_id=7),
+        _p(4, "SCHEDULE I"),
+        _p(5, "1. Delivery point", num_id=9),  # numbered in the source, but in a schedule
+        _p(6, "The seller shall deliver to the agreed point.", num_id=9),
+    ]
+    roles = {i: c.role for i, c in classify(blocks).items()}
+    assert roles[2] == "clause"
+    assert roles[3] == "clause"
+    assert roles[4] == "appendix"  # the heading
+    assert roles[5] == "appendix"  # schedule body — NOT a clause, so never numbered
+    assert roles[6] == "appendix"
+
+
+def test_appendix_heading_distinguished_from_clause_opening_with_word() -> None:
+    # A real operative clause that merely OPENS with "Annexure" must not be mistaken
+    # for the schedule heading and close the region (the real TLA false positive).
+    blocks = [
+        _p(0, "LICENCE AGREEMENT"),
+        _p(1, "AGREED AS FOLLOWS:"),
+        _p(2, "1. Grant", num_id=7),
+        _p(3, "2. Annexure A may be updated from time-to-time by the Licensor.", num_id=7),
+        _p(4, "3. Termination", num_id=7),
+        _p(5, "ANNEXURE A"),
+        _p(6, "Mixed-case body text of the annexure follows here.", num_id=9),
+    ]
+    roles = {i: c.role for i, c in classify(blocks).items()}
+    assert roles[3] == "clause"  # opens with "Annexure" but is a running sentence
+    assert roles[4] == "clause"
+    assert roles[5] == "appendix"  # the genuine all-caps heading closes the region
+    assert roles[6] == "appendix"
+
+
+def test_no_schedule_no_signature_operative_runs_to_end() -> None:
+    # Edge: a contract that ends in a cost table — no schedule, no signature block.
+    # No back boundary is forced; the operative region runs to the end.
+    blocks = [
+        _p(0, "SUPPLY AGREEMENT"),
+        _p(1, "AGREED AS FOLLOWS:"),
+        _p(2, "1. Price", num_id=7),
+        _p(3, "2. The price per tonne is set out below.", num_id=7),
+    ]
+    roles = {i: c.role for i, c in classify(blocks).items()}
+    assert roles[2] == "clause"
+    assert roles[3] == "clause"
 
 
 def test_unplaceable_frontmatter_gets_neutral_default_and_uncertain() -> None:

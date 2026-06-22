@@ -7,11 +7,14 @@ on the common shape and *flags* ambiguous nodes (`uncertain`) for review rather
 than guessing silently.
 
 Algorithm — dominant backbone (validated on real contracts). The depth signal is
-Word auto-numbering (`w:numId` + `w:ilvl`), but `ilvl` is a depth only *within*
-one `num_id`, and a document is one dominant body scheme plus many small nested
-side-lists. So:
-  - the **dominant scheme** (the `num_id` with the most nodes) is the backbone;
-    its depth is its `ilvl` normalised to the scheme's minimum level;
+Word auto-numbering (`w:abstractNumId` + `w:ilvl`), but `ilvl` is a depth only
+*within* one numbering definition, and a document is one dominant body scheme plus
+many small nested side-lists. Grouping is by **`abstractNumId`** (the list
+*definition*), not `numId` (the *instance*): Word splits one multilevel outline
+across many numIds sharing an abstractNumId, so numId-grouping shatters the real
+backbone into fragments and lets a deep side-list win dominance (DD-36). So:
+  - the **dominant scheme** (the `abstractNumId` with the most nodes) is the
+    backbone; its depth is its `ilvl` normalised to the scheme's minimum level;
   - **other numbered schemes** (side-lists) hang one level under the current
     open backbone clause, their own `ilvl` adding relative depth;
   - **unnumbered blocks** attach as leaves under the current backbone clause,
@@ -36,16 +39,26 @@ def _looks_like_heading(text: str) -> bool:
     return len(text) <= _HEADING_MAX_LEN and not text.rstrip().endswith((".", ";", ":", ","))
 
 
+def _scheme_key(b: ExtractedBlock) -> int | None:
+    """The numbering-definition key a block groups under: its `abstractNumId` when
+    resolved, else its `numId` (synthetic blocks, or numbering.xml absent). Word
+    splits one outline across numIds sharing an abstractNumId, so the abstract id
+    is the correct backbone key; the numId fallback preserves behaviour where no
+    abstract mapping exists."""
+    return b.abstract_num_id if b.abstract_num_id is not None else b.num_id
+
+
 def build_tree(doc: ParsedDocument) -> ParsedTree:
     numbered = [
         b for b in doc.blocks if b.kind == "paragraph" and b.has_autonumber and b.num_id is not None
     ]
-    counts = Counter(b.num_id for b in numbered)
+    counts = Counter(_scheme_key(b) for b in numbered)
     dominant = counts.most_common(1)[0][0] if counts else None
     scheme_min: dict[int | None, int] = {}
     for b in numbered:
         lvl = b.list_level or 0
-        scheme_min[b.num_id] = min(scheme_min.get(b.num_id, lvl), lvl)
+        key = _scheme_key(b)
+        scheme_min[key] = min(scheme_min.get(key, lvl), lvl)
     dom_min = scheme_min.get(dominant, 0)
 
     nodes: list[TreeNode] = []
@@ -86,15 +99,16 @@ def build_tree(doc: ParsedDocument) -> ParsedTree:
             continue
 
         if b.has_autonumber and b.num_id is not None:
-            if b.num_id == dominant:
+            key = _scheme_key(b)
+            if key == dominant:
                 depth = max(0, (b.list_level or 0) - dom_min)
             else:
                 base = backbone_depth + 1 if backbone_index is not None else 0
-                depth = base + ((b.list_level or 0) - scheme_min[b.num_id])
+                depth = base + ((b.list_level or 0) - scheme_min[key])
             parent = None if depth == 0 else last_at_depth.get(depth - 1)
             idx = add(parent, depth, b, numb=True, unsure=parent is None and depth > 0)
             anchor(depth, idx)
-            if b.num_id == dominant:
+            if key == dominant:
                 backbone_index, backbone_depth = idx, depth
         else:
             unsure = _looks_like_heading(b.text) or backbone_index is None

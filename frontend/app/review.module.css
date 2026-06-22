@@ -219,16 +219,104 @@
   border-color: #2563eb;
   color: #2563eb;
 }
-/* level buttons: equal fixed squares so ◄ and ► are identical in size */
+/* level buttons: a matched pair — identical fixed box, centered symmetric
+   chevrons (‹ ›) in one font so the glyphs render the same size/weight */
 .lvl {
-  width: 30px;
-  min-width: 30px;
-  padding: 3px 0 !important;
-  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  min-width: 28px;
+  height: 26px;
+  padding: 0 !important;
+  color: #374151;
+  background: #fff;
+  border: 1px solid #d4d9e0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: ui-monospace, "SF Mono", "Menlo", monospace;
+  font-size: 16px;
+  line-height: 1;
   font-variant: normal;
+}
+.lvl:hover {
+  border-color: #2563eb;
+  color: #2563eb;
 }
 .ok {
   font-weight: 600;
+}
+
+/* per-node role selector (every region) + bulk role/type pickers */
+.roleSelect,
+.bulkSelect {
+  font: inherit;
+  font-size: 12px;
+  color: #374151;
+  background: #fff;
+  border: 1px solid #d4d9e0;
+  border-radius: 6px;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+.roleSelect:hover,
+.bulkSelect:hover {
+  border-color: #2563eb;
+  color: #2563eb;
+}
+
+/* multi-select checkbox — sits at the head of every row/block */
+.rowCheck {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #2563eb;
+  cursor: pointer;
+}
+
+/* ---- bulk-action bar (appears when ≥1 row is checked) ---- */
+.bulkBar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-shrink: 0;
+  padding: 8px 20px;
+  background: #eef4ff;
+  border-bottom: 1px solid #cfe0ff;
+}
+.bulkCount {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1d4ed8;
+  font-variant-numeric: tabular-nums;
+}
+.bulkActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.bulkLabel {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #6b7280;
+}
+.bulkClear {
+  margin-left: auto;
+  font: inherit;
+  font-size: 12px;
+  color: #374151;
+  background: #fff;
+  border: 1px solid #d4d9e0;
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.bulkClear:hover {
+  border-color: #2563eb;
+  color: #2563eb;
 }
 
 /* ---- role regions (DD-54): front-matter above, back-matter below ---- */
@@ -522,6 +610,40 @@
 /* a revealed "create new" input sits just under its select */
 .field .control + .control {
   margin-top: -2px;
+}
+/* origin selector (DD-55) — segmented choice; selected reuses the ink submit fill */
+.segment {
+  display: flex;
+  gap: 8px;
+}
+.segmentBtn {
+  flex: 1;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  color: #1f2328;
+  background: #fff;
+  border: 1px solid #d4d9e0;
+  border-radius: 8px;
+  padding: 9px 8px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.segmentBtn:hover {
+  border-color: #b3bac4;
+}
+.segmentBtn:focus-visible {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+.segmentSelected {
+  color: #fff;
+  background: #1f2328;
+  border-color: #1f2328;
+}
+.segmentSelected:hover {
+  border-color: #1f2328;
 }
 .ctxSubmit {
   margin-top: 8px;

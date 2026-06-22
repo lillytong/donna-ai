@@ -26,22 +26,35 @@ Role = Literal[
 ]
 
 # The front-matter subset of the taxonomy (DD-54). The deterministic classifier
-# only ever flags front-matter blocks `uncertain`, so the AI residue pass (DD-35)
+# only ever flags front-matter blocks `uncertain`, so the AI region pass (DD-35)
 # is scoped to these roles — never the operative tree.
 FrontMatterRole = Literal["title", "date", "parties", "recital", "agreement_statement"]
 FRONT_MATTER_ROLES: frozenset[str] = frozenset(get_args(FrontMatterRole))
 
+# The role set the whole-region front-matter classifier may return: the
+# front-matter roles plus `drafting_note` (bracketed internal counsel notes that
+# sit inside the front matter, e.g. a "[CAM Notes: …]" run before the title). A
+# model answer outside this set fails validation and the block keeps its
+# deterministic role (DD-54 graceful failure).
+RegionRole = Literal["title", "date", "parties", "recital", "agreement_statement", "drafting_note"]
 
-class RoleSuggestion(BaseModel):
-    """Structured output of the Haiku residue pass for one ambiguous front-matter
-    block (DD-54/DD-35). The role is constrained to the front-matter subset, so a
-    model that returns any other value fails validation and is treated as a parse
-    failure (the block keeps its `uncertain` flag). `confident=False` likewise
-    leaves the block for operator confirmation in F04 — the model never silently
-    overrides a low-confidence call."""
 
-    role: FrontMatterRole
-    confident: bool
+class FrontMatterBlockRole(BaseModel):
+    """One (block order, role) pair from the whole-region front-matter pass."""
+
+    order: int
+    role: RegionRole
+
+
+class FrontMatterRegion(BaseModel):
+    """Structured output of the single whole-region front-matter classification
+    call (DD-54/DD-35): a role for every front-matter block, decided with the full
+    front matter in view (not block-by-block). The caller enforces the
+    at-most-one-`title` invariant and never overrides a deterministic
+    `drafting_note` (the §12 export-exclusion guard). An off-taxonomy or malformed
+    answer fails validation and leaves the deterministic roles in place."""
+
+    blocks: list[FrontMatterBlockRole]
 
 
 class BlockClassification(BaseModel):
@@ -63,10 +76,17 @@ class ExtractedBlock(BaseModel):
     kind: Literal["paragraph", "table"]
     text: str = ""  # paragraph: accept-all-changes text
     rows: list[list[str]] | None = None  # table: structured cells, never flattened
-    has_autonumber: bool = False  # carries Word list numbering (w:numPr)
-    list_level: int | None = None  # w:ilvl value when auto-numbered
-    # w:numId — which numbering scheme; ilvl is a depth only *within* one num_id.
+    has_autonumber: bool = False  # carries Word list numbering (direct or style w:numPr)
+    list_level: int | None = None  # w:ilvl value when auto-numbered (direct or style)
+    # w:numId — the numbering *instance*; ilvl is a depth only *within* one num_id.
     num_id: int | None = None
+    # w:abstractNumId — the numbering *definition* numId resolves to. Word splits one
+    # multilevel outline across many numIds sharing an abstractNumId, so this is the
+    # correct backbone-grouping key (DD-36); None when num_id is None / unresolvable.
+    abstract_num_id: int | None = None
+    # w:outlineLvl (0-8) resolved from the paragraph style; 9 ("body text") -> None.
+    # Section-heading depth signal carried via w:pStyle, invisible to direct numPr.
+    outline_level: int | None = None
     literal_prefix: str | None = None  # typed "3.1"/"(a)" prefix, if any
     in_content_control: bool = False  # block came from inside a w:sdt (DD-45)
 
