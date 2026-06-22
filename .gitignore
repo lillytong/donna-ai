@@ -1,0 +1,26 @@
+# Private working lists — never published (PM / DEV to-do)
+PM_TODO.md
+DEV_TODO.md
+
+# Throwaway spikes — contain real, non-committable contract paths/names
+spikes/
+
+# Backups
+*.bak
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Local Claude Code settings (machine-specific perms)
+.claude/settings.local.json
