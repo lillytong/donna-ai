@@ -86,17 +86,19 @@ CREATE TABLE nodes (
     order_index    INTEGER NOT NULL,                     -- gap-based (OQ-07)
     content_type   TEXT NOT NULL DEFAULT 'prose'
                    CHECK (content_type IN ('prose','table','attachment')),
-    -- Structural role (DD-54). Only `clause` is numbered; front-matter
+    -- Structural role (DD-54, DD-56). Only `clause` is numbered; front-matter
     -- (title/date/parties/recital/agreement_statement), back-matter
-    -- (appendix/signature_block), and the cross-cutting `drafting_note` are
-    -- excluded from the clause tree + numbering. `drafting_note` is also
-    -- export-excluded from any counterparty document (§12). TOC is dropped on
-    -- import, never stored. NOTE: an existing local DB needs these two columns
-    -- added (ALTER TABLE) or a recreate — schema.sql is the source of truth.
+    -- (appendix_title/appendix/signature_block), and the cross-cutting
+    -- `drafting_note` are excluded from the clause tree + numbering.
+    -- `appendix_title` is a schedule/annex/exhibit divider (back-matter level 0,
+    -- DD-56). `drafting_note` is also export-excluded from any counterparty
+    -- document (§12). TOC is dropped on import, never stored. NOTE: an existing
+    -- local DB needs these columns added (ALTER TABLE) or a recreate — schema.sql
+    -- is the source of truth.
     role           TEXT NOT NULL DEFAULT 'clause'
                    CHECK (role IN ('title','date','parties','recital',
                           'agreement_statement','clause','appendix',
-                          'signature_block','drafting_note')),
+                          'appendix_title','signature_block','drafting_note')),
     has_placeholder BOOLEAN NOT NULL DEFAULT false,      -- fill-in blank (F28 alert)
     heading        TEXT,
     body           TEXT,                                 -- prose nodes: semantic markup

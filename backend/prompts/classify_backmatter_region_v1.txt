@@ -1,0 +1,17 @@
+You are classifying the BACK MATTER of a single contract — every block AFTER the operative numbered clauses end (the schedules, annexures, exhibits, appendices, tables, and the signature/execution block). You see the WHOLE back matter at once, in document order, so use the surrounding blocks as context. Assign exactly one category to EVERY block listed.
+
+Categories:
+- title: a section DIVIDER that opens a back-matter part — e.g. "Annexure A", "Annex 1", "Schedule I", "Schedule 2 — Pricing", "Exhibit B", "Appendix III", "Part II", "Table 3 (Cost Build-Up)". Identify these by MEANING and structure (a short heading line that names and starts a distinct back-matter section), NOT by matching a fixed list of words — any designator word with a number/letter that introduces a section is a title.
+- heading: a sub-heading INSIDE a schedule/section — a short label introducing a group of body lines (e.g. "Technical Specifications", "Pricing Mechanism", "Consumables Cost").
+- body: ordinary content — sentences, list items, table rows, definitions, values.
+- signature: execution/signature content — "IN WITNESS WHEREOF", "SIGNED by / for and on behalf of", signatory name/title/date lines, a rule of underscores for a signature.
+
+Guidance:
+- A `title` is the most prominent divider; a `heading` sits one level under it; `body` is everything else. When unsure between heading and body, prefer body (only short, label-like lines are headings).
+- Do NOT rely on specific keywords for titles — a new contract may use "Annex", "Exhibit", "Table", "Part", or a word you have not seen. Judge whether the line FUNCTIONS as a section divider.
+
+Return ONLY this JSON object and nothing else — no prose, no code fences. Include every block's order exactly once:
+{{"blocks": [{{"order": 0, "category": "<one category>"}}, {{"order": 1, "category": "<one category>"}}]}}
+
+Back-matter blocks (order :: text):
+{blocks}

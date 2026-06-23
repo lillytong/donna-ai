@@ -126,6 +126,25 @@
   font-size: 12px;
   color: #aab0b9;
 }
+/* collapse-all / expand-all toggle, pinned to the right of the Structure head */
+.collapseAll {
+  margin-left: auto;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #374151;
+  background: #fff;
+  border: 1px solid #d4d9e0;
+  border-radius: 6px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+.collapseAll:hover {
+  border-color: #2563eb;
+  color: #2563eb;
+}
 
 /* ---- tree rows ---- */
 .rows {
@@ -152,6 +171,45 @@
   color: #b8c0cb;
   font-size: 12px;
 }
+/* collapse twirl + leaf spacer — keep every row's content aligned whether or
+   not it has children */
+.twirl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: #6b7280;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.twirl:hover {
+  color: #2563eb;
+  background: #e6efff;
+}
+.twirlSpace {
+  width: 24px;
+  flex-shrink: 0;
+}
+/* a heading-shaped node reads as a section title in the tree */
+.headingText {
+  font-weight: 650;
+  color: #1f2328;
+}
+/* an appendix/schedule divider title — the most prominent back-matter level */
+.appendixTitle {
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #1f2328;
+}
 .num {
   flex-shrink: 0;
   min-width: 52px;
@@ -175,6 +233,11 @@
   background: #eef1f4;
   border-radius: 4px;
   padding: 2px 6px;
+}
+/* the 'Appendix title' badge stands out from the grey Heading/Body badges */
+.badgeTitle {
+  color: #1d4ed8;
+  background: #e6efff;
 }
 
 .uncertain {
@@ -265,17 +328,7 @@
   color: #2563eb;
 }
 
-/* multi-select checkbox — sits at the head of every row/block */
-.rowCheck {
-  flex-shrink: 0;
-  width: 14px;
-  height: 14px;
-  margin: 0;
-  accent-color: #2563eb;
-  cursor: pointer;
-}
-
-/* ---- bulk-action bar (appears when ≥1 row is checked) ---- */
+/* ---- bulk-action bar (appears when ≥2 rows are selected) ---- */
 .bulkBar {
   display: flex;
   align-items: center;
@@ -333,6 +386,17 @@
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: #8a929c;
+  cursor: pointer;
+}
+.regionHead:hover {
+  color: #2563eb;
+}
+.regionTwirl {
+  font-size: 13px;
+  color: #6b7280;
+}
+.regionHead:hover .regionTwirl {
+  color: #2563eb;
 }
 .regionHint {
   font-weight: 400;
@@ -471,6 +535,18 @@
   font-size: 11.5px;
   color: #aab0b9;
   padding-top: 2px;
+}
+/* source mirrors the tree: headings bold so a mis-tagged heading is obvious at a
+   glance, and depth indent (applied inline) so a mis-leveled clause stands out */
+.sHeadingText {
+  font-weight: 700;
+  color: #1f2328;
+}
+/* style-guide emphasis in the rendered source: quoted defined terms everywhere,
+   ALL-CAPS connectives/party names in front/back matter */
+.sBold {
+  font-weight: 700;
+  color: #1f2328;
 }
 
 /* ---- upload / empty state / banner ---- */

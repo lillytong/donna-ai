@@ -55,6 +55,8 @@ import re
 from pydantic import ValidationError
 
 from backend.models.contract_tree import (
+    BackMatterCategory,
+    BackMatterRegion,
     BlockClassification,
     ExtractedBlock,
     FrontMatterRegion,
@@ -328,3 +330,36 @@ async def classify_frontmatter_region(blocks_by_index: dict[int, str]) -> dict[i
             title_taken = True
         resolved[item.order] = item.role
     return resolved
+
+
+async def classify_backmatter_region(
+    blocks_by_index: dict[int, str],
+) -> dict[int, BackMatterCategory]:
+    """Single whole-region back-matter classification call (DD-56/DD-35).
+
+    `blocks_by_index` is the entire back matter (every block past the operative
+    region — schedules/annexures/exhibits + the signature block, TOC excluded),
+    keyed by block.order. One low-tier (Haiku) call labels each block as
+    title / heading / body / signature, deciding section dividers ("Annexure A",
+    "Exhibit 2", "Table 3") SEMANTICALLY rather than by a hardcoded keyword list,
+    so a never-before-seen designator is still recognized. A malformed/off-taxonomy
+    answer fails validation → empty dict, and every block keeps its deterministic
+    role (graceful failure, never raises)."""
+    if not blocks_by_index:
+        return {}
+    listing = "\n".join(f"{i} :: {blocks_by_index[i]}" for i in sorted(blocks_by_index))
+    prompt = render("classify_backmatter_region_v1.txt", blocks=listing)
+    raw = await complete(
+        tier="low",
+        messages=[{"role": "user", "content": prompt}],
+        caller="import.classify_backmatter_region",
+    )
+    try:
+        region = BackMatterRegion.model_validate_json(_extract_json(raw))
+    except ValidationError:
+        return {}
+    return {
+        item.order: item.category
+        for item in region.blocks
+        if item.order in blocks_by_index
+    }

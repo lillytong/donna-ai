@@ -14,6 +14,7 @@ export type Role =
   | "agreement_statement"
   | "clause"
   | "appendix"
+  | "appendix_title"
   | "signature_block"
   | "drafting_note";
 

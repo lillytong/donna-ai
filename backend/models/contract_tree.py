@@ -21,6 +21,7 @@ Role = Literal[
     "agreement_statement",
     "clause",
     "appendix",
+    "appendix_title",  # a schedule/annex/exhibit divider title — back-matter level 0 (DD-56)
     "signature_block",
     "drafting_note",
 ]
@@ -38,12 +39,36 @@ FRONT_MATTER_ROLES: frozenset[str] = frozenset(get_args(FrontMatterRole))
 # deterministic role (DD-54 graceful failure).
 RegionRole = Literal["title", "date", "parties", "recital", "agreement_statement", "drafting_note"]
 
+# The semantic category the whole-region BACK-matter pass assigns each block
+# (DD-56). `title` = a schedule/annex/exhibit/table divider, identified by meaning
+# not keyword; `heading` = a sub-heading inside a schedule; `body` = schedule
+# content; `signature` = execution/signature content. Mapped to (role, force_kind)
+# by the pipeline. An off-taxonomy answer fails validation → deterministic roles
+# stay (graceful failure).
+BackMatterCategory = Literal["title", "heading", "body", "signature"]
+
 
 class FrontMatterBlockRole(BaseModel):
     """One (block order, role) pair from the whole-region front-matter pass."""
 
     order: int
     role: RegionRole
+
+
+class BackMatterBlockRole(BaseModel):
+    """One (block order, category) pair from the whole-region back-matter pass."""
+
+    order: int
+    category: BackMatterCategory
+
+
+class BackMatterRegion(BaseModel):
+    """Structured output of the single whole-region back-matter classification call
+    (DD-56): a semantic category for every back-matter block, decided with the
+    whole back matter in view. Mirrors `FrontMatterRegion`. A malformed/off-taxonomy
+    answer fails validation and the deterministic roles are kept."""
+
+    blocks: list[BackMatterBlockRole]
 
 
 class FrontMatterRegion(BaseModel):
@@ -67,6 +92,10 @@ class BlockClassification(BaseModel):
     has_placeholder: bool = False
     uncertain: bool = False
     is_toc: bool = False
+    # When set (by the back-matter AI pass, DD-56), forces the heading/body split
+    # at persist time instead of the shape heuristic — so an AI-categorized
+    # appendix heading/body lands in the right field regardless of its wording.
+    force_kind: Literal["heading", "body"] | None = None
 
 
 class ExtractedBlock(BaseModel):
@@ -125,6 +154,7 @@ class TreeNode(BaseModel):
     uncertain: bool = False
     role: Role = "clause"  # DD-54; set by the classifier, default is operative
     has_placeholder: bool = False
+    force_kind: Literal["heading", "body"] | None = None  # DD-56 (back-matter AI split)
 
 
 class ParsedTree(BaseModel):

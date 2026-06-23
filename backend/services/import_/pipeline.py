@@ -38,6 +38,7 @@ from backend.models.imports import (
 from backend.services.contract_repo import insert_nodes
 from backend.services.import_.classify import (
     classify,
+    classify_backmatter_region,
     classify_frontmatter_region,
     find_boundary,
 )
@@ -46,6 +47,17 @@ from backend.services.import_.docx_reader import count_tracked_changes, read_doc
 from backend.services.import_.numbering import derive_numbers
 from backend.services.import_.persist import tree_to_node_rows
 from backend.services.import_.tree_builder import build_tree
+
+# Back-matter AI category (DD-56) → (role, force_kind). A `title` becomes the new
+# `appendix_title` role (level-0 divider); heading/body stay `appendix` but force
+# the persist heading/body split; signature content becomes `signature_block`.
+_BACKMATTER_MAP: dict[str, tuple[str, str | None]] = {
+    "title": ("appendix_title", "heading"),
+    "heading": ("appendix", "heading"),
+    "body": ("appendix", "body"),
+    "signature": ("signature_block", None),
+}
+_BACK_MATTER_ROLES = frozenset({"appendix", "appendix_title", "signature_block"})
 
 
 def _read_and_classify(
@@ -76,6 +88,7 @@ def _build_stamped(
         n.role = c.role
         n.has_placeholder = c.has_placeholder
         n.uncertain = n.uncertain or c.uncertain
+        n.force_kind = c.force_kind
     return tree
 
 
@@ -116,14 +129,40 @@ async def _apply_region(
             )
 
 
+async def _apply_backmatter_region(
+    doc: ParsedDocument, classifications: dict[int, BlockClassification]
+) -> None:
+    """Whole-region back-matter categorization pass (DD-56/DD-35). Sends ALL
+    back-matter blocks (everything the deterministic pass placed as appendix /
+    signature_block, TOC excluded) to one Haiku call that labels each
+    title / heading / body / signature SEMANTICALLY (no keyword list). Mutates
+    `classifications` in place: a `title` becomes the `appendix_title` role; the
+    rest map via `_BACKMATTER_MAP`, and `force_kind` carries the heading/body
+    decision to persist. A failed/empty answer leaves the deterministic roles."""
+    region = {
+        b.order: b.text
+        for b in doc.blocks
+        if classifications[b.order].role in _BACK_MATTER_ROLES
+        and not classifications[b.order].is_toc
+    }
+    if not region:
+        return
+    for idx, category in (await classify_backmatter_region(region)).items():
+        role, force_kind = _BACKMATTER_MAP[category]
+        classifications[idx] = classifications[idx].model_copy(
+            update={"role": role, "force_kind": force_kind, "uncertain": False}
+        )
+
+
 async def _classify_tree(path: str | Path, *, ai: bool) -> ParsedTree:
-    """Deterministic classify (free, instant) then, by default, the single
-    whole-region Haiku pass over the front matter (DD-54). The sync parse/build
-    run in a thread executor (async standard); only the region pass awaits the
-    LLM."""
+    """Deterministic classify (free, instant) then, by default, the two
+    whole-region Haiku passes — front matter (DD-54) and back matter (DD-56). The
+    sync parse/build run in a thread executor (async standard); only the region
+    passes await the LLM."""
     doc, classifications = await asyncio.to_thread(_read_and_classify, path)
     if ai:
         await _apply_region(doc, classifications)
+        await _apply_backmatter_region(doc, classifications)
     return await asyncio.to_thread(_build_stamped, doc, classifications)
 
 

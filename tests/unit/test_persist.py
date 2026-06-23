@@ -14,6 +14,7 @@ def _node(
     kind: str = "prose",
     text: str = "",
     rows: list[list[str]] | None = None,
+    force_kind: str | None = None,
 ) -> TreeNode:
     return TreeNode(
         index=index,
@@ -23,6 +24,7 @@ def _node(
         kind=kind,
         text=text,
         rows=rows,
+        force_kind=force_kind,  # type: ignore[arg-type]
     )
 
 
@@ -47,3 +49,27 @@ def test_heading_body_split_and_table_and_parents() -> None:
     assert table.content_type == "table"
     assert table.table_data == [["Param", "Value"], ["Fee", "5%"]]
     assert table.plain_text == "Param | Value | Fee | 5%"  # derived projection
+
+
+def test_force_kind_overrides_shape_heuristic() -> None:
+    """DD-56: the back-matter AI pass sets force_kind, which decides the heading/body
+    split regardless of the text's shape — so a long heading-categorized line lands in
+    `heading`, and a short body-categorized line lands in `body`."""
+    tree = ParsedTree(
+        nodes=[
+            # Long, sentence-shaped text the heuristic would call body — forced heading.
+            _node(
+                0,
+                None,
+                0,
+                text="The following variables are taken into account for the calculation.",
+                force_kind="heading",
+            ),
+            # Short, heading-shaped text the heuristic would call heading — forced body.
+            _node(1, 0, 1, text="Steam", force_kind="body"),
+        ]
+    )
+    rows = tree_to_node_rows(tree)
+
+    assert rows[0].heading is not None and rows[0].body is None  # forced heading
+    assert rows[1].body == "Steam" and rows[1].heading is None  # forced body

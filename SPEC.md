@@ -103,7 +103,7 @@ Priority: P0 (MVP) · P1 · P2. Phase maps to the build plan (§13).
 | F03b | Counterparty revision import (incoming .docx → change list) | P0 | 2 | planned | Triggered from cockpit; diffs against last snapshot; two parse paths (tracked changes vs. clean diff); see §11 |
 | F03c | Counterparty change review — accept/reject/modify + Donna counter-language | P0 | 2 | planned | Inline tracked-change rendering; Donna drafts exact counter; four actions: Accept theirs / Use Donna's counter / Edit Donna's counter / Keep original; DD-26, DD-27 |
 | F03d | Negotiation decision logging (learning infrastructure) | P0 | 2 | planned | Every accept/reject/modify decision logged with rich context; feeds Phase 2 RAG and v2 pattern learning; DD-29 |
-| F04 | Import-review UI — first import (verify/correct parse before commit) | P0 | 0 | in progress | **Function-first UI built** (Next.js, two-panel tree+source, confidence flags, triage counter, commit gating, live backend) on real parses. **Role-region rendering landed** (DD-54: front-/back-matter as labeled regions, drafting-notes flagged, non-clause rows unnumbered). **Correction tools landed:** inline level/type, **per-node role edit that re-buckets the node live**, and **multi-select bulk shift (level/type/role)**; uncertain nodes highlighted; never trust parse blindly. Remaining: visual-identity pass; reparent/move/split/merge; content-type round-trip to commit |
+| F04 | Import-review UI — first import (verify/correct parse before commit) | P0 | 0 | in progress | **Function-first UI built** (Next.js, two-panel tree+source, confidence flags, triage counter, commit gating, live backend) on real parses. **Role-region rendering landed** (DD-54: front-/back-matter as labeled regions, drafting-notes flagged, non-clause rows unnumbered). **Correction tools landed:** inline level/type, **per-node role edit that re-buckets the node live**, and **multi-select bulk shift (level/type/role)**; uncertain nodes highlighted; never trust parse blindly. **UX pass landed (2026-06-23, verified live on real OA):** appendix renders with section/body styling (bold heading vs body + indent); expand/collapse on any node with children; click=navigate (scrolls source) / shift-click=range / ⌘-click=toggle selection (checkboxes removed); source panel mirrors structure (bold headings + depth indent); collapsible front/back-matter regions; SOURCE style-guide emphasis (bold ALL-CAPS in pre/back-matter, bold quoted defined terms); caption parent clauses auto-default to numbered sub-headings (bold, keep number); **back-matter AI categorization** (DD-56: semantic title/heading/body via a Haiku whole-region pass, no keyword list; `appendix_title` divider role + default title>heading>body leveling; SOURCE gutter shows the category); **content-type (Heading/Body/Table) corrections now round-trip to commit** (verified against the DB). Remaining: visual-identity pass; reparent/move/split/merge |
 | F05 | Clause tree browser (collapsible, issue badges, term hover) | P0 | 1 | planned | Driven by DB hierarchy |
 | F06 | Issue creation (select node → operator writes summary → open issue) | P0 | 1 | planned | Operator writes own title + summary; Donna's analysis loads when issue is opened from the list, not at creation |
 | F07 | Issue status tracking | P0 | 1 | planned | open / agreed / deferred / kicked |
@@ -132,6 +132,7 @@ Priority: P0 (MVP) · P1 · P2. Phase maps to the build plan (§13).
 | F27 | Version pointers + lineage view (where-are-we tracking) | P1 | 3 | planned | 4 named snapshot pointers (DD-48); per-source diff baselines; v1→vN lineage view; recipient-driven export sets pointers |
 | F28 | First-pass auto-issue detection on import | P1 | 2+ | planned | On import, Donna drafts a ranked issue list (red flags, below-market terms, missing provisions, placeholders, missing exhibits, broken cross-refs) grounded in the F29 knowledge layer + deal `position`. Rides the issue engine (`initiator: donna`); **operator-confirmed, never authoritative, never auto-exported** (correctness, §2.4 — F1 ~0.62). Source-parameterized ranking (DD-50). Sequenced **after** the bulk-surface mechanism (DD-47) so the list is ranked, not a flood. Keep/dismiss logged via F03d/DD-29 from day one. DD-50 |
 | F29 | Knowledge layer — market benchmarks + risk taxonomy (reference data) | P1 | 2 | planned | Curated, static seed data: CUAD risk taxonomy (whole) + market-benchmark table + red-flag taxonomy + per-type checklists (Licence / Offtake / JV built fresh, NDA ported; attach to F01b contract types). Derived from CUAD/public sources — **not** a live legal database. Grounds F28 and turns many F11 live-research calls into local lookups. DD-49 |
+| F30 | Negotiation insight distillation | P1 | 2+ | planned | After each brainstorm session closes, Donna runs an extraction pass and synthesizes 0–N compact pattern records — not the raw conversation. Merge-first: checks existing patterns before creating; updates evidence count + refines wording on a match. Consolidation pass triggered after deal close or N new patterns added: redundant patterns merged, low-confidence patterns past TTL (3 deals unreinforced) pruned, contradictions surfaced as flags not silent overwrites. Patterns retrieved selectively alongside tiered context when Donna opens an issue. Converges to ~100–200 records across all subjects; never grows unbounded. DD-55 |
 | — | Call mode / negotiation cockpit | — | — | merged | Folded into edit mode (DD-08) |
 | — | Separate appendices entity | — | — | dropped | Appendices are branches of the node tree (DD-05) |
 | — | Multi-user / team collaboration | — | — | out of scope v1 | Permissions designed for it (§4); not built |
@@ -163,7 +164,7 @@ Entities and relationships in plain English. Full SQL lives in `db/schema.sql`.
 - id (primary key), contract_id, parent_id
 - **order_index** (integer — position among siblings; gap-based allocation per OQ-07 resolved; unique within parent_id + contract_id)
 - content_type: `prose` | `table` | `attachment`
-- **role**: the node's structural role (DD-54), default `clause`. **Front-matter:** `title` | `date` | `parties` | `recital` | `agreement_statement`. **Body:** `clause` (the only numbered region). **Back-matter:** `appendix` (DD-05) | `signature_block`. **Cross-cutting:** `drafting_note` (internal counsel/author commentary — kept but **excluded from every counterparty export**, §12). Front-matter + `signature_block` + `drafting_note` are excluded from the clause tree and numbering; clause numbering re-derives from the first `clause`. The **table of contents** is detected and dropped on import (regenerated on export, §10) — never stored, not a role.
+- **role**: the node's structural role (DD-54, DD-56), default `clause`. **Front-matter:** `title` | `date` | `parties` | `recital` | `agreement_statement`. **Body:** `clause` (the only numbered region). **Back-matter:** `appendix_title` (a schedule/annex/exhibit divider, level 0 — DD-56) | `appendix` (DD-05, the schedule heading/body content) | `signature_block`. **Cross-cutting:** `drafting_note` (internal counsel/author commentary — kept but **excluded from every counterparty export**, §12). Front-matter + back-matter + `drafting_note` are excluded from the clause tree and numbering; clause numbering re-derives from the first `clause`. Back-matter is categorized by an AI whole-region pass (DD-56), semantic not keyword-based, into title/heading/body; operator-correctable, persists. The **table of contents** is detected and dropped on import (regenerated on export, §10) — never stored, not a role.
 - **has_placeholder** (boolean) — node contains a fill-in blank (`[insert …]`, `___`, `[amount]`); drives a pre-signing "incomplete field" alert (ties F28). An inline marker, not a role.
 - heading, body (prose); **table_data** (JSONB | null — table nodes only; `[[cell, …], …]` rows, never flattened to a string)
 - **plain_text** (derived projection — regenerated from body on save; used for AI context, embeddings, search, diff display; never the source of truth)
@@ -269,6 +270,8 @@ Embeddings fire after the operator has confirmed the correct tree structure. Nev
 
 **comment_embeddings** — pgvector embedding per issue comment (free-text prose). Powers cross-deal pattern queries ("what was our reasoning on IP across all deals?"). Built in **Phase 2+** (not Phase 2) — deferred until comment prose volume exceeds ~100K tokens (~3–4 active deals with multiple rounds). Fields: comment_id, embedding.
 
+**negotiation_patterns** — compact extracted insights distilled from brainstorm sessions and accumulated decision history. Not conversation transcripts — synthesized principles that compound over time. Fields: id, pattern_type (`operator_style` | `counterparty_behavior` | `deal_type_norm` | `legal_team_tendency`), subject_type (`operator` | `client` | `deal_type` | `contract_type`), subject_id (nullable — FK to `clients` or `contract_types`; null for operator-level patterns), insight (text — 1–3 sentence compact principle, not a transcript), confidence (`low` | `medium` | `high`), evidence_count (integer — reinforcement events that support this pattern), last_reinforced_at (timestamp — used for TTL pruning: low-confidence patterns unreinforced across 3 deals are pruned), source_issue_ids (JSONB — issue IDs that contributed), created_at, updated_at.
+
 **donna_conversations** — one per contract; holds the persistent contract-level Donna Q&A thread state. Fields: id, contract_id, running_summary (text — rolling summary of turns older than the live window; updated incrementally by Donna, never the full source of truth), updated_at. (DD-40)
 
 **donna_messages** — append-only turns in a contract's Donna conversation. Fields: id, conversation_id, role (`user` | `assistant`), content, created_at. The full thread is always persisted; only the last 10 turns + `running_summary` are injected into Donna's context per call (DD-40).
@@ -293,6 +296,8 @@ nodes  ──< node_embeddings
 nodes  >── cross_references ──< nodes        (may cross contracts within a deal)
 issue_comments ──< comment_embeddings
 contracts ──< donna_conversations ──< donna_messages
+negotiation_patterns  (operator-level: subject_id null; client-level: subject_id → clients;
+                       deal-type/contract-type: subject_id → contract_types)
 ```
 
 ---
@@ -305,6 +310,7 @@ Donna is three **surfaces** over one retrieval spine, evolving across phases.
 - **Issue-scoped assistant** (F11) — works *inside* an open issue with that node's text + position ledger + its negotiation history. Brainstorms options, drafts replacement language, weighs trade-offs.
 - **Counterparty revision reviewer** (F03b/F03c) — for every counterparty-proposed change: produces a verdict (accept/counter/keep), one-line reasoning, and exact counter-language ready to use. Operator judges; Donna drafts. Gets smarter over time as decisions accumulate (DD-29).
 - **Knowledge base** (v2+) — cross-client, cross-deal pattern queries. "What terms have we typically accepted on IP protection?" "How did Client B's position on exclusivity compare to Client A's?" Powered by semantic search over accumulated negotiation history.
+- **Insight distillation** (F30) — after each brainstorm session closes, Donna runs an extraction pass over the conversation and synthesizes 0–N compact pattern records into `negotiation_patterns`. The raw conversation is still discarded (DD-42/DD-55); only extracted principles persist. Patterns cover four types: operator negotiating style, counterparty behavioral tendencies, deal-type norms, legal-team tendencies. Merge-first: Donna checks existing patterns before creating — a matching pattern gets its evidence count incremented and wording refined; only genuinely novel insights create new records. Consolidation (triggered on deal close or after 5 new patterns): redundant patterns merged, low-confidence patterns unreinforced across 3 deals pruned, contradictions surfaced as flags not silent overwrites. The store converges to ~100–200 compact records — never grows unbounded.
 
 ### Negotiation style learning (DD-29)
 
@@ -330,6 +336,7 @@ Context is layered, not flat. Each tier is populated by DB query in Phase 2, wit
 5. **Contract-level summary** — agreed points + open issues across the contract. DB query, aggregated.
 6. **Deal-level summary** — commercial terms agreed across all contracts in the deal. DB query on deal_parameters + resolved issues.
 7. **Full negotiation history** — only on explicit request. Phase 2: full comment thread injected. Phase 2+: semantic search over `comment_embeddings` surfaces most relevant moments.
+8. **Negotiation pattern layer** (Phase 2+, F30) — always-on alongside tiers 1–7; retrieved selectively from `negotiation_patterns`. Always injected: operator-style patterns (how the operator negotiates, what they consistently accept/reject). Injected when same client: counterparty behavioral patterns for that client (what they push on, where they concede). Injected when same contract type: deal-type norms (typical market positions for this agreement type). Injected when legal team is the revision source: legal-team tendency patterns. Compact records — does not materially increase context size.
 
 Negotiation history is retrieved **only for contested nodes** (DD-07). A clean, never-contested node pulls no history.
 
@@ -338,8 +345,8 @@ Negotiation history is retrieved **only for contested nodes** (DD-07). A clean, 
 | Phase | Tiers active | What Donna can answer | How |
 |---|---|---|---|
 | Phase 2 | Tiers 1–6 | "What's our position on X?" "What's agreed?" "What's the royalty %?" "What does clause Y mean for clause X?" | Structured DB queries (tiers 1, 4, 5, 6) + explicit reference resolution (tier 2) + intra-contract semantic search on `node_embeddings` (tier 3) |
-| Phase 2+ | Tiers 1–7 | "What did the counterparty say about exclusivity?" "What was our reasoning on IP?" | Adds `comment_embeddings` semantic search for negotiation history (tier 7) |
-| v2 knowledge base | Tiers 1–7 + cross-client | "What terms do we typically accept on recall?" "How did the counterparty compare on X across deals?" | Cross-client semantic search over all accumulated history |
+| Phase 2+ | Tiers 1–8 | "What did the counterparty say about exclusivity?" "What was our reasoning on IP?" "What does this counterparty typically do on IP?" | Adds `comment_embeddings` semantic search for negotiation history (tier 7) + negotiation pattern layer (tier 8) |
+| v2 knowledge base | Tiers 1–8 + cross-client | "What terms do we typically accept on recall?" "How did the counterparty compare on X across deals?" | Cross-client semantic search over all accumulated history |
 
 **pgvector build timing — two distinct triggers:**
 - **`node_embeddings` → Phase 2** (same phase as Donna's intelligence): needed for intra-contract implicit semantic search. Donna cannot discover implicit clause relationships without embeddings, regardless of contract volume. A single contract is sufficient to need this.
@@ -372,7 +379,7 @@ Donna's four non-negotiable rules — her character:
 
 ## 8. Architecture & Design Decisions
 
-All design decision records (DD-01 … DD-54) live in **[`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md)** — see its index for the full list. Inline `DD-NN` references throughout this spec resolve there.
+All design decision records (DD-01 … DD-55) live in **[`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md)** — see its index for the full list. Inline `DD-NN` references throughout this spec resolve there.
 
 ---
 

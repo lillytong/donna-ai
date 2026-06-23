@@ -35,7 +35,13 @@ def tree_to_node_rows(tree: ParsedTree) -> list[NodeRow]:
                 )
             )
         else:
-            is_heading = _looks_like_heading(n.text)
+            # force_kind (DD-56) overrides the shape heuristic — an AI-categorized
+            # back-matter heading/body lands in the right field regardless of wording.
+            is_heading = (
+                n.force_kind == "heading"
+                if n.force_kind is not None
+                else _looks_like_heading(n.text)
+            )
             rows.append(
                 NodeRow(
                     index=n.index,
