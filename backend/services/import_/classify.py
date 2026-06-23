@@ -192,12 +192,28 @@ def _is_appendix_heading(text: str) -> bool:
     return bool(letters) and not any(c.islower() for c in letters)
 
 
+def is_appendix_title(text: str) -> bool:
+    """True iff `text` is a high-confidence schedule/appendix TITLE divider — a
+    known designator (APPENDIX / SCHEDULE / ANNEX(URE) / EXHIBIT) followed by an
+    optional roman/letter/number designator and a separator or end-of-line
+    ("Schedule I", "ANNEXURE A", "Schedule 2 — Pricing"). DD-58: these are
+    classified deterministically as `appendix_title` rather than left to the AI
+    pass, which was inconsistent on the obvious ones; unseen designators ("Table
+    3", "Part B") still fall through to the Haiku pass, which can promote them
+    semantically (DD-56). Strict by design — the all-uppercase glued-heading
+    fallback in `_is_appendix_heading` is NOT a title (it stays `appendix`)."""
+    return bool(_APPENDIX_HEADING.match(text))
+
+
 def _classify_back_matter(text: str, in_signature: bool) -> tuple[Role, bool]:
     """Role for a block past the operative→back-matter boundary: schedule/appendix
-    content vs execution content, never `clause`. A schedule heading is `appendix`
-    and ends any signature run; a signature-shape line opens one; otherwise the
-    block carries the current state (a schedule body → `appendix`, an execution
-    detail line → `signature_block`). DD-54 back-matter is never numbered."""
+    content vs execution content, never `clause`. A known-designator title divider
+    is `appendix_title` (DD-58); any other schedule heading is `appendix`; either
+    ends a signature run. A signature-shape line opens one; otherwise the block
+    carries the current state (a schedule body → `appendix`, an execution detail
+    line → `signature_block`). DD-54 back-matter is never numbered."""
+    if is_appendix_title(text):
+        return "appendix_title", False
     if _is_appendix_heading(text):
         return "appendix", False
     if _SIGNATURE_SHAPE.search(text):
@@ -287,7 +303,10 @@ def classify(blocks: list[ExtractedBlock]) -> dict[int, BlockClassification]:
             role, uncertain = "clause", boundary is None
 
         result[idx] = BlockClassification(
-            role=role, has_placeholder=placeholder, uncertain=uncertain
+            role=role,
+            has_placeholder=placeholder,
+            uncertain=uncertain,
+            force_kind="heading" if role == "appendix_title" else None,
         )
 
     return result
@@ -358,8 +377,4 @@ async def classify_backmatter_region(
         region = BackMatterRegion.model_validate_json(_extract_json(raw))
     except ValidationError:
         return {}
-    return {
-        item.order: item.category
-        for item in region.blocks
-        if item.order in blocks_by_index
-    }
+    return {item.order: item.category for item in region.blocks if item.order in blocks_by_index}

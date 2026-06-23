@@ -357,3 +357,20 @@ CREATE TABLE audit_log (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX audit_log_entity_idx ON audit_log (entity_type, entity_id);
+
+-- ============================================================================
+-- Migration bookkeeping (DD-57). This file is the canonical fresh-install
+-- snapshot; db/migrations/*.sql evolve an existing DB without drop-rebuild.
+-- A fresh DB built from this file is stamped with the baseline below, so the
+-- runner (python -m backend.migrate) treats it as already current and applies
+-- only deltas authored afterward. When you add db/migrations/NNNN_*.sql: fold
+-- the same DDL into this file AND append ('NNNN_...') to the seed block below.
+-- ============================================================================
+
+CREATE TABLE schema_migrations (
+    version    TEXT PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES
+    ('0000_baseline');

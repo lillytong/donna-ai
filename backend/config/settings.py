@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     database_url: str
     anthropic_api_key: str = ""
     redline_author: str = Field(default="", alias="DONNA_REDLINE_AUTHOR")
+    operator_actor: str = "operator"
     log_level: str = "INFO"
 
     models: ModelTiers = Field(default_factory=ModelTiers)

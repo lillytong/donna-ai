@@ -41,6 +41,13 @@ class ClientCreate(BaseModel):
     notes: str | None = None
 
 
+class ClientUpdate(BaseModel):
+    name: str | None = None
+    relationship_type: RelationshipType | None = None
+    status: ClientStatus | None = None
+    notes: str | None = None
+
+
 class StoredClient(BaseModel):
     id: str
     name: str
@@ -58,6 +65,13 @@ class DealCreate(BaseModel):
     position: DealPosition | None = None
 
 
+class DealUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    status: DealStatus | None = None
+    position: DealPosition | None = None
+
+
 class StoredDeal(BaseModel):
     id: str
     client_id: str
@@ -71,6 +85,11 @@ class StoredDeal(BaseModel):
 class ContractTypeCreate(BaseModel):
     name: str
     is_default: bool = False
+
+
+class ContractTypeUpdate(BaseModel):
+    name: str | None = None
+    is_default: bool | None = None
 
 
 class StoredContractType(BaseModel):
@@ -92,6 +111,13 @@ class ContractCreate(BaseModel):
     origin: ContractOrigin | None = None
 
 
+class ContractUpdate(BaseModel):
+    name: str | None = None
+    contract_type_id: str | None = None
+    status: ContractStatus | None = None
+    origin: ContractOrigin | None = None
+
+
 class StoredContract(BaseModel):
     id: str
     client_id: str
@@ -104,3 +130,12 @@ class StoredContract(BaseModel):
     style_config: dict[str, Any] = Field(default_factory=dict)
     origin: str | None = None
     created_at: datetime
+
+
+# A contract owns its content, so deleting it cascades through the rows beneath
+# it; these are the per-table counts of what was removed, recorded in the audit
+# payload (the delete itself is one atomic transaction).
+class ContractDeletion(BaseModel):
+    nodes: int
+    issues: int
+    issue_comments: int

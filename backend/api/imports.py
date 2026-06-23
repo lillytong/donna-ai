@@ -14,13 +14,16 @@ import tempfile
 
 from fastapi import APIRouter, HTTPException, Request
 
+from backend.config.settings import get_settings
 from backend.db import acquire
+from backend.models.audit import EVENT_COMMITTED, AuditEvent
 from backend.models.imports import (
     CommitRequest,
     ContractTreeResponse,
     ImportResult,
     PreviewResponse,
 )
+from backend.services.audit_repo import record_event
 from backend.services.contract_repo import fetch_nodes, insert_nodes
 from backend.services.import_.pipeline import import_docx, preview_docx
 
@@ -65,6 +68,16 @@ async def preview_import(request: Request) -> PreviewResponse:
 async def commit_contract(contract_id: str, body: CommitRequest) -> ImportResult:
     async with acquire() as conn, conn.transaction():
         await insert_nodes(conn, contract_id, body.nodes)
+        await record_event(
+            conn,
+            AuditEvent(
+                event_type=EVENT_COMMITTED,
+                entity_type="contract",
+                entity_id=contract_id,
+                actor=get_settings().operator_actor,
+                payload={"node_count": len(body.nodes)},
+            ),
+        )
     return ImportResult(
         contract_id=contract_id,
         node_count=len(body.nodes),

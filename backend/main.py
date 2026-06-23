@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.api import health, imports, settings
+from backend.api import audit, health, imports, issues, settings
 from backend.db import close_pool, open_pool
 
 
@@ -30,3 +30,5 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(imports.router)
 app.include_router(settings.router)
+app.include_router(issues.router)
+app.include_router(audit.router)

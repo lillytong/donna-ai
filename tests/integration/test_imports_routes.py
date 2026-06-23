@@ -8,10 +8,12 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import Any
 
 from backend.api import imports
 from backend.main import app
+from backend.models.audit import AuditEvent, StoredAuditEvent
 from backend.models.contract_tree import NodeRow
 from backend.models.imports import (
     CandidateNode,
@@ -24,6 +26,8 @@ from fastapi.testclient import TestClient
 
 client = TestClient(app)
 
+_NOW = datetime(2026, 6, 23, 12, 0, tzinfo=UTC)
+
 
 class _FakeConn:
     @asynccontextmanager
@@ -34,6 +38,18 @@ class _FakeConn:
 @asynccontextmanager
 async def _fake_acquire() -> AsyncIterator[_FakeConn]:
     yield _FakeConn()
+
+
+async def _noop_record(_conn: Any, event: AuditEvent) -> StoredAuditEvent:
+    return StoredAuditEvent(
+        id="audit-1",
+        event_type=event.event_type,
+        entity_type=event.entity_type,
+        entity_id=event.entity_id,
+        actor=event.actor,
+        payload=event.payload,
+        created_at=_NOW,
+    )
 
 
 def test_import_rejects_non_docx_body(monkeypatch: Any) -> None:
@@ -115,6 +131,7 @@ def test_commit_persists_corrected_tree(monkeypatch: Any) -> None:
         return {r.index: str(r.index) for r in rows}
 
     monkeypatch.setattr(imports, "acquire", _fake_acquire)
+    monkeypatch.setattr(imports, "record_event", _noop_record)
     monkeypatch.setattr(imports, "insert_nodes", fake_insert)
 
     payload = {
@@ -140,6 +157,34 @@ def test_commit_persists_corrected_tree(monkeypatch: Any) -> None:
     }
     assert captured["contract_id"] == "c1"
     assert len(captured["rows"]) == 2
+
+
+def test_commit_records_audit_event(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_insert(_conn: Any, contract_id: str, rows: list[NodeRow]) -> dict[int, str]:
+        return {r.index: str(r.index) for r in rows}
+
+    async def capture_record(_conn: Any, event: AuditEvent) -> StoredAuditEvent:
+        captured["event"] = event
+        return await _noop_record(_conn, event)
+
+    monkeypatch.setattr(imports, "acquire", _fake_acquire)
+    monkeypatch.setattr(imports, "record_event", capture_record)
+    monkeypatch.setattr(imports, "insert_nodes", fake_insert)
+
+    payload = {
+        "nodes": [
+            {"index": 0, "parent_index": None, "order_index": 100, "content_type": "prose"},
+        ]
+    }
+    resp = client.post("/contracts/c1/commit", json=payload)
+    assert resp.status_code == 200
+    event = captured["event"]
+    assert event.event_type == "committed"
+    assert event.entity_type == "contract"
+    assert event.entity_id == "c1"
+    assert event.payload == {"node_count": 1}
 
 
 def test_get_tree_returns_nested_tree(monkeypatch: Any) -> None:

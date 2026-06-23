@@ -7,7 +7,7 @@ operative tree begins after it. TOC lines are dropped; drafting notes are kept."
 from __future__ import annotations
 
 from backend.models.contract_tree import ExtractedBlock
-from backend.services.import_.classify import classify, find_boundary
+from backend.services.import_.classify import classify, find_boundary, is_appendix_title
 
 
 def _p(order: int, text: str, *, num_id: int | None = None) -> ExtractedBlock:
@@ -85,7 +85,7 @@ def test_signature_block_structural_and_appendix() -> None:
     assert roles[2] == "clause"
     assert roles[3] == "signature_block"  # trailing region + signature shape
     assert roles[4] == "signature_block"  # the run continues
-    assert roles[5] == "appendix"
+    assert roles[5] == "appendix_title"  # known designator divider (DD-58)
 
 
 def test_operative_clause_with_executed_keyword_stays_clause() -> None:
@@ -162,6 +162,30 @@ def test_placeholder_flag_independent_of_role() -> None:
     assert classified[2].role == "clause"
 
 
+def test_appendix_title_designators_classified_deterministically() -> None:
+    # DD-58: known designators become `appendix_title` deterministically (the AI
+    # pass was inconsistent on the obvious ones). force_kind=heading so persist
+    # renders the divider bold. A schedule sub-heading with no designator stays
+    # `appendix` (left for the Haiku pass to split heading/body).
+    for label in ("SCHEDULE I", "Schedule II", "ANNEXURE A", "Annex B", "EXHIBIT 3", "APPENDIX 1"):
+        assert is_appendix_title(label), label
+    # body line that merely references a schedule is NOT a title
+    assert not is_appendix_title("Schedule I sets out the delivery points.")
+    assert not is_appendix_title("DESCRIPTION OF PRODUCTS")
+
+    blocks = [
+        _p(0, "OFFTAKE AGREEMENT"),
+        _p(1, "AGREED AS FOLLOWS:"),
+        _p(2, "1. Supply", num_id=7),
+        _p(3, "SCHEDULE I"),
+        _p(4, "Delivery point details follow.", num_id=9),
+    ]
+    classified = classify(blocks)
+    assert classified[3].role == "appendix_title"
+    assert classified[3].force_kind == "heading"
+    assert classified[4].role == "appendix"
+
+
 def test_no_boundary_falls_back_to_operative_and_flags() -> None:
     # No agreement statement -> do NOT mis-file as front-matter; treat as clause,
     # flag uncertain for F04.
@@ -187,7 +211,7 @@ def test_schedule_heading_closes_operative_region() -> None:
     roles = {i: c.role for i, c in classify(blocks).items()}
     assert roles[2] == "clause"
     assert roles[3] == "clause"
-    assert roles[4] == "appendix"  # the heading
+    assert roles[4] == "appendix_title"  # the "SCHEDULE I" title divider (DD-58)
     assert roles[5] == "appendix"  # schedule body — NOT a clause, so never numbered
     assert roles[6] == "appendix"
 
@@ -207,7 +231,7 @@ def test_appendix_heading_distinguished_from_clause_opening_with_word() -> None:
     roles = {i: c.role for i, c in classify(blocks).items()}
     assert roles[3] == "clause"  # opens with "Annexure" but is a running sentence
     assert roles[4] == "clause"
-    assert roles[5] == "appendix"  # the genuine all-caps heading closes the region
+    assert roles[5] == "appendix_title"  # "ANNEXURE A" divider closes the region (DD-58)
     assert roles[6] == "appendix"
 
 

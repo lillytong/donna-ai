@@ -132,17 +132,21 @@ async def _apply_region(
 async def _apply_backmatter_region(
     doc: ParsedDocument, classifications: dict[int, BlockClassification]
 ) -> None:
-    """Whole-region back-matter categorization pass (DD-56/DD-35). Sends ALL
-    back-matter blocks (everything the deterministic pass placed as appendix /
-    signature_block, TOC excluded) to one Haiku call that labels each
-    title / heading / body / signature SEMANTICALLY (no keyword list). Mutates
-    `classifications` in place: a `title` becomes the `appendix_title` role; the
-    rest map via `_BACKMATTER_MAP`, and `force_kind` carries the heading/body
-    decision to persist. A failed/empty answer leaves the deterministic roles."""
+    """Whole-region back-matter categorization pass (DD-56/DD-35), hybrid with the
+    deterministic title rule (DD-58). The deterministic pass already settled
+    known-designator title dividers ("Schedule I", "Annexure A") as
+    `appendix_title`; those are EXCLUDED here. The remaining back-matter blocks
+    (deterministic `appendix` / `signature_block`, TOC excluded) go to one Haiku
+    call that labels each title / heading / body / signature SEMANTICALLY (no
+    keyword list) — so an unseen designator ("Table 3") can still be promoted to
+    `appendix_title`. Mutates `classifications` in place via `_BACKMATTER_MAP`;
+    `force_kind` carries the heading/body decision to persist. A failed/empty
+    answer leaves the deterministic roles."""
     region = {
         b.order: b.text
         for b in doc.blocks
         if classifications[b.order].role in _BACK_MATTER_ROLES
+        and classifications[b.order].role != "appendix_title"
         and not classifications[b.order].is_toc
     }
     if not region:
