@@ -11,46 +11,64 @@ contracts are imported as **structured data**, issues are tracked **per clause**
 an AI assistant (**Donna**) brainstorms and explains **grounded in the actual
 text**, and clean redlines are exported back to Word on demand.
 
-> Status: early build. Architecture and data model are locked (`SPEC.md`,
-> `DESIGN_DECISIONS.md`). The Phase 0 import spine — parse → classify roles →
-> review → commit — and its import-review UI are **built and working**; issue
-> tracking, Donna's surfaces, and export are next.
+> Status: working local build. Architecture and data model are locked (`SPEC.md`,
+> `DESIGN_DECISIONS.md`). What runs today: the **import spine** (parse → classify
+> roles → review-and-correct → commit) with its review UI, a **home** screen of
+> recent contracts, a **negotiation cockpit** for navigating clauses and tracking
+> issues, and **Settings** for clients, deals, and contract types. Donna's grounded
+> AI surfaces (Q&A, issue recommendations) and `.docx` redline export are next.
 
 ## What it does
 
-- **Import** a `.docx` into a structured clause tree (the DB, not Word, is canonical).
-- **Track issues** per clause — raise, brainstorm with Donna, resolve, log the decision.
-- **Donna** answers and drafts grounded in the contract, cited to the clause, and
-  says "get a lawyer" rather than bluffing past her limits.
-- **Export** a counterparty-ready redline (`.docx` tracked changes) with verified
-  round-trip content fidelity.
+You move through donna.ai in four beats:
+
+- **Import** a `.docx`. It's parsed into a structured clause tree — front-matter,
+  operative clauses, and appendices, each detected and numbered — then you review
+  and correct the parse before committing. From here the database, not Word, is the
+  source of truth.
+- **Pick up where you left off** on the **home** screen: recent contracts as resume
+  cards, each with a status badge, open-issue count, and last activity.
+- **Negotiate in the cockpit.** Open a contract, jump to any clause by number, and
+  raise issues against it — tagged by who raised them (us or the counterparty),
+  moved through a status lifecycle, and discussed in per-issue comment threads.
+- **(Coming)** Ask **Donna** for clause-grounded, cited answers, and **export** a
+  counterparty-ready redline (`.docx` tracked changes) with verified round-trip
+  content fidelity.
 
 ## Architecture
 
 Database-centric: every transform reads from and writes to Postgres. Word is an
-artifact at the edges, never the source of truth.
+artifact at the edges, never the source of truth. Three tiers — Next.js UI →
+FastAPI (thin routes over service logic) → Postgres + pgvector.
 
 ```
-                  ┌─────────────────────────── Next.js frontend ───────────────────────────┐
-                  │   clause tree · issue cockpit · Donna panel · (v1.1) principal portal    │
-                  └───────────────────────────────────┬─────────────────────────────────────┘
-                                                       │  HTTP (JSON)
-                  ┌────────────────────────────────────▼─────────────────────────────────────┐
-                  │  FastAPI (async)   api/ thin routes → services/ business logic            │
-                  │                                                                            │
-   .docx  ──IMPORT──►  parse (python-docx + OOXML) → node tree → detect refs/terms/params      │
-                  │        → import-review UI → COMMIT                                          │
-                  │                                                                            │
-                  │   services/donna/  ── grounded Q&A · issue recs · revision review ──►  Claude
-                  │        (LiteLLM wrapper; tiered context injection; cited answers)      (Anthropic API)
-                  │                                                                            │
-                  │   EXPORT  ◄── snapshot → regenerate .docx via style_config → tracked changes
-                  └────────────────────────────────────┬─────────────────────────────────────┘
-                                                       │
-                  ┌────────────────────────────────────▼─────────────────────────────────────┐
-                  │  PostgreSQL + pgvector   nodes · issues · snapshots · embeddings (Phase 2) │
-                  │  db/schema.sql is the canonical data model                                 │
-                  └────────────────────────────────────────────────────────────────────────────┘
+  ┌──────────────────────────────── Next.js frontend (frontend/app/) ────────────────────────────────┐
+  │  SiteNav + layout.tsx wrap every route:                                                           │
+  │    /                home — recent-contract resume cards (status · open issues · recency)          │
+  │    /import          Context → parse → review-and-correct → commit                                 │
+  │    /contracts       contract browser  ──►  /contracts/[id]  negotiation cockpit                   │
+  │    /settings        clients · deals · contract types                                              │
+  └────────────────────────────────────────────────┬─────────────────────────────────────────────────┘
+                                                    │  HTTP (JSON)
+  ┌────────────────────────────────────────────────▼─────────────────────────────────────────────────┐
+  │  FastAPI (async)   backend/api/ thin routes  ──►  backend/services/ logic  ──►  raw SQL (asyncpg)  │
+  │                    imports · issues · audit · settings · health                                    │
+  │                                                                                                    │
+  │   IMPORT engine   import_/  parse (python-docx + OOXML) → node tree → classify roles               │
+  │                   → detect refs/terms → review → commit                                          │
+  │                                                                                                    │
+  │   ISSUE + AUDIT   issue_repo / audit_repo   raise issue (who-raised) → status lifecycle            │
+  │                   → comment threads;  every mutation appended to the audit log                     │
+  │                                                                                                    │
+  │   services/donna/  (Phase 2)  grounded Q&A · issue recs · revision review  ──►  Claude (Anthropic) │
+  │                                                                                                    │
+  │   EXPORT  (Phase 3)  ◄── snapshot → regenerate .docx via style_config → tracked changes            │
+  └────────────────────────────────────────────────┬─────────────────────────────────────────────────┘
+                                                    │  backend/db.py · python -m backend.migrate
+  ┌────────────────────────────────────────────────▼─────────────────────────────────────────────────┐
+  │  PostgreSQL + pgvector   nodes · issues · issue_comments · audit_log · embeddings (Phase 2)        │
+  │  db/schema.sql canonical · db/seed.sql generic defaults · db/migrations/ applied by backend.migrate│
+  └────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Local-first:** the whole stack runs on one machine. "Local" means the *app*
@@ -75,9 +93,34 @@ Frontend, in a second terminal:
 cd frontend && npm install && npm run dev   # UI → localhost:3000
 ```
 
+Open `localhost:3000` — you land on the **home** screen. With an empty database
+it shows an "Import your first contract" prompt; head to `/import` to bring in a
+`.docx`, review the parse, commit, and the new contract opens in its cockpit.
+
 Your data is yours and stays local: the public repo carries only schema + seed
 (`db/schema.sql`, `db/seed.sql` — no rows). Every clone runs its own Postgres;
 contracts you import live only in your machine's database.
+
+### Setting up on another machine (or after a `git pull`)
+
+The repo carries all **code + schema**, never the **data**. So on a fresh clone:
+
+```bash
+docker compose up -d db       # fresh volume → auto-loads the current schema + seed + migration baseline
+uv run python -m backend.migrate   # applies any pending migrations (no-op on a fresh DB)
+```
+
+You get the full, current schema and seeded contract types — but an empty data set
+(no clients/deals/contracts you created elsewhere). That's expected: the Postgres
+volume is gitignored and per-machine.
+
+- **Already had a DB here from before?** Docker only loads `schema.sql` on a *fresh*
+  volume, so an existing volume keeps its old schema. Run `python -m backend.migrate`
+  to apply new migrations — or, if you have no data worth keeping,
+  `docker compose down -v && docker compose up -d db` for a clean current rebuild.
+- **Moving real contract data between machines is not handled by Git.** Use
+  `pg_dump`/`psql` restore, or designate one machine as the data "home." (Pick a
+  strategy before you keep a contract that matters.)
 
 ## Project map
 
@@ -87,8 +130,9 @@ contracts you import live only in your machine's database.
 | `DESIGN_DECISIONS.md` | ADR log (DD-NN), indexed in SPEC §8 |
 | `CLAUDE.md` | Project engineering rules + stack deviations |
 | `db/schema.sql` · `db/seed.sql` | Canonical data model + generic defaults (skeleton only — no data) |
-| `backend/` | FastAPI app — `api/` · `services/` (incl. `services/donna/`) · `models/` · `prompts/` · `config/` |
-| `frontend/` | Next.js UI — the import-review screen (parse → review → commit) is built |
+| `backend/` | FastAPI app — `api/` thin routes · `services/` (import, issues, audit, settings, `donna/`) · `models/` · `prompts/` · `config/` · `db.py` · `migrate.py` |
+| `frontend/` | Next.js UI — `app/` routes (`/` home, `/import`, `/contracts` + `/contracts/[id]` cockpit, `/settings`) and shared `components/SiteNav.tsx` |
+| `db/` | `schema.sql` (canonical) · `seed.sql` (generic defaults) · `migrations/` (applied by `python -m backend.migrate`) |
 | `evals/` | AI output-quality harnesses (separate from `tests/`) |
 
 ## License

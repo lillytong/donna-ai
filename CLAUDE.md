@@ -13,8 +13,8 @@ this file records the **project-specific decisions and deviations** only.
 ## Tracking built features (the convention — so build state is never lost to chat)
 
 - **SPEC §5 feature registry `Status` column is the canonical at-a-glance tracker** of what's built. **`DEV_TODO.md` → Completed** is the detailed build log.
-- **Every finished build does both:** flip the feature's §5 `Status` (`planned` → `backend done` / `built`) **and** add a `DEV_TODO` Completed line (what + gate result). A build isn't done until both are recorded. This is how a fresh Kevin session knows where to pick up — he reads §5 + `DEV_TODO` in his pre-build gate.
-- **New feature gaps found mid-build are never decided ad hoc.** Engineering gaps → an ADR in `DESIGN_DECISIONS.md`. Feature/product gaps → queued to `PM_TODO.md`; **only Katrina writes features into the §5 registry** (after vetting), keeping it the single source of feature truth.
+- **Every finished build does both:** flip the feature's §5 `Status` (`planned` → `backend done` / `built`) **and** add a `DEV_TODO` Completed line (what + gate result). A build isn't done until both are recorded. This is how a fresh engineering session knows where to pick up — it reads §5 + `DEV_TODO` in its pre-build gate.
+- **New feature gaps found mid-build are never decided ad hoc.** Engineering gaps → an ADR in `DESIGN_DECISIONS.md`. Feature/product gaps → queued to `PM_TODO.md`; **only product writes features into the §5 registry** (after vetting), keeping it the single source of feature truth.
 
 ## Stack deviations from the default
 
