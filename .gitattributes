@@ -1,0 +1,15 @@
+# Normalize line endings to LF in the repo AND in the working tree on every
+# machine (Mac + Windows). This makes line-ending behavior independent of each
+# machine's core.autocrlf, so the CRLF<->LF "phantom diff" can never appear again.
+* text=auto eol=lf
+
+# Binary files git must never normalize or diff as text.
+*.docx binary
+*.xlsx binary
+*.pdf  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.zip  binary
