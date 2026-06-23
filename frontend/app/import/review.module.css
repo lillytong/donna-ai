@@ -1,20 +1,24 @@
 .screen {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
   background: #f4f5f7;
   color: #1f2328;
 }
 
-/* ---- top bar ---- */
+/* ---- step / actions bar ---- */
+/* Secondary toolbar that sits under the persistent SiteNav: the Context → Parse
+   → Review → Commit steps on the left, the upload/review/commit actions on the
+   right. Tinted to the faint field tone (not white) so it reads as a working
+   sub-bar rather than a second top nav. */
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 24px;
   padding: 0 20px;
-  height: 56px;
-  background: #ffffff;
+  height: 52px;
+  background: #fbfcfd;
   border-bottom: 1px solid #e3e6ea;
   flex-shrink: 0;
 }
@@ -54,6 +58,15 @@
   align-items: center;
   gap: 16px;
 }
+.navLink {
+  font-size: 13px;
+  font-weight: 500;
+  color: #6b7280;
+  text-decoration: none;
+}
+.navLink:hover {
+  color: #2563eb;
+}
 .counter {
   font-size: 13px;
   color: #6b7280;
@@ -65,6 +78,32 @@
 .counterDone {
   color: #15803d;
   font-weight: 600;
+}
+/* prev/next review nav — step through the uncertain rows from the topbar */
+.reviewNav {
+  display: inline-flex;
+  gap: 4px;
+}
+.reviewNavBtn {
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #374151;
+  background: #fff;
+  border: 1px solid #d4d9e0;
+  border-radius: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.reviewNavBtn:hover:not(:disabled) {
+  border-color: #2563eb;
+  color: #2563eb;
+}
+.reviewNavBtn:disabled {
+  color: #c4c8cf;
+  border-color: #eceef1;
+  background: #f7f8fa;
+  cursor: not-allowed;
 }
 .commit {
   font: inherit;
@@ -129,6 +168,8 @@
 /* collapse-all / expand-all toggle, pinned to the right of the Structure head */
 .collapseAll {
   margin-left: auto;
+  flex: none;
+  white-space: nowrap;
   font: inherit;
   font-size: 11.5px;
   font-weight: 600;
@@ -259,6 +300,32 @@
   background: #e6efff;
 }
 
+/* transient "you landed here" pulse on the tree row Prev/Next jumps to — a single
+   ease-out flash that settles into the persistent .selected highlight underneath.
+   Mirrors the source-panel .sFlash but tuned to the blue selection accent. */
+.treeFlash {
+  animation: treeFlashPulse 1.1s ease-out;
+}
+@keyframes treeFlashPulse {
+  0% {
+    background: #cfe0ff;
+    box-shadow: inset 3px 0 0 #2563eb;
+  }
+  60% {
+    background: #dfeaff;
+    box-shadow: inset 3px 0 0 #2563eb;
+  }
+  100% {
+    background: transparent;
+    box-shadow: inset 3px 0 0 transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .treeFlash {
+    animation: none;
+  }
+}
+
 /* ---- inline correction tools ---- */
 .tools {
   display: flex;
@@ -278,9 +345,16 @@
   cursor: pointer;
   color: #374151;
 }
-.tools button:hover {
+.tools button:hover:not(:disabled) {
   border-color: #2563eb;
   color: #2563eb;
+}
+/* a tools text-button with nowhere to act (e.g. Merge up with no prior sibling) */
+.tools button:disabled {
+  color: #c4c8cf;
+  border-color: #eceef1;
+  background: #f7f8fa;
+  cursor: not-allowed;
 }
 /* level buttons: a matched pair — identical fixed box, centered symmetric
    chevrons (‹ ›) in one font so the glyphs render the same size/weight */
@@ -302,12 +376,140 @@
   line-height: 1;
   font-variant: normal;
 }
-.lvl:hover {
+.lvl:hover:not(:disabled) {
   border-color: #2563eb;
   color: #2563eb;
 }
+/* a move arrow at the start/end of its sibling run has nowhere to go */
+.lvl:disabled {
+  color: #c4c8cf;
+  border-color: #eceef1;
+  background: #f7f8fa;
+  cursor: not-allowed;
+}
 .ok {
   font-weight: 600;
+}
+
+/* overflow menu — the rarely-used clause actions (move/merge/split) tuck behind ⋯
+   so the tools row stays narrow; the menu inherits the .tools button skin */
+.overflow {
+  position: relative;
+  display: inline-flex;
+}
+.overflowMenu {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 156px;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid #d4d9e0;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(31, 35, 40, 0.14);
+}
+.overflowMenu button {
+  text-align: left;
+  white-space: nowrap;
+}
+
+/* ---- split editor (inline, full-width second line like .tools) ---- */
+.splitPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-basis: 100%;
+  margin: 8px 0 2px;
+  padding-top: 8px;
+  border-top: 1px dashed #d7dce2;
+}
+.splitHint {
+  margin: 0;
+  font-size: 11.5px;
+  color: #6b7280;
+}
+/* serif preview matches the Source panel — the operator picks the cut against the
+   same rendering they read the clause in */
+.splitField {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #2b2f36;
+  width: 100%;
+  min-height: 64px;
+  resize: vertical;
+  background: #fff;
+  border: 1px solid #d4d9e0;
+  border-radius: 7px;
+  padding: 8px 10px;
+}
+.splitField:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+.splitPreview {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.splitHalf {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: #2b2f36;
+  background: #fff;
+  border: 1px solid #e3e6ea;
+  border-left: 3px solid #e3e6ea;
+  border-radius: 7px;
+}
+/* the right half is the clause that will be created — flag it with the accent */
+.splitHalf + .splitHalf {
+  border-left-color: #2563eb;
+}
+.splitTag {
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #6b7280;
+}
+.splitHalf + .splitHalf .splitTag {
+  color: #1d4ed8;
+}
+.splitEmpty {
+  color: #aab0b9;
+}
+.splitActions {
+  display: flex;
+  gap: 6px;
+}
+.splitActions button {
+  font: inherit;
+  font-size: 12px;
+  color: #374151;
+  background: #fff;
+  border: 1px solid #d4d9e0;
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.splitActions button:hover:not(:disabled) {
+  border-color: #2563eb;
+  color: #2563eb;
+}
+.splitActions button:disabled {
+  color: #c4c8cf;
+  border-color: #eceef1;
+  background: #f7f8fa;
+  cursor: not-allowed;
 }
 
 /* per-node role selector (every region) + bulk role/type pickers */
@@ -614,6 +816,55 @@
   border-radius: 8px;
   padding: 11px 20px;
   cursor: pointer;
+}
+
+/* ---- parse / loading state ---- */
+.parsing {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+/* indeterminate bar: no server-streamed progress to report, so a fixed-width
+   accent sweeps a quiet track — motion that reads as "working", not a percentage */
+.progressTrack {
+  position: relative;
+  width: 260px;
+  max-width: 70vw;
+  height: 4px;
+  border-radius: 999px;
+  background: #e3e6ea;
+  overflow: hidden;
+}
+.progressBar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 38%;
+  border-radius: 999px;
+  background: #2563eb;
+  animation: parseSweep 1.4s ease-in-out infinite;
+}
+@keyframes parseSweep {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(370%);
+  }
+}
+.parsingPhase {
+  font-size: 13.5px;
+  color: #6b7280;
+  font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: reduce) {
+  .progressBar {
+    width: 100%;
+    animation: none;
+    opacity: 0.55;
+  }
 }
 
 /* ---- Step 1 — Context form (§9) ---- */

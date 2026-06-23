@@ -14,7 +14,7 @@ import {
   type StoredClient,
   type StoredContractType,
   type StoredDeal,
-} from "./lib/api";
+} from "../lib/api";
 
 export interface ContractContext {
   contractId: string;

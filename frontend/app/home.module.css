@@ -1,0 +1,378 @@
+/* donna.ai home — "Jump back in". Mirrors the import-review / cockpit skin
+   (#f4f5f7 field, #1f2328 ink, #2563eb accent, 7px radii, mono tabular figures
+   for operator data). The one place color does real work is the status spine +
+   badge on each resume card; everything else stays the house neutral. The
+   signature is the "your move" hero card: the deal the counterparty has handed
+   back, floated to the top and accented so the eye lands on the move you owe. */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  background: #f4f5f7;
+  color: #1f2328;
+}
+
+/* ---- body ---- */
+.body {
+  flex: 1;
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 40px 24px 72px;
+}
+.eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #9aa1ab;
+}
+.eyebrowDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #e0a106;
+  flex-shrink: 0;
+}
+.eyebrowMove {
+  color: #b45309;
+}
+.title {
+  margin: 10px 0 4px;
+  font-size: 30px;
+  font-weight: 680;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+.lead {
+  margin: 0 0 28px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #6b7280;
+  max-width: 540px;
+}
+
+/* a quiet section label that separates the hero from the queue below */
+.sectionLabel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 30px 0 12px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: #9aa1ab;
+}
+.sectionLabel::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: #e3e6ea;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ---- resume card ---- */
+.card {
+  display: block;
+  position: relative;
+  padding: 16px 18px 16px 22px;
+  background: #ffffff;
+  border: 1px solid #e3e6ea;
+  border-left: 3px solid #cbd3dc; /* status spine — set per status below */
+  border-radius: 9px;
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
+}
+.card:hover {
+  box-shadow: 0 4px 16px rgba(31, 35, 40, 0.08);
+  transform: translateY(-1px);
+}
+.card:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+}
+
+.cardTop {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+/* status badge — the one place color carries meaning */
+.badge {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-radius: 6px;
+  padding: 4px 9px;
+}
+.cue {
+  font-size: 12px;
+  color: #9aa1ab;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-family: ui-monospace, "SF Mono", "Menlo", monospace;
+  font-size: 11.5px;
+  color: #aab0b9;
+  font-variant-numeric: tabular-nums;
+}
+
+.name {
+  font-size: 16px;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  color: #1f2328;
+}
+.meta {
+  margin-top: 3px;
+  font-size: 12.5px;
+  color: #6b7280;
+}
+.metaSep {
+  color: #cbd1d9;
+  padding: 0 7px;
+}
+
+.cardFoot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 13px;
+  padding-top: 12px;
+  border-top: 1px solid #f0f2f5;
+}
+/* open-issue count — mono tabular, highlighted when there's work owed */
+.issues {
+  font-family: ui-monospace, "SF Mono", "Menlo", monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: #8a929c;
+  font-variant-numeric: tabular-nums;
+}
+.issuesHot {
+  color: #b45309;
+}
+/* >1 open issue reads as a real backlog — danger red, wins over amber */
+.issuesRed {
+  color: #c8102e;
+}
+.issuesNum {
+  font-size: 13px;
+}
+.resume {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #6b7280;
+}
+.card:hover .resume {
+  color: #2563eb;
+}
+.resumeArrow {
+  font-size: 14px;
+  transition: transform 0.12s ease;
+}
+.card:hover .resumeArrow {
+  transform: translateX(2px);
+}
+
+/* ---- the hero: a floated "your move" card ---- */
+.hero {
+  padding: 20px 22px 18px 24px;
+  border-left-width: 4px;
+  background: linear-gradient(180deg, #fffaf0 0%, #ffffff 64%);
+  border-color: #f0dca6;
+  border-left-color: #e0a106;
+  box-shadow: 0 6px 22px rgba(180, 83, 9, 0.1);
+}
+.hero:hover {
+  box-shadow: 0 10px 30px rgba(180, 83, 9, 0.15);
+}
+.hero .name {
+  font-size: 19px;
+}
+.hero .cardFoot {
+  border-top-color: #f3e6c8;
+}
+
+/* ---- status spines + badges ---- */
+.move {
+  border-left-color: #e0a106;
+}
+.badgeMove {
+  color: #92400e;
+  background: #fde9c8;
+}
+.working {
+  border-left-color: #cbd3dc;
+}
+.badgeWorking {
+  color: #5b6371;
+  background: #eef1f4;
+}
+.sentCp {
+  border-left-color: #7aa5e0;
+}
+.badgeSentCp {
+  color: #1d4ed8;
+  background: #e6efff;
+}
+.sentLegal {
+  border-left-color: #4f9c93;
+}
+.badgeSentLegal {
+  color: #0f766e;
+  background: #d8efeb;
+}
+.signed {
+  border-left-color: #15803d;
+}
+.badgeSigned {
+  color: #15803d;
+  background: #dcfce7;
+}
+
+/* ---- loading (indeterminate) ---- */
+.loading {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 56px 24px;
+}
+.loadingTrack {
+  position: relative;
+  height: 3px;
+  width: 100%;
+  max-width: 320px;
+  background: #e3e6ea;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.loadingFill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 38%;
+  background: #2563eb;
+  border-radius: 2px;
+}
+.loadingLabel {
+  font-size: 13px;
+  color: #6b7280;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .loadingFill {
+    animation: loadingSlide 1.15s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  }
+  @keyframes loadingSlide {
+    0% {
+      transform: translateX(-110%);
+    }
+    100% {
+      transform: translateX(380%);
+    }
+  }
+}
+
+/* ---- empty state ---- */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+  padding: 64px 24px;
+  background: #ffffff;
+  border: 1px dashed #d4d9e0;
+  border-radius: 12px;
+}
+.emptyMark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: #eef4ff;
+  color: #2563eb;
+  font-size: 22px;
+  font-weight: 700;
+}
+.emptyTitle {
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.emptyHint {
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: #6b7280;
+  max-width: 360px;
+}
+.emptyCta {
+  margin-top: 6px;
+  display: inline-block;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: #2563eb;
+  border: none;
+  border-radius: 8px;
+  padding: 11px 20px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.emptyCta:hover {
+  background: #1d4ed8;
+}
+
+/* ---- page-load reveal (subtle, staggered) ---- */
+@media (prefers-reduced-motion: no-preference) {
+  .reveal {
+    opacity: 0;
+    transform: translateY(8px);
+    animation: cardIn 0.42s cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
+  }
+  @keyframes cardIn {
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+@media (max-width: 560px) {
+  .cardTop {
+    flex-wrap: wrap;
+  }
+  .activity {
+    margin-left: 0;
+  }
+  .title {
+    font-size: 25px;
+  }
+}
