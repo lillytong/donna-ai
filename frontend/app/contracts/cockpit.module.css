@@ -157,6 +157,61 @@
 .jumpHintMiss {
   color: #9aa1ab;
 }
+/* keyword conceptual-match note — transparent that the hit wasn't literal */
+.jumpHintConceptual {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #8a5a00;
+}
+.jumpHintError {
+  color: #c8102e;
+}
+
+/* in-bar keyword results: "N results" + ‹ › stepper, sits left of the / kbd */
+.jumpResults {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.jumpCount {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b7280;
+  white-space: nowrap;
+}
+.jumpIndex {
+  font-family: ui-monospace, "SF Mono", "Menlo", monospace;
+  font-size: 11px;
+  color: #6b7280;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.jumpArrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+  color: #6b7280;
+  background: #fff;
+  border: 1px solid #dfe3e9;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease;
+}
+.jumpArrow:hover {
+  border-color: #2563eb;
+  color: #2563eb;
+}
+.jumpArrow:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
+}
 
 /* ---- panels ---- */
 .panels {
@@ -210,6 +265,28 @@
   text-transform: none;
   letter-spacing: 0;
 }
+/* collapse/expand-all toggle in the tree panel head (mirrors review.module.css
+   .collapseAll) — spans the whole tree across all regions */
+.collapseAll {
+  margin-left: auto;
+  flex: none;
+  white-space: nowrap;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #374151;
+  background: #fff;
+  border: 1px solid #d4d9e0;
+  border-radius: 6px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+.collapseAll:hover {
+  border-color: #2563eb;
+  color: #2563eb;
+}
 
 /* ---- tree rows (mirrors review.module.css .row) ---- */
 .rows {
@@ -232,17 +309,17 @@
    it has children (mirrors the import review tree) */
 .twirl {
   flex-shrink: 0;
-  width: 18px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 0;
   border: none;
-  border-radius: 4px;
+  border-radius: 5px;
   background: none;
   color: #9aa1ab;
-  font-size: 11px;
+  font-size: 15px;
   line-height: 1;
   cursor: pointer;
   transition: color 0.12s ease, background 0.12s ease;
@@ -257,7 +334,7 @@
 }
 .twirlSpace {
   flex-shrink: 0;
-  width: 18px;
+  width: 24px;
 }
 .num {
   flex-shrink: 0;
@@ -273,9 +350,53 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* selected row reveals its full clause body — drop the single-line clamp so long
+   text wraps; the row's depth paddingLeft (inline) is untouched */
+.textFull {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
 .headingText {
   font-weight: 650;
   color: #1f2328;
+}
+/* DD-54 region headers (mirror review.module.css .regionHead / .regionTwirl /
+   .regionHint) — CLICKABLE section labels; collapsing a region hides its rows
+   and leaves only this header. A ▸/▾ twirl shows the collapsed state. */
+.regionHead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 18px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #8a929c;
+  cursor: pointer;
+}
+.regionHead:hover {
+  color: #2563eb;
+}
+.regionHead:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
+  border-radius: 5px;
+}
+.regionTwirl {
+  font-size: 13px;
+  color: #6b7280;
+}
+.regionHead:hover .regionTwirl {
+  color: #2563eb;
+}
+.regionHint {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11.5px;
+  color: #aab0b9;
 }
 /* a non-clause region (front/back matter) — labeled, never numbered */
 .roleLabel {

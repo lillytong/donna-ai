@@ -328,13 +328,13 @@ async def classify_frontmatter_region(blocks_by_index: dict[int, str]) -> dict[i
         return {}
     listing = "\n".join(f"{i} :: {blocks_by_index[i]}" for i in sorted(blocks_by_index))
     prompt = render("classify_frontmatter_region_v1.txt", blocks=listing)
-    raw = await complete(
+    result = await complete(
         tier="low",
         messages=[{"role": "user", "content": prompt}],
         caller="import.classify_frontmatter_region",
     )
     try:
-        region = FrontMatterRegion.model_validate_json(_extract_json(raw))
+        region = FrontMatterRegion.model_validate_json(_extract_json(result.text))
     except ValidationError:
         return {}
 
@@ -368,13 +368,13 @@ async def classify_backmatter_region(
         return {}
     listing = "\n".join(f"{i} :: {blocks_by_index[i]}" for i in sorted(blocks_by_index))
     prompt = render("classify_backmatter_region_v1.txt", blocks=listing)
-    raw = await complete(
+    result = await complete(
         tier="low",
         messages=[{"role": "user", "content": prompt}],
         caller="import.classify_backmatter_region",
     )
     try:
-        region = BackMatterRegion.model_validate_json(_extract_json(raw))
+        region = BackMatterRegion.model_validate_json(_extract_json(result.text))
     except ValidationError:
         return {}
     return {item.order: item.category for item in region.blocks if item.order in blocks_by_index}

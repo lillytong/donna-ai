@@ -360,3 +360,16 @@ export const addComment = (
   issueId: string,
   payload: { actor: CommentActor; content: string },
 ): Promise<StoredComment> => postJson(`/issues/${issueId}/comments`, payload);
+
+// Conceptual clause search (F-jump): the AI fallback the cockpit fires on Enter
+// when an exact keyword query has zero literal matches. Returns the best-matching
+// node (or null) so the jump bar can navigate to it and flag it as non-literal.
+export interface ClauseSearchResult {
+  node_id: string | null;
+  matched_text: string | null;
+}
+
+export const searchClause = (
+  contractId: string,
+  query: string,
+): Promise<ClauseSearchResult> => postJson(`/contracts/${contractId}/clause-search`, { query });

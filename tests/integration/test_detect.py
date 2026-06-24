@@ -6,7 +6,13 @@ from __future__ import annotations
 from typing import Any
 
 from backend.models.extraction import Extraction
+from backend.models.llm import CompletionResult, TokenUsage
 from backend.services.import_ import detect
+
+
+def _result(text: str) -> CompletionResult:
+    return CompletionResult(text=text, usage=TokenUsage())
+
 
 # A realistic response, including the markdown fence a model often adds.
 _CANNED = """```json
@@ -17,8 +23,8 @@ _CANNED = """```json
 
 
 async def test_detect_entities_parses_structured_output(monkeypatch: Any) -> None:
-    async def fake_complete(**_kwargs: Any) -> str:
-        return _CANNED
+    async def fake_complete(**_kwargs: Any) -> CompletionResult:
+        return _result(_CANNED)
 
     monkeypatch.setattr(detect, "complete", fake_complete)
 
@@ -33,8 +39,10 @@ async def test_detect_entities_parses_structured_output(monkeypatch: Any) -> Non
 
 
 async def test_detect_entities_tolerates_unfenced_json(monkeypatch: Any) -> None:
-    async def fake_complete(**_kwargs: Any) -> str:
-        return 'Here you go: {"defined_terms": [], "cross_references": [], "parameters": []}'
+    async def fake_complete(**_kwargs: Any) -> CompletionResult:
+        return _result(
+            'Here you go: {"defined_terms": [], "cross_references": [], "parameters": []}'
+        )
 
     monkeypatch.setattr(detect, "complete", fake_complete)
 

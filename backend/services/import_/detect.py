@@ -24,9 +24,9 @@ def _extract_json(text: str) -> str:
 
 async def detect_entities(clause_text: str) -> Extraction:
     prompt = render("extract_entities_v1.txt", clause_text=clause_text)
-    raw = await complete(
+    result = await complete(
         tier="low",
         messages=[{"role": "user", "content": prompt}],
         caller="import.detect_entities",
     )
-    return Extraction.model_validate_json(_extract_json(raw))
+    return Extraction.model_validate_json(_extract_json(result.text))

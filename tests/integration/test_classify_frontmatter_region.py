@@ -13,9 +13,14 @@ from pathlib import Path
 from typing import Any
 
 from backend.models.contract_tree import BlockClassification, ExtractedBlock, ParsedDocument
+from backend.models.llm import CompletionResult, TokenUsage
 from backend.services.import_ import classify as classify_mod
 from backend.services.import_ import pipeline
 from docx import Document
+
+
+def _result(text: str) -> CompletionResult:
+    return CompletionResult(text=text, usage=TokenUsage())
 
 
 def _ambiguous_docx(dest: Path) -> None:
@@ -36,8 +41,8 @@ def _ambiguous_docx(dest: Path) -> None:
 
 
 async def test_region_applies_per_block_roles(monkeypatch: Any) -> None:
-    async def fake_complete(**_kwargs: Any) -> str:
-        return (
+    async def fake_complete(**_kwargs: Any) -> CompletionResult:
+        return _result(
             '```json\n{"blocks": ['
             '{"order": 0, "role": "title"},'
             '{"order": 1, "role": "parties"},'
@@ -53,8 +58,8 @@ async def test_region_applies_per_block_roles(monkeypatch: Any) -> None:
 
 
 async def test_region_enforces_at_most_one_title(monkeypatch: Any) -> None:
-    async def fake_complete(**_kwargs: Any) -> str:
-        return (
+    async def fake_complete(**_kwargs: Any) -> CompletionResult:
+        return _result(
             '{"blocks": ['
             '{"order": 0, "role": "title"},'
             '{"order": 1, "role": "title"},'
@@ -70,8 +75,8 @@ async def test_region_enforces_at_most_one_title(monkeypatch: Any) -> None:
 
 
 async def test_region_tolerates_parse_failure(monkeypatch: Any) -> None:
-    async def fake_complete(**_kwargs: Any) -> str:
-        return "sorry, I can't classify this front matter"
+    async def fake_complete(**_kwargs: Any) -> CompletionResult:
+        return _result("sorry, I can't classify this front matter")
 
     monkeypatch.setattr(classify_mod, "complete", fake_complete)
 
@@ -80,8 +85,8 @@ async def test_region_tolerates_parse_failure(monkeypatch: Any) -> None:
 
 
 async def test_region_rejects_off_taxonomy_role(monkeypatch: Any) -> None:
-    async def fake_complete(**_kwargs: Any) -> str:
-        return '{"blocks": [{"order": 0, "role": "clause"}]}'  # not a region role
+    async def fake_complete(**_kwargs: Any) -> CompletionResult:
+        return _result('{"blocks": [{"order": 0, "role": "clause"}]}')  # not a region role
 
     monkeypatch.setattr(classify_mod, "complete", fake_complete)
 
@@ -107,8 +112,8 @@ def _doc(*texts: str) -> ParsedDocument:
 
 
 async def test_apply_region_clears_uncertain_and_applies_role(monkeypatch: Any) -> None:
-    async def fake_complete(**_kwargs: Any) -> str:
-        return '{"blocks": [{"order": 0, "role": "title"}]}'
+    async def fake_complete(**_kwargs: Any) -> CompletionResult:
+        return _result('{"blocks": [{"order": 0, "role": "title"}]}')
 
     monkeypatch.setattr(classify_mod, "complete", fake_complete)
 
@@ -125,8 +130,8 @@ async def test_apply_region_clears_uncertain_and_applies_role(monkeypatch: Any) 
 
 
 async def test_apply_region_never_overrides_deterministic_drafting_note(monkeypatch: Any) -> None:
-    async def fake_complete(**_kwargs: Any) -> str:
-        return '{"blocks": [{"order": 0, "role": "title"}]}'
+    async def fake_complete(**_kwargs: Any) -> CompletionResult:
+        return _result('{"blocks": [{"order": 0, "role": "title"}]}')
 
     monkeypatch.setattr(classify_mod, "complete", fake_complete)
 
@@ -142,8 +147,8 @@ async def test_apply_region_never_overrides_deterministic_drafting_note(monkeypa
 
 
 async def test_apply_region_model_note_is_surfaced_not_silently_excluded(monkeypatch: Any) -> None:
-    async def fake_complete(**_kwargs: Any) -> str:
-        return '{"blocks": [{"order": 0, "role": "drafting_note"}]}'
+    async def fake_complete(**_kwargs: Any) -> CompletionResult:
+        return _result('{"blocks": [{"order": 0, "role": "drafting_note"}]}')
 
     monkeypatch.setattr(classify_mod, "complete", fake_complete)
 
@@ -169,9 +174,9 @@ async def test_preview_ai_runs_region_pass(tmp_path: Path, monkeypatch: Any) -> 
     _ambiguous_docx(fixture)
     calls: list[dict[str, Any]] = []
 
-    async def fake_complete(**kwargs: Any) -> str:
+    async def fake_complete(**kwargs: Any) -> CompletionResult:
         calls.append(kwargs)
-        return (
+        return _result(
             '{"blocks": ['
             '{"order": 0, "role": "title"},'
             '{"order": 1, "role": "recital"},'
@@ -210,8 +215,8 @@ async def test_preview_ai_parse_failure_leaves_deterministic_roles(
     fixture = tmp_path / "c.docx"
     _ambiguous_docx(fixture)
 
-    async def fake_complete(**_kwargs: Any) -> str:
-        return "no idea, sorry"
+    async def fake_complete(**_kwargs: Any) -> CompletionResult:
+        return _result("no idea, sorry")
 
     monkeypatch.setattr(classify_mod, "complete", fake_complete)
 
