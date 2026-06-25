@@ -39,8 +39,10 @@ db/dump*.sql
 .claude/settings.local.json
 
 # Dev/throwaway artifacts (screenshots, browser tool output, sample docs)
+# committed README/docs images are the exception to *.png
 *.png
-!docs/assets/*.png          # committed README/docs images are the exception
+!docs/assets/
+!docs/assets/*.png
 .playwright-mcp/
 sample-contract.docx
 
