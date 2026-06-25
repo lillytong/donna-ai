@@ -65,6 +65,13 @@ class LlmSettings(BaseSettings):
     brainstorm_chat_temperature: float = 1.0
     brainstorm_distill_max_tokens: int = 1024
     brainstorm_distill_temperature: float = 0.0
+    # F03c per-change revision recommendation (DD-78): a per-hunk verdict + significance +
+    # one-line reasoning + exact counter-language, at the capable tier (high/Opus — drafted
+    # counter-language is high-consequence, DD-35; mirrors F11 donna_recommendation). Opus 4.8
+    # rejects temperature 0.0, so this tier is pinned to 1.0. max_tokens >= 4096: generation
+    # surfaces truncate at the 1024 default → JSON parse failure.
+    revision_recommend_max_tokens: int = 4096
+    revision_recommend_temperature: float = 1.0
 
 
 class DistillationSettings(BaseSettings):

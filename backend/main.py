@@ -25,6 +25,7 @@ from backend.api import (
     nodes,
     redline,
     revision_import,
+    revision_recommend,
     revision_review,
     settings,
 )
@@ -92,3 +93,4 @@ app.include_router(mark_sent.router)
 app.include_router(lineage.router)
 app.include_router(revision_import.router)
 app.include_router(revision_review.router)
+app.include_router(revision_recommend.router)
