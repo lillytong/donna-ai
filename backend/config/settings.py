@@ -45,23 +45,23 @@ class LlmSettings(BaseSettings):
     # F11 issue recommendation: a grounded rationale + draft position/counter-language at
     # the capable tier (high/Opus, DD-35 — counter-language is high-consequence). Opus 4.8
     # only supports temperature=1 (it rejects 0.0), so this tier's temp is pinned to 1.0.
-    donna_recommendation_max_tokens: int = 1024
+    donna_recommendation_max_tokens: int = 4096
     donna_recommendation_temperature: float = 1.0
     # F08d Donna-assisted clause drafting: a complete clause (heading + body) grounded in
     # deal type + surrounding clauses, at the capable tier (high/Opus — drafted language is
     # high-consequence, DD-35). Opus 4.8 rejects temperature 0.0, so this tier is pinned 1.0.
-    clause_draft_max_tokens: int = 1024
+    clause_draft_max_tokens: int = 4096
     clause_draft_temperature: float = 1.0
     # F10b context-aware Donna chat (advise + draft): a grounded conversational turn at the
     # capable tier (high/Opus — advice/drafting is high-consequence, DD-35; mirrors F11/F08d).
     # Opus 4.8 rejects temperature 0.0, so this tier is pinned to 1.0.
-    chat_advise_max_tokens: int = 1024
+    chat_advise_max_tokens: int = 4096
     chat_advise_temperature: float = 1.0
     # F10b brainstorm overlay (DD-73/DD-77). The exploratory turn is advice-grade, so it runs
     # at the high tier like chat_advise (Opus rejects temp 0.0 → 1.0). The on-close distillation
     # is internal/never counterparty-facing, so it runs at the medium tier (Sonnet, supports
     # 0.0 → deterministic). Limits/temps from config, not code (DD-35).
-    brainstorm_chat_max_tokens: int = 1024
+    brainstorm_chat_max_tokens: int = 4096
     brainstorm_chat_temperature: float = 1.0
     brainstorm_distill_max_tokens: int = 1024
     brainstorm_distill_temperature: float = 0.0
