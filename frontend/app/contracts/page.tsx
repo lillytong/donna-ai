@@ -17,6 +17,8 @@ import {
   listClients,
   listContractTypes,
   listIssues,
+  updateContract,
+  deleteContract,
   type StoredContract,
   type StoredClient,
   type StoredContractType,
@@ -107,34 +109,226 @@ function SearchIcon() {
   );
 }
 
-function ContractCard({ c, delay }: { c: CardContract; delay: number }): React.JSX.Element {
+function PencilIcon(): React.JSX.Element {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
+function TrashIcon(): React.JSX.Element {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 6h18" />
+      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+    </svg>
+  );
+}
+
+type CardMode = "idle" | "editing" | "confirm";
+
+function ContractCard({
+  c,
+  delay,
+  onRenamed,
+  onDeleted,
+}: {
+  c: CardContract;
+  delay: number;
+  onRenamed: (id: string, name: string) => void;
+  onDeleted: (id: string) => void;
+}): React.JSX.Element {
   const cfg = statusConfig(c.status);
   const issuesClass = c.openIssues > 1 ? styles.issuesRed : c.openIssues === 1 ? styles.issuesHot : "";
   const cardClass = [styles.card, cfg.spine, styles.reveal].join(" ");
 
+  const [mode, setMode] = useState<CardMode>("idle");
+  const [draft, setDraft] = useState(c.name);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function saveRename(): Promise<void> {
+    const next = draft.trim();
+    if (next === "" || next === c.name) {
+      setMode("idle");
+      setDraft(c.name);
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      const updated = await updateContract(c.id, { name: next });
+      onRenamed(c.id, updated.name);
+      setMode("idle");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't rename. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runDelete(): Promise<void> {
+    setBusy(true);
+    setErr(null);
+    try {
+      await deleteContract(c.id);
+      onDeleted(c.id);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't delete. Try again.");
+      setBusy(false);
+    }
+  }
+
   return (
-    <Link href={`/contracts/${c.id}`} className={cardClass} style={{ animationDelay: `${delay}ms` }}>
+    <article className={cardClass} style={{ animationDelay: `${delay}ms` }}>
+      {mode === "idle" && (
+        <Link
+          href={`/contracts/${c.id}`}
+          className={styles.cardHit}
+          aria-label={`Open ${c.name}`}
+        />
+      )}
+
       <div className={styles.cardTop}>
         <span className={`${styles.badge} ${cfg.badge}`}>{cfg.label}</span>
         <span className={styles.type}>{c.typeName}</span>
         <span className={styles.activity}>{c.lastActivity}</span>
+        {mode === "idle" && (
+          <div className={styles.actions}>
+            <button
+              type="button"
+              className={styles.iconBtn}
+              aria-label={`Rename ${c.name}`}
+              onClick={() => {
+                setDraft(c.name);
+                setErr(null);
+                setMode("editing");
+              }}
+            >
+              <PencilIcon />
+            </button>
+            <button
+              type="button"
+              className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
+              aria-label={`Delete ${c.name}`}
+              onClick={() => {
+                setErr(null);
+                setMode("confirm");
+              }}
+            >
+              <TrashIcon />
+            </button>
+          </div>
+        )}
       </div>
 
-      <div className={styles.name}>{c.name}</div>
+      {mode === "editing" ? (
+        <div className={styles.renameRow}>
+          <input
+            className={styles.renameInput}
+            value={draft}
+            autoFocus
+            disabled={busy}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void saveRename();
+              else if (e.key === "Escape") {
+                setMode("idle");
+                setDraft(c.name);
+              }
+            }}
+            aria-label="Contract name"
+          />
+          <button
+            type="button"
+            className={styles.renameSave}
+            disabled={busy}
+            onClick={() => void saveRename()}
+          >
+            {busy ? "Saving…" : "Save"}
+          </button>
+          <button
+            type="button"
+            className={styles.renameCancel}
+            disabled={busy}
+            onClick={() => {
+              setMode("idle");
+              setDraft(c.name);
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <div className={styles.name}>{c.name}</div>
+      )}
 
-      <div className={styles.cardFoot}>
-        <span className={`${styles.issues} ${issuesClass}`}>
-          <span className={styles.issuesNum}>{c.openIssues}</span> open{" "}
-          {c.openIssues === 1 ? "issue" : "issues"}
-        </span>
-        <span className={styles.open}>
-          Open
-          <span className={styles.openArrow} aria-hidden>
-            →
+      {mode === "confirm" ? (
+        <div className={styles.confirm} role="alertdialog" aria-label={`Delete ${c.name}?`}>
+          <span className={styles.confirmText}>
+            Delete this contract and everything in it? This can&apos;t be undone.
           </span>
-        </span>
-      </div>
-    </Link>
+          <button
+            type="button"
+            className={styles.confirmDelete}
+            disabled={busy}
+            onClick={() => void runDelete()}
+          >
+            {busy ? "Deleting…" : "Delete"}
+          </button>
+          <button
+            type="button"
+            className={styles.confirmCancel}
+            disabled={busy}
+            onClick={() => setMode("idle")}
+          >
+            Keep
+          </button>
+        </div>
+      ) : (
+        <div className={styles.cardFoot}>
+          <span className={`${styles.issues} ${issuesClass}`}>
+            <span className={styles.issuesNum}>{c.openIssues}</span> open{" "}
+            {c.openIssues === 1 ? "issue" : "issues"}
+          </span>
+          <span className={styles.open}>
+            Open
+            <span className={styles.openArrow} aria-hidden>
+              →
+            </span>
+          </span>
+        </div>
+      )}
+
+      {err && (
+        <div className={styles.cardError} role="alert">
+          {err}
+        </div>
+      )}
+    </article>
   );
 }
 
@@ -255,6 +449,13 @@ export default function AllContracts(): React.JSX.Element {
 
   useEffect(load, []);
 
+  function handleRenamed(id: string, name: string): void {
+    setCards((prev) => (prev ? prev.map((c) => (c.id === id ? { ...c, name } : c)) : prev));
+  }
+  function handleDeleted(id: string): void {
+    setCards((prev) => (prev ? prev.filter((c) => c.id !== id) : prev));
+  }
+
   const filtered = useMemo(() => {
     if (cards === null) return [];
     const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
@@ -307,7 +508,13 @@ export default function AllContracts(): React.JSX.Element {
             </div>
             <div className={styles.list}>
               {g.contracts.map((c) => (
-                <ContractCard key={c.id} c={c} delay={runningDelay++ * 45} />
+                <ContractCard
+                  key={c.id}
+                  c={c}
+                  delay={runningDelay++ * 45}
+                  onRenamed={handleRenamed}
+                  onDeleted={handleDeleted}
+                />
               ))}
             </div>
           </section>

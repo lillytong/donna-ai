@@ -184,9 +184,17 @@
   box-shadow: 0 4px 16px rgba(31, 35, 40, 0.08);
   transform: translateY(-1px);
 }
-.card:focus-visible {
-  outline: none;
+.card:focus-within {
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+}
+
+/* full-card navigate target — keeps the Edit/Delete buttons out of the anchor
+   (valid HTML) and structurally prevents an action click from triggering nav */
+.cardHit {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  z-index: 0;
 }
 
 .cardTop {
@@ -270,6 +278,169 @@
 }
 .card:hover .openArrow {
   transform: translateX(2px);
+}
+
+/* ---- per-card edit / delete controls ---- */
+.actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  position: relative;
+  z-index: 1;
+}
+.iconBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: #aab0b9;
+  background: none;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.iconBtn:hover {
+  color: #1f2328;
+  background: #eef1f4;
+}
+.iconBtn:focus-visible {
+  outline: none;
+  color: #1f2328;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16);
+}
+.iconBtnDanger:hover {
+  color: #c8102e;
+  background: #fdecee;
+}
+.iconBtnDanger:focus-visible {
+  color: #c8102e;
+  box-shadow: 0 0 0 3px rgba(200, 16, 46, 0.16);
+}
+
+/* inline rename */
+.renameRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+  z-index: 1;
+}
+.renameInput {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  color: #1f2328;
+  background: #ffffff;
+  border: 1px solid #d4d9e0;
+  border-radius: 7px;
+  padding: 7px 10px;
+}
+.renameInput:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+.renameSave {
+  flex-shrink: 0;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #fff;
+  background: #2563eb;
+  border: none;
+  border-radius: 7px;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.renameSave:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+.renameSave:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.renameCancel {
+  flex-shrink: 0;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #6b7280;
+  background: none;
+  border: none;
+  border-radius: 7px;
+  padding: 8px 10px;
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+.renameCancel:hover:not(:disabled) {
+  color: #1f2328;
+}
+
+/* delete confirm — replaces the foot until resolved */
+.confirm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 13px;
+  padding-top: 12px;
+  border-top: 1px solid #f0f2f5;
+  position: relative;
+  z-index: 1;
+}
+.confirmText {
+  flex: 1;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: #b4232f;
+}
+.confirmDelete {
+  flex-shrink: 0;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #fff;
+  background: #c8102e;
+  border: none;
+  border-radius: 7px;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.confirmDelete:hover:not(:disabled) {
+  background: #a60d26;
+}
+.confirmDelete:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.confirmCancel {
+  flex-shrink: 0;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #6b7280;
+  background: none;
+  border: none;
+  border-radius: 7px;
+  padding: 8px 10px;
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+.confirmCancel:hover:not(:disabled) {
+  color: #1f2328;
+}
+.cardError {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #c8102e;
+  position: relative;
+  z-index: 1;
 }
 
 /* ---- status spines + badges (lifted from home's language) ---- */

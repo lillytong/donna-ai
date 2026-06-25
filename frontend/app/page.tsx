@@ -14,6 +14,8 @@ import {
   listClients,
   listDeals,
   listIssues,
+  updateContract,
+  deleteContract,
   type StoredContract,
   type StoredClient,
   type StoredDeal,
@@ -91,14 +93,59 @@ function relativeTime(iso: string): string {
   return new Date(then).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+function PencilIcon(): React.JSX.Element {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
+function TrashIcon(): React.JSX.Element {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 6h18" />
+      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+    </svg>
+  );
+}
+
+type CardMode = "idle" | "editing" | "confirm";
+
 function ResumeCard({
   c,
   hero,
   delay,
+  onRenamed,
+  onDeleted,
 }: {
   c: ResumeContract;
   hero: boolean;
   delay: number;
+  onRenamed: (id: string, name: string) => void;
+  onDeleted: (id: string) => void;
 }): React.JSX.Element {
   const cfg = STATUS_CONFIG[c.status];
   const manyIssues = c.openIssues > 1;
@@ -108,34 +155,175 @@ function ResumeCard({
     .filter(Boolean)
     .join(" ");
 
+  const [mode, setMode] = useState<CardMode>("idle");
+  const [draft, setDraft] = useState(c.name);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function saveRename(): Promise<void> {
+    const next = draft.trim();
+    if (next === "" || next === c.name) {
+      setMode("idle");
+      setDraft(c.name);
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      const updated = await updateContract(c.id, { name: next });
+      onRenamed(c.id, updated.name);
+      setMode("idle");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't rename. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runDelete(): Promise<void> {
+    setBusy(true);
+    setErr(null);
+    try {
+      await deleteContract(c.id);
+      onDeleted(c.id);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't delete. Try again.");
+      setBusy(false);
+    }
+  }
+
   return (
-    <Link href={`/contracts/${c.id}`} className={cardClass} style={{ animationDelay: `${delay}ms` }}>
+    <article className={cardClass} style={{ animationDelay: `${delay}ms` }}>
+      {mode === "idle" && (
+        <Link
+          href={`/contracts/${c.id}`}
+          className={styles.cardHit}
+          aria-label={`${hero ? "Resume" : "Open"} ${c.name}`}
+        />
+      )}
+
       <div className={styles.cardTop}>
         <span className={`${styles.badge} ${cfg.badge}`}>{cfg.label}</span>
         <span className={styles.cue}>{cfg.cue(c.openIssues)}</span>
         <span className={styles.activity}>{c.lastActivity}</span>
+        {mode === "idle" && (
+          <div className={styles.actions}>
+            <button
+              type="button"
+              className={styles.iconBtn}
+              aria-label={`Rename ${c.name}`}
+              onClick={() => {
+                setDraft(c.name);
+                setErr(null);
+                setMode("editing");
+              }}
+            >
+              <PencilIcon />
+            </button>
+            <button
+              type="button"
+              className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
+              aria-label={`Delete ${c.name}`}
+              onClick={() => {
+                setErr(null);
+                setMode("confirm");
+              }}
+            >
+              <TrashIcon />
+            </button>
+          </div>
+        )}
       </div>
 
-      <div className={styles.name}>{c.name}</div>
+      {mode === "editing" ? (
+        <div className={styles.renameRow}>
+          <input
+            className={styles.renameInput}
+            value={draft}
+            autoFocus
+            disabled={busy}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void saveRename();
+              else if (e.key === "Escape") {
+                setMode("idle");
+                setDraft(c.name);
+              }
+            }}
+            aria-label="Contract name"
+          />
+          <button
+            type="button"
+            className={styles.renameSave}
+            disabled={busy}
+            onClick={() => void saveRename()}
+          >
+            {busy ? "Saving…" : "Save"}
+          </button>
+          <button
+            type="button"
+            className={styles.renameCancel}
+            disabled={busy}
+            onClick={() => {
+              setMode("idle");
+              setDraft(c.name);
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <div className={styles.name}>{c.name}</div>
+      )}
       <div className={styles.meta}>
         {c.client}
         <span className={styles.metaSep}>·</span>
         {c.deal}
       </div>
 
-      <div className={styles.cardFoot}>
-        <span className={`${styles.issues} ${issuesClass}`}>
-          <span className={styles.issuesNum}>{c.openIssues}</span> open{" "}
-          {c.openIssues === 1 ? "issue" : "issues"}
-        </span>
-        <span className={styles.resume}>
-          {hero ? "Resume" : "Open"}
-          <span className={styles.resumeArrow} aria-hidden>
-            →
+      {mode === "confirm" ? (
+        <div className={styles.confirm} role="alertdialog" aria-label={`Delete ${c.name}?`}>
+          <span className={styles.confirmText}>
+            Delete this contract and everything in it? This can&apos;t be undone.
           </span>
-        </span>
-      </div>
-    </Link>
+          <button
+            type="button"
+            className={styles.confirmDelete}
+            disabled={busy}
+            onClick={() => void runDelete()}
+          >
+            {busy ? "Deleting…" : "Delete"}
+          </button>
+          <button
+            type="button"
+            className={styles.confirmCancel}
+            disabled={busy}
+            onClick={() => setMode("idle")}
+          >
+            Keep
+          </button>
+        </div>
+      ) : (
+        <div className={styles.cardFoot}>
+          <span className={`${styles.issues} ${issuesClass}`}>
+            <span className={styles.issuesNum}>{c.openIssues}</span> open{" "}
+            {c.openIssues === 1 ? "issue" : "issues"}
+          </span>
+          <span className={styles.resume}>
+            {hero ? "Resume" : "Open"}
+            <span className={styles.resumeArrow} aria-hidden>
+              →
+            </span>
+          </span>
+        </div>
+      )}
+
+      {err && (
+        <div className={styles.cardError} role="alert">
+          {err}
+        </div>
+      )}
+    </article>
   );
 }
 
@@ -234,6 +422,13 @@ export default function Home(): React.JSX.Element {
 
   useEffect(load, []);
 
+  function handleRenamed(id: string, name: string): void {
+    setContracts((prev) => (prev ? prev.map((c) => (c.id === id ? { ...c, name } : c)) : prev));
+  }
+  function handleDeleted(id: string): void {
+    setContracts((prev) => (prev ? prev.filter((c) => c.id !== id) : prev));
+  }
+
   let content: React.JSX.Element;
   if (error) {
     content = <ErrorState onRetry={load} />;
@@ -267,7 +462,14 @@ export default function Home(): React.JSX.Element {
         {yourMove.length > 0 && (
           <div className={styles.list}>
             {yourMove.map((c, i) => (
-              <ResumeCard key={c.id} c={c} hero delay={i * 60} />
+              <ResumeCard
+                key={c.id}
+                c={c}
+                hero
+                delay={i * 60}
+                onRenamed={handleRenamed}
+                onDeleted={handleDeleted}
+              />
             ))}
           </div>
         )}
@@ -277,7 +479,14 @@ export default function Home(): React.JSX.Element {
             <div className={styles.sectionLabel}>In flight</div>
             <div className={styles.list}>
               {rest.map((c, i) => (
-                <ResumeCard key={c.id} c={c} hero={false} delay={(yourMove.length + i) * 60} />
+                <ResumeCard
+                  key={c.id}
+                  c={c}
+                  hero={false}
+                  delay={(yourMove.length + i) * 60}
+                  onRenamed={handleRenamed}
+                  onDeleted={handleDeleted}
+                />
               ))}
             </div>
           </>
