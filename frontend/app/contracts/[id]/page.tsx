@@ -200,6 +200,8 @@ function friendlyPointer(p: string): string {
   const map: Record<string, string> = {
     last_shared_with_counterparty: "Counterparty baseline",
     last_shared_with_legal: "Legal baseline",
+    last_received_from_counterparty: "Latest from counterparty",
+    last_received_from_legal: "Latest from legal",
     counterparty: "Counterparty baseline",
     legal: "Legal baseline",
   };

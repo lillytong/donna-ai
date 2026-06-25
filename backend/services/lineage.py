@@ -9,8 +9,10 @@ DD-71) — all DERIVED, no schema change:
     list: ONE query (latest snapshot + its pointer tags + a per-contract
     divergence-EXISTS), no N+1. Drives the card badges.
   * `get_lineage` — the full v1→v2→…→vN chain (numbered by ROW_NUMBER over
-    created_at, DD-70), direction-tagged, with the live working copy marked
-    separately and the two greyed `received` placeholder slots (Phase-2).
+    created_at, DD-70), direction-tagged. Received versions (Mode B `as_received`
+    snapshots / `received` pointers, F03b) render as real numbered entries; the
+    greyed `received` placeholder slot is the empty state, kept only for a side
+    that has no received version yet. The live working copy is marked separately.
 
 Badge derivation (DD-75), where LBE = latest boundary event = most-recent snapshot:
   1. status=signed                       → "Signed · vN"
@@ -254,9 +256,10 @@ def _entry_direction(origin: str, has_shared: bool, has_received: bool) -> str:
 
 async def get_lineage(conn: Any, contract_id: str) -> LineageView:
     """Assemble the full lineage view: the badge (via the set-based resolver, which
-    carries the divergence probe), the numbered send/receive timeline, the
-    separately-marked working copy, and the two greyed `received` placeholder slots
-    (Phase-2, never populated in v1)."""
+    carries the divergence probe), the numbered send/receive timeline (received
+    versions from Mode B appear as real numbered entries, F03b), the
+    separately-marked working copy, and the greyed `received` placeholder slot for
+    any side without a received version yet (the empty state)."""
     from backend.services.snapshot import list_numbered_snapshots, list_pointers
 
     badge = (await derive_status_for_contracts(conn, [contract_id])).get(
@@ -295,9 +298,21 @@ async def get_lineage(conn: Any, contract_id: str) -> LineageView:
             )
         )
 
+    # A received version now renders as a real numbered timeline entry (Mode B sets
+    # the `received` pointer / as_received snapshot, F03b). The greyed reserved slot
+    # is the empty state — keep it only for a side with no received version yet.
+    received_sides: set[str] = set()
+    for entry in timeline:
+        if entry.direction != "received" or not entry.party:
+            continue
+        if entry.party == "both":
+            received_sides |= {"counterparty", "legal"}
+        else:
+            received_sides.add(entry.party)
     reserved = [
-        ReservedSlot(party="counterparty", label="Received from counterparty"),
-        ReservedSlot(party="legal", label="Received from legal"),
+        ReservedSlot(party=side, label=f"Received from {side}")
+        for side in ("counterparty", "legal")
+        if side not in received_sides
     ]
     return LineageView(
         contract_id=contract_id,

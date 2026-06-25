@@ -10,14 +10,13 @@ The operator-facing "where are we" surfaces over the snapshot/pointer machinery
   * `LineageView` — the v1→v2→…→vN chain: every snapshot numbered by its position
     on the timeline (ROW_NUMBER over `created_at`, DD-70), direction-tagged
     (`sent`/`received`), with the live working copy marked separately (never
-    numbered) and the two not-yet-populatable `received` pointer slots shown as
-    greyed placeholders (Mode B / Phase 2).
+    numbered). Received versions (Mode B `as_received` snapshots / `received`
+    pointers, F03b) are real numbered entries; a greyed `received` placeholder slot
+    is shown only for a side with no received version yet (the empty state).
 
 Version numbers attach only to frozen snapshots; the working copy is never numbered
-or locked (DD-70). `received` entries + their pointer slots stay empty until the
-Phase-2 revision-import path lands — the numbering rule (position over ALL
-snapshots) is receive-ready, so adding receives later never renumbers existing
-versions.
+or locked (DD-70). The numbering rule (position over ALL snapshots) is receive-ready,
+so interleaving receives never renumbers existing versions.
 """
 
 from __future__ import annotations
@@ -97,9 +96,10 @@ class WorkingCopyEntry(BaseModel):
 
 
 class ReservedSlot(BaseModel):
-    """A not-yet-populatable `received` pointer slot, shown greyed (lineage v1 scope,
-    DD-75). Both counterparty + legal received slots stay `populated=False` until the
-    Phase-2 revision-import path sets the matching `received` pointer (DD-48)."""
+    """The empty-state `received` pointer slot, shown greyed (DD-75). Emitted only
+    for a side (counterparty / legal) with no received version yet; once Mode B sets
+    the matching `received` pointer (DD-48, F03b) that side renders a real numbered
+    `LineageEntry` and its reserved slot is dropped. Always `populated=False`."""
 
     party: str
     direction: str = "received"
@@ -109,8 +109,8 @@ class ReservedSlot(BaseModel):
 
 class LineageView(BaseModel):
     """The full lineage response: the current badge, the numbered send/receive
-    timeline, the separately-marked working copy, and the two greyed `received`
-    placeholder slots."""
+    timeline, the separately-marked working copy, and the greyed `received`
+    placeholder slot(s) for any side without a received version yet."""
 
     contract_id: str
     badge: ContractBadge

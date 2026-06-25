@@ -305,6 +305,60 @@ async def test_get_lineage_assembles_timeline_baseline_and_reserved() -> None:
     ]
 
 
+async def test_get_lineage_received_version_is_numbered_entry_not_reserved() -> None:
+    # A Mode-B `as_received` snapshot with a `received` pointer (F03b): v2 must be a
+    # real direction-tagged timeline entry, and the counterparty reserved slot must
+    # drop while the legal (still-empty) reserved slot remains.
+    conn = _FakeConn(
+        badge_rows=[
+            {
+                "contract_id": "c1",
+                "status": "under negotiation",
+                "snapshot_count": 2,
+                "lbe_id": "s2",
+                "lbe_origin": "as_received",
+                "lbe_pointers": ["counterparty:received"],
+                "diverged": False,
+            }
+        ],
+        numbered_rows=[
+            {
+                "id": "s1",
+                "contract_id": "c1",
+                "label": None,
+                "origin": "export",
+                "created_at": _BASE,
+                "version": 1,
+            },
+            {
+                "id": "s2",
+                "contract_id": "c1",
+                "label": None,
+                "origin": "as_received",
+                "created_at": _BASE + timedelta(minutes=1),
+                "version": 2,
+            },
+        ],
+        pointer_rows=[
+            {"party": "counterparty", "direction": "shared", "snapshot_id": "s1"},
+            {"party": "counterparty", "direction": "received", "snapshot_id": "s2"},
+        ],
+    )
+
+    view = await lineage.get_lineage(conn, "c1")
+
+    assert [e.version for e in view.timeline] == [1, 2]
+    v1, v2 = view.timeline
+    assert v1.direction == "sent" and v1.party == "counterparty"
+    assert v2.version == 2
+    assert v2.direction == "received" and v2.party == "counterparty"
+    assert v2.pointer_labels == ["last_received_from_counterparty"]
+    assert v2.snapshot_id == "s2"  # openable read-only via get_snapshot_tree
+
+    # Counterparty now has a received version → its reserved slot is gone; legal stays.
+    assert [(r.party, r.populated) for r in view.reserved] == [("legal", False)]
+
+
 async def test_get_lineage_marker_flows_to_working_copy() -> None:
     conn = _FakeConn(
         badge_rows=[
@@ -354,16 +408,31 @@ def _stored_snapshot_row(tree: list[SnapshotNode]) -> dict[str, Any]:
 async def test_get_snapshot_tree_nests_and_drops_deleted() -> None:
     tree = [
         SnapshotNode(
-            id="n1", parent_id=None, order_index=100, content_type="prose",
-            heading="1", body="Root.", is_deleted=False,
+            id="n1",
+            parent_id=None,
+            order_index=100,
+            content_type="prose",
+            heading="1",
+            body="Root.",
+            is_deleted=False,
         ),
         SnapshotNode(
-            id="n2", parent_id="n1", order_index=100, content_type="prose",
-            heading="1.1", body="Child.", is_deleted=False,
+            id="n2",
+            parent_id="n1",
+            order_index=100,
+            content_type="prose",
+            heading="1.1",
+            body="Child.",
+            is_deleted=False,
         ),
         SnapshotNode(
-            id="n3", parent_id="n1", order_index=200, content_type="prose",
-            heading=None, body="Gone.", is_deleted=True,
+            id="n3",
+            parent_id="n1",
+            order_index=200,
+            content_type="prose",
+            heading=None,
+            body="Gone.",
+            is_deleted=True,
         ),
     ]
     conn = _FakeConn(snapshots={"s1": _stored_snapshot_row(tree)})
@@ -381,8 +450,13 @@ async def test_get_snapshot_tree_nests_and_drops_deleted() -> None:
 async def test_get_snapshot_tree_rejects_cross_contract() -> None:
     tree = [
         SnapshotNode(
-            id="n1", parent_id=None, order_index=100, content_type="prose",
-            heading=None, body="x", is_deleted=False,
+            id="n1",
+            parent_id=None,
+            order_index=100,
+            content_type="prose",
+            heading=None,
+            body="x",
+            is_deleted=False,
         )
     ]
     conn = _FakeConn(snapshots={"s1": _stored_snapshot_row(tree)})
