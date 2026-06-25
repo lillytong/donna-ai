@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.models.revision_import import (
     ChangeStatus,
@@ -60,6 +60,43 @@ class ReviewHunk(BaseModel):
     final_text: str | None
 
 
+class ChangeContextSide(BaseModel):
+    """Structural context for ONE side (baseline or incoming) of a review change —
+    where the clause sits and what surrounds it, so the operator judges every change
+    in context, not as a floating tracked-change fragment (F03c UX).
+
+    - `number` / `heading`: clause identity ("4.2" / "Payment Terms"), the card header.
+    - `breadcrumb`: the ancestor-heading chain (which section the clause lives under).
+    - `body`: the FULL clause text the hunk offsets (`position_in_body`) index into, so
+      an edited card can render the diff IN PLACE within the surrounding sentences.
+    - `children_preview` / `prev_label` / `next_label`: what sits under / beside the
+      clause (the abstain disambiguator; the new/deleted "where it lands" neighbours).
+
+    `found=False` ⇒ no resolvable node for this side (an abstain with no baseline
+    candidate, or the side that doesn't apply to this change kind); the rest stay
+    empty/None so a card degrades gracefully rather than erroring."""
+
+    side: Literal["their", "baseline"]
+    found: bool
+    number: str | None = None
+    heading: str | None = None
+    breadcrumb: list[str] = Field(default_factory=list)
+    children_preview: list[str] = Field(default_factory=list)
+    body: str | None = None
+    prev_label: str | None = None
+    next_label: str | None = None
+
+
+class ChangeContext(BaseModel):
+    """Both sides of a change's structural context. Which side is populated depends on
+    the change kind: edited / deleted ⇒ `baseline` (the live node located by `node_id`);
+    new ⇒ `their` (the incoming node, body-matched in the as_received tree); abstain ⇒
+    both (the candidate baseline + the incoming clause)."""
+
+    their: ChangeContextSide
+    baseline: ChangeContextSide
+
+
 class ReviewChange(BaseModel):
     """One navigation unit (a `counterparty_revision_changes` row) + its hunks and
     derived `change_kind`. Used for both the Phase-1 abstain queue and the Phase-2
@@ -76,6 +113,8 @@ class ReviewChange(BaseModel):
     hunks_decided: int
     status: ChangeStatus
     hunks: list[ReviewHunk]
+    # Read-only structural enrichment, populated for EVERY change (both phases).
+    context: ChangeContext | None = None
 
 
 class TreeAnomaly(BaseModel):

@@ -10,10 +10,13 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
+from backend.models.imports import ContractTreeResponse, StoredNode
 from backend.models.revision_review import (
     ConfirmMatchRequest,
     HunkDecideRequest,
     NodeDecideRequest,
+    ReviewChange,
+    ReviewHunk,
 )
 from backend.services.import_ import revision_review as svc
 
@@ -325,3 +328,221 @@ async def test_confirm_match_rejects_completed_session() -> None:
         await svc.confirm_match(conn, "ch1", ConfirmMatchRequest(action="confirm"))
     assert exc.value.status_code == 409
     assert not any("SET node_id = $2" in sql for sql, _ in conn.executes)
+
+
+# --- change structural context (F03c UX enrichment, every change kind) ------
+
+
+def _sn(
+    nid: str,
+    parent: str | None,
+    order: int,
+    *,
+    heading: str | None = None,
+    body: str | None = None,
+) -> StoredNode:
+    return StoredNode(
+        id=nid,
+        parent_id=parent,
+        order_index=order,
+        content_type="prose",
+        heading=heading,
+        body=body,
+    )
+
+
+def _baseline_tree() -> ContractTreeResponse:
+    # Services › Performance › [Process Optimisation] -> {Uptime targets, Response times}
+    return ContractTreeResponse.from_rows(
+        "c1",
+        [
+            _sn("svc", None, 0, heading="Services"),
+            _sn("perf", "svc", 0, heading="Performance"),
+            _sn("cand", "perf", 0, heading="Process Optimisation"),
+            _sn("c1", "cand", 0, heading="Uptime targets"),
+            _sn("c2", "cand", 1, heading="Response times"),
+        ],
+    )
+
+
+def _received_tree() -> ContractTreeResponse:
+    # Master Terms › Performance › [body=Process Optimization] -> {System uptime, Latency}
+    return ContractTreeResponse.from_rows(
+        "c1",
+        [
+            _sn("r-root", None, 0, heading="Master Terms"),
+            _sn("r-perf", "r-root", 0, heading="Performance"),
+            _sn("r-cand", "r-perf", 0, body="Process Optimization"),
+            _sn("rc1", "r-cand", 0, body="System uptime"),
+            _sn("rc2", "r-cand", 1, body="Latency"),
+        ],
+    )
+
+
+def _ctx_hunk(original: str | None, proposed: str | None) -> ReviewHunk:
+    return ReviewHunk(
+        id="h1",
+        change_id="ab1",
+        hunk_type="replacement" if original is not None else "insertion",
+        significance="substantive",
+        position_in_body=0,
+        original_text=original,
+        proposed_text=proposed,
+        donna_verdict=None,
+        donna_counter_text=None,
+        verdict="pending",
+        final_text=None,
+    )
+
+
+def _make_change(
+    kind: str,
+    hunks: list[ReviewHunk],
+    *,
+    node_id: str | None = None,
+    parent: str | None = None,
+    order: int | None = None,
+    conf: float | None = None,
+) -> ReviewChange:
+    return ReviewChange(
+        id="ch1",
+        session_id="s1",
+        change_kind=kind,  # type: ignore[arg-type]
+        node_id=node_id,
+        proposed_parent_id=parent,
+        proposed_order_index=order,
+        match_confidence=conf,
+        hunk_count=len(hunks),
+        hunks_decided=0,
+        status="pending",
+        hunks=hunks,
+    )
+
+
+def _edited_baseline_tree() -> ContractTreeResponse:
+    # Services › Payment › [pterm body] , sibling "plate" so a next-neighbour exists.
+    return ContractTreeResponse.from_rows(
+        "c1",
+        [
+            _sn("svc", None, 0, heading="Services"),
+            _sn("pay", "svc", 0, heading="Payment"),
+            _sn("pterm", "pay", 0, body="The licensee shall pay within thirty days of invoice."),
+            _sn("plate", "pay", 1, body="Late payments accrue interest at one percent monthly."),
+        ],
+    )
+
+
+def test_locate_derives_number_breadcrumb_and_neighbours() -> None:
+    located = svc._locate(_edited_baseline_tree().nodes, "pterm")
+    assert located is not None
+    assert located.number == "1.1.1"
+    assert located.breadcrumb == ["Services", "Payment"]
+    assert located.item.id == "pterm"
+    assert located.prev_label is None
+    assert located.next_label == "Late payments accrue interest at one percent monthly."
+
+
+def test_build_side_context_no_target_degrades() -> None:
+    ctx = svc._build_side_context("baseline", _baseline_tree(), None)
+    assert ctx.found is False
+    assert ctx.number is None and ctx.breadcrumb == [] and ctx.children_preview == []
+    assert ctx.body is None
+
+
+def test_find_incoming_id_flags_ambiguity() -> None:
+    tree = ContractTreeResponse.from_rows(
+        "c1",
+        [
+            _sn("a", None, 0, body="Performance Standards"),
+            _sn("b", None, 1, body="Performance Standards"),
+        ],
+    )
+    node_id, ambiguous = svc._find_incoming_id(tree.nodes, "Performance Standards")
+    assert node_id == "a" and ambiguous is True
+
+
+@pytest.mark.asyncio
+async def test_edited_change_resolves_exactly_with_in_context_body() -> None:
+    # EDITED: node_id is the baseline node directly -> exact resolution, full body
+    # returned with offsets that index INTO it (so the diff renders in place).
+    body = "The licensee shall pay within thirty days of invoice."
+    pos = body.index("thirty")
+    hunk = _ctx_hunk("thirty", "forty five")
+    hunk.position_in_body = pos
+    change = _make_change("edited", [hunk], node_id="pterm", conf=0.55)
+
+    ctx = await svc._change_context(
+        FakeConn(), "c1", change, _edited_baseline_tree(), _received_tree()
+    )
+
+    assert ctx.baseline.found is True
+    assert ctx.baseline.number == "1.1.1"
+    assert ctx.baseline.heading is None  # body-only clause
+    assert ctx.baseline.breadcrumb == ["Services", "Payment"]
+    assert ctx.baseline.body == body
+    # The hunk offset indexes into the returned body -> in-place rendering is valid.
+    assert ctx.baseline.body[pos : pos + len("thirty")] == "thirty"
+    assert ctx.baseline.next_label == "Late payments accrue interest at one percent monthly."
+    # The their side does not apply to an edited change.
+    assert ctx.their.found is False
+
+
+@pytest.mark.asyncio
+async def test_deleted_change_resolves_baseline_by_node_id() -> None:
+    change = _make_change(
+        "deleted", [_ctx_hunk("Process Optimisation", None)], node_id="cand", conf=None
+    )
+    ctx = await svc._change_context(FakeConn(), "c1", change, _baseline_tree(), _received_tree())
+    assert ctx.baseline.found is True
+    assert ctx.baseline.number == "1.1.1"
+    assert ctx.baseline.breadcrumb == ["Services", "Performance"]
+    assert ctx.their.found is False
+
+
+@pytest.mark.asyncio
+async def test_new_change_resolves_their_side_from_received_tree() -> None:
+    # NEW: node_id NULL; the added clause is body-matched in the as_received tree.
+    change = _make_change("new", [_ctx_hunk(None, "Process Optimization")], parent="cand", order=2)
+    ctx = await svc._change_context(FakeConn(), "c1", change, _baseline_tree(), _received_tree())
+    assert ctx.their.found is True
+    assert ctx.their.breadcrumb == ["Master Terms", "Performance"]
+    assert ctx.their.children_preview == ["System uptime", "Latency"]
+    assert ctx.baseline.found is False
+
+
+@pytest.mark.asyncio
+async def test_abstain_context_populates_both_sides() -> None:
+    # Candidate abstain: a heading match the operator can't judge from text alone.
+    conn = FakeConn(nodes=[{"id": "cand", "body": None, "heading": "Process Optimisation"}])
+    change = _make_change(
+        "abstain",
+        [_ctx_hunk("Process Optimisation", "Process Optimization")],
+        parent="cand",
+        conf=0.42,
+    )
+
+    pair = await svc._change_context(conn, "c1", change, _baseline_tree(), _received_tree())
+
+    assert pair.baseline.found is True
+    assert pair.baseline.number == "1.1.1"
+    assert pair.baseline.breadcrumb == ["Services", "Performance"]
+    assert pair.baseline.children_preview == ["Uptime targets", "Response times"]
+
+    assert pair.their.found is True
+    assert pair.their.breadcrumb == ["Master Terms", "Performance"]
+    assert pair.their.children_preview == ["System uptime", "Latency"]
+
+
+@pytest.mark.asyncio
+async def test_abstain_context_no_candidate_degrades_gracefully() -> None:
+    # No baseline candidate: the "(no candidate)" side returns empty, never errors;
+    # the incoming side still resolves from the as_received tree.
+    conn = FakeConn()
+    change = _make_change("abstain", [_ctx_hunk(None, "Process Optimization")], parent=None)
+
+    pair = await svc._change_context(conn, "c1", change, _baseline_tree(), _received_tree())
+
+    assert pair.baseline.found is False
+    assert pair.baseline.breadcrumb == [] and pair.baseline.children_preview == []
+    assert pair.their.found is True
+    assert pair.their.children_preview == ["System uptime", "Latency"]

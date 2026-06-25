@@ -18,6 +18,7 @@ import {
   decideNode,
   getRevisionReview,
   getSnapshotTree,
+  type ChangeContextSide,
   type ApplyResult,
   type HunkDecisionAction,
   type NodeDecisionAction,
@@ -566,10 +567,12 @@ export default function RevisionReview({
           <div className={styles.pairBlock}>
             <span className={styles.pairLabel}>Their clause</span>
             <p className={styles.clause}>{theirs || "(no text)"}</p>
+            {renderSideContext(c.context?.their)}
           </div>
           <div className={styles.pairBlock}>
             <span className={styles.pairLabel}>Closest in your draft</span>
             <p className={styles.clause}>{candidate || "(no candidate)"}</p>
+            {renderSideContext(c.context?.baseline)}
           </div>
         </div>
         {isRematch ? (
@@ -657,9 +660,15 @@ export default function RevisionReview({
             {c.hunks_decided}/{c.hunk_count} decided
           </span>
         </header>
-        {c.change_kind === "edited"
-          ? c.hunks.map((h) => renderHunk(c, h))
-          : renderWholeNode(c)}
+        {renderCardContext(c)}
+        {c.change_kind === "edited" ? (
+          <>
+            {renderEditedInContext(c)}
+            {c.hunks.map((h) => renderHunk(c, h))}
+          </>
+        ) : (
+          renderWholeNode(c)
+        )}
       </article>
     );
   }
@@ -879,4 +888,139 @@ function segClass(type: DiffSeg["type"]): string {
   if (type === "ins") return styles.diffIns;
   if (type === "del") return styles.diffDel;
   return styles.diffSame;
+}
+
+// Clause identity ("4.2 — Payment Terms"); number alone, heading alone, or both.
+function clauseIdentity(ctx: ChangeContextSide): string {
+  return [ctx.number, ctx.heading].filter(Boolean).join(" — ");
+}
+
+// The side that carries a content card's identity: their incoming clause for a new
+// node, the baseline clause for an edit/deletion.
+function primarySide(c: ReviewChange): ChangeContextSide | undefined {
+  if (!c.context) return undefined;
+  return c.change_kind === "new" ? c.context.their : c.context.baseline;
+}
+
+// Structural context under one side of an abstain card — its identity + ancestor
+// breadcrumb ("Services › Performance") and a preview of what sits under it. This is
+// what lets the operator judge a bare-heading match. Nothing renders when the side
+// has no resolvable context (e.g. the "(no candidate)" baseline side).
+function renderSideContext(ctx: ChangeContextSide | null | undefined) {
+  if (!ctx || !ctx.found) return null;
+  const identity = clauseIdentity(ctx);
+  const path = ctx.breadcrumb.join(" › ");
+  const hasMeta = Boolean(identity) || Boolean(path);
+  if (!hasMeta && ctx.children_preview.length === 0) return null;
+  return (
+    <div className={styles.context}>
+      {hasMeta && (
+        <p className={styles.ctxMeta}>
+          {identity && <span className={styles.ctxNum}>{identity}</span>}
+          {path && <span className={styles.ctxPath}>{path}</span>}
+        </p>
+      )}
+      {ctx.children_preview.length > 0 && (
+        <>
+          <span className={styles.ctxLabel}>Contains</span>
+          <ul className={styles.ctxChildren}>
+            {ctx.children_preview.map((child, i) => (
+              <li key={i} className={styles.ctxChild}>
+                {child}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
+// A content card's header context (every kind): clause identity + the breadcrumb of
+// the section it sits in, plus the flanking-clause note for adds/removals (where the
+// change lands). Read-only — decision actions are untouched.
+function renderCardContext(c: ReviewChange) {
+  const s = primarySide(c);
+  if (!s || !s.found) return null;
+  const identity = clauseIdentity(s);
+  const path = s.breadcrumb.join(" › ");
+  const showNeighbours = c.change_kind === "new" || c.change_kind === "deleted";
+  if (!identity && !path && !(showNeighbours && (s.prev_label || s.next_label))) return null;
+  return (
+    <div className={styles.cardCtx}>
+      {(identity || path) && (
+        <p className={styles.cardCtxLine}>
+          {identity && <span className={styles.cardId}>{identity}</span>}
+          {path && <span className={styles.cardCrumb}>{path}</span>}
+        </p>
+      )}
+      {showNeighbours && (s.prev_label || s.next_label) && (
+        <p className={styles.neighbour}>
+          {s.prev_label && (
+            <span>
+              After: <em>{s.prev_label}</em>
+            </span>
+          )}
+          {s.next_label && (
+            <span>
+              Before: <em>{s.next_label}</em>
+            </span>
+          )}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// Splice an edited clause's hunks back into its full baseline body so the diff reads
+// IN PLACE, with the surrounding sentences visible. Hunk `position_in_body` offsets
+// index into `body` (the same string F03b diffed); within each hunk a word-level diff
+// gives fine ins/del granularity. Long unchanged runs are collapsed so a huge clause
+// still shows context around each change without dumping the whole document.
+function inContextSegs(body: string, hunks: ReviewHunk[]): DiffSeg[] {
+  const sorted = [...hunks].sort(
+    (a, b) => (a.position_in_body ?? 0) - (b.position_in_body ?? 0),
+  );
+  const out: DiffSeg[] = [];
+  const push = (type: DiffSeg["type"], text: string) => {
+    if (!text) return;
+    const last = out[out.length - 1];
+    if (last && last.type === type) last.text += text;
+    else out.push({ type, text });
+  };
+  let cursor = 0;
+  for (const h of sorted) {
+    const pos = h.position_in_body ?? 0;
+    if (pos > cursor) push("same", body.slice(cursor, pos));
+    const orig = h.original_text ?? "";
+    for (const seg of wordDiff(orig, h.proposed_text)) push(seg.type, seg.text);
+    cursor = Math.max(cursor, pos + orig.length);
+  }
+  if (cursor < body.length) push("same", body.slice(cursor));
+  return out;
+}
+
+// Collapse the middle of a long unchanged run, keeping context on each side of edits.
+const CTX_EQUAL_KEEP = 140;
+function collapseSame(text: string): string {
+  if (text.length <= CTX_EQUAL_KEEP * 2 + 5) return text;
+  return `${text.slice(0, CTX_EQUAL_KEEP)} … ${text.slice(-CTX_EQUAL_KEEP)}`;
+}
+
+function renderEditedInContext(c: ReviewChange) {
+  const body = c.context?.baseline?.body;
+  if (!body) return null;
+  const segs = inContextSegs(body, c.hunks);
+  return (
+    <div className={styles.inContext}>
+      <span className={styles.ctxLabel}>In context</span>
+      <p className={styles.inContextBody}>
+        {segs.map((seg, i) => (
+          <span key={i} className={segClass(seg.type)}>
+            {seg.type === "same" ? collapseSame(seg.text) : seg.text}
+          </span>
+        ))}
+      </p>
+    </div>
+  );
 }

@@ -28,7 +28,7 @@ whole-node accept→accepted · reject→rejected · edit→modified.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 import structlog
 
@@ -38,9 +38,12 @@ from backend.models.audit import (
     EVENT_REVISION_SESSION_APPLIED,
     AuditEvent,
 )
+from backend.models.imports import ContractTreeResponse, NodeTreeItem
 from backend.models.revision_import import StoredRevisionSession
 from backend.models.revision_review import (
     ApplyResult,
+    ChangeContext,
+    ChangeContextSide,
     ChangeKind,
     ConfirmMatchRequest,
     HunkDecideRequest,
@@ -54,6 +57,7 @@ from backend.models.revision_review import (
 from backend.services import node_create, node_delete, node_edit
 from backend.services.audit_repo import record_event
 from backend.services.import_.revision_import import extract_hunks
+from backend.services.snapshot import get_snapshot_tree
 
 log = structlog.get_logger()
 
@@ -217,6 +221,20 @@ SELECT id, parent_id, order_index FROM nodes
 WHERE contract_id = $1 AND is_deleted = false
 """
 
+# The as_received snapshot of an active session is the one the `received` pointer for
+# the session's party points at — the import cut it and advanced the pointer in one
+# txn, and the single-open-session guard means no later import can have moved it while
+# the session is `reviewing` (session.source == the pointer party, DD-47/DD-48).
+_FIND_RECEIVED_POINTER = """
+SELECT snapshot_id FROM snapshot_pointers
+WHERE contract_id = $1 AND party = $2 AND direction = 'received'
+"""
+
+# Abstain-context bounds (read-only enrichment must stay cheap).
+_CTX_MAX_BREADCRUMB = 3
+_CTX_MAX_CHILDREN = 5
+_CTX_SNIPPET = 120
+
 _INSERT_REVISION_ISSUE = """
 INSERT INTO issues
     (contract_id, node_id, title, their_position, category, initiator,
@@ -378,6 +396,170 @@ async def _doc_order(conn: Any, contract_id: str) -> dict[str, int]:
     return seq
 
 
+# --------------------------------------------------------------------------- #
+# Change structural context (F03c UX — read-only enrichment, every change kind) #
+# --------------------------------------------------------------------------- #
+
+
+class _Located(NamedTuple):
+    number: str
+    breadcrumb: list[str]
+    item: NodeTreeItem
+    prev_label: str | None
+    next_label: str | None
+
+
+def _node_label(item: NodeTreeItem) -> str:
+    """Single-line label for a node: its heading, else a truncated body snippet."""
+    text = (item.heading or item.body or item.plain_text or "").strip()
+    if len(text) > _CTX_SNIPPET:
+        return text[:_CTX_SNIPPET].rstrip() + "…"
+    return text
+
+
+def _node_body(item: NodeTreeItem) -> str | None:
+    """The FULL clause text the hunk offsets index into. Prose nodes hold their text
+    in EITHER heading OR body (persist.py splits one or the other, never both), so
+    `heading or body` reproduces the exact string F03b's `_snapshotnode_text` diffed —
+    keeping `position_in_body` valid for in-place edit rendering."""
+    return (item.heading or item.body or "").strip() or None
+
+
+def _locate(nodes: list[NodeTreeItem], target_id: str) -> _Located | None:
+    """DFS a nested tree for `target_id`, accumulating the derived outline number
+    (1-based sibling path, e.g. "2.1"), the ancestor-heading breadcrumb, and the
+    labels of the two flanking siblings (placement neighbours). None if id absent."""
+
+    def walk(items: list[NodeTreeItem], prefix: str, crumb: list[str]) -> _Located | None:
+        for pos, item in enumerate(items, start=1):
+            number = f"{prefix}.{pos}" if prefix else str(pos)
+            if item.id == target_id:
+                prev_label = _node_label(items[pos - 2]) if pos >= 2 else None
+                next_label = _node_label(items[pos]) if pos < len(items) else None
+                return _Located(number, crumb, item, prev_label or None, next_label or None)
+            hit = walk(item.children, number, [*crumb, _node_label(item)])
+            if hit is not None:
+                return hit
+        return None
+
+    return walk(nodes, "", [])
+
+
+def _empty_context(side: str) -> ChangeContextSide:
+    return ChangeContextSide(side=cast(Any, side), found=False)
+
+
+def _build_side_context(
+    side: str, tree: ContractTreeResponse | None, target_id: str | None
+) -> ChangeContextSide:
+    if tree is None or target_id is None:
+        return _empty_context(side)
+    located = _locate(tree.nodes, target_id)
+    if located is None:
+        return _empty_context(side)
+    breadcrumb = [c for c in located.breadcrumb if c][-_CTX_MAX_BREADCRUMB:]
+    children_preview = [lbl for child in located.item.children if (lbl := _node_label(child))][
+        :_CTX_MAX_CHILDREN
+    ]
+    return ChangeContextSide(
+        side=cast(Any, side),
+        found=True,
+        number=located.number,
+        heading=(located.item.heading or "").strip() or None,
+        breadcrumb=breadcrumb,
+        children_preview=children_preview,
+        body=_node_body(located.item),
+        prev_label=located.prev_label,
+        next_label=located.next_label,
+    )
+
+
+def _find_incoming_id(nodes: list[NodeTreeItem], body: str) -> tuple[str | None, bool]:
+    """Recover an incoming (as_received) node by matching its reconstructed body
+    against snapshot node text. Used for `new` and `abstain` changes — neither stores
+    an incoming-node reference (only the baseline candidate, see report). Returns
+    (node_id, ambiguous) where ambiguous flags >1 body-identical node (e.g. repeated
+    headings), which cannot be disambiguated from the staged data."""
+    target = body.strip()
+    if not target:
+        return None, False
+    matches: list[str] = []
+
+    def walk(items: list[NodeTreeItem]) -> None:
+        for item in items:
+            text = (item.heading or item.body or item.plain_text or "").strip()
+            if text == target:
+                matches.append(item.id)
+            walk(item.children)
+
+    walk(nodes)
+    if not matches:
+        return None, False
+    return matches[0], len(matches) > 1
+
+
+async def _change_context(
+    conn: Any,
+    contract_id: str,
+    change: ReviewChange,
+    baseline_tree: ContractTreeResponse | None,
+    received_tree: ContractTreeResponse | None,
+) -> ChangeContext:
+    """Resolve both sides of a change's structural context. Resolution is EXACT for
+    settled changes (the change row carries the node id) and a body-match heuristic
+    only where no incoming reference is stored (new / abstain):
+      - edited / deleted ⇒ `baseline` located by `node_id`.
+      - new              ⇒ `their` body-matched in the as_received tree.
+      - abstain          ⇒ `baseline` = candidate (`proposed_parent_id`) + `their`."""
+    kind = change.change_kind
+    baseline_ctx = _empty_context("baseline")
+    their_ctx = _empty_context("their")
+
+    if kind in ("edited", "deleted"):
+        baseline_ctx = _build_side_context("baseline", baseline_tree, change.node_id)
+    elif kind == "abstain":
+        baseline_ctx = _build_side_context("baseline", baseline_tree, change.proposed_parent_id)
+
+    if kind in ("new", "abstain"):
+        incoming_body = await _reconstruct_incoming(
+            conn, contract_id, change.proposed_parent_id, change.hunks
+        )
+        their_id, ambiguous = _find_incoming_id(
+            received_tree.nodes if received_tree is not None else [], incoming_body
+        )
+        if ambiguous:
+            log.warning(
+                "revision_review.change_incoming_ambiguous",
+                change_id=change.id,
+                contract_id=contract_id,
+                kind=kind,
+            )
+        their_ctx = _build_side_context("their", received_tree, their_id)
+
+    return ChangeContext(their=their_ctx, baseline=baseline_ctx)
+
+
+async def _attach_change_context(
+    conn: Any, session: StoredRevisionSession, changes: list[ReviewChange]
+) -> None:
+    """Populate `context` on every change (both phases). Resolves the two snapshot
+    trees ONCE per payload; the received tree is the as_received snapshot the session's
+    `received` pointer points at (reliable while the session is `reviewing`)."""
+    if not changes:
+        return
+    baseline_tree = await get_snapshot_tree(conn, session.contract_id, session.baseline_snapshot_id)
+    received_id = await conn.fetchval(_FIND_RECEIVED_POINTER, session.contract_id, session.source)
+    received_tree = (
+        await get_snapshot_tree(conn, session.contract_id, str(received_id))
+        if received_id is not None
+        else None
+    )
+    for change in changes:
+        change.context = await _change_context(
+            conn, session.contract_id, change, baseline_tree, received_tree
+        )
+
+
 async def get_review_payload(conn: Any, session_id: str) -> ReviewPayload:
     session_row = await conn.fetchrow(_SELECT_SESSION, session_id)
     if session_row is None:
@@ -387,6 +569,7 @@ async def get_review_payload(conn: Any, session_id: str) -> ReviewPayload:
     change_rows = await conn.fetch(_SELECT_CHANGES, session_id)
     hunks_by_change = await _hunks_for(conn, [str(r["id"]) for r in change_rows])
     changes = [_to_change(r, hunks_by_change.get(str(r["id"]), [])) for r in change_rows]
+    await _attach_change_context(conn, session, changes)
 
     abstains = sorted(
         (c for c in changes if c.change_kind == "abstain"),

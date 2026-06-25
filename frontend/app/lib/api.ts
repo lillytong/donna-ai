@@ -980,9 +980,34 @@ export interface ReviewHunk {
   final_text: string | null;
 }
 
+// Structural context for one side (baseline/incoming) of a review change (F03c UX).
+// `number`/`heading` = clause identity; `breadcrumb` = the section it sits under;
+// `body` = the FULL clause text the hunk offsets index into (so an edited diff renders
+// in place); `children_preview`/`prev_label`/`next_label` = what's under/beside it.
+// `found` is false when the side has no resolvable node (the other fields then empty).
+export interface ChangeContextSide {
+  side: "their" | "baseline";
+  found: boolean;
+  number: string | null;
+  heading: string | null;
+  breadcrumb: string[];
+  children_preview: string[];
+  body: string | null;
+  prev_label: string | null;
+  next_label: string | null;
+}
+
+// Both sides of a change's structural context. edited/deleted populate `baseline`
+// (located by node_id); new populates `their`; abstain populates both.
+export interface ChangeContext {
+  their: ChangeContextSide;
+  baseline: ChangeContextSide;
+}
+
 // One navigation unit + its hunks and derived `change_kind`. For an abstain,
 // `proposed_parent_id` carries the provisional baseline candidate and
 // `match_confidence` its score; for a new node `proposed_order_index` its position.
+// `context` is read-only structural enrichment, populated for EVERY change.
 export interface ReviewChange {
   id: string;
   session_id: string;
@@ -995,6 +1020,7 @@ export interface ReviewChange {
   hunks_decided: number;
   status: ChangeStatus;
   hunks: ReviewHunk[];
+  context: ChangeContext | null;
 }
 
 // A residual 6a tree-shape anomaly. F03b stages none yet → always empty.
