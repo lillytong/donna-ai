@@ -22,10 +22,48 @@ _RateLimitError: type[Exception] = litellm.RateLimitError  # type: ignore[attr-d
 
 Tier = Literal["high", "medium", "low"]
 
+# Transient failure types — safe to retry with exponential backoff. Timeouts and
+# connection/5xx server errors are not the caller's fault; the provider may succeed
+# on a fresh attempt. Resolved from litellm at import (its type stub omits these
+# names, so getattr + an isinstance(type) guard keeps mypy honest and the tuple sane
+# even if a future litellm renames one).
+_TRANSIENT_TYPES: tuple[type[Exception], ...] = tuple(
+    t
+    for t in (
+        getattr(litellm, "Timeout", None),
+        getattr(litellm, "APIConnectionError", None),
+        getattr(litellm, "ServiceUnavailableError", None),
+        getattr(litellm, "InternalServerError", None),
+    )
+    if isinstance(t, type)
+)
+
 
 class LLMRateLimitError(RuntimeError):
-    """Provider rate-limited us and the single retry also failed. Callers map this
+    """Provider rate-limited us and every retry also failed. Callers map this
     to a clean 429 rather than letting it surface as an unhandled 500."""
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """True for retryable failures: known transient types, or any error carrying a
+    5xx status. NON-transient errors (bad request, auth, context-length) return False
+    and are surfaced immediately. Rate limits are handled on their own path."""
+    if isinstance(exc, _TRANSIENT_TYPES):
+        return True
+    status = getattr(exc, "status_code", None)
+    return isinstance(status, int) and status >= 500
+
+
+def _retry_delay(
+    attempt: int, exc: BaseException, backoff_base_s: float, timeout_s: float
+) -> float:
+    """Exponential backoff for the given 0-based attempt, honouring a provider
+    `retry_after` hint when present, capped at the per-attempt timeout."""
+    delay = backoff_base_s * (2**attempt)
+    retry_after = getattr(exc, "retry_after", None)
+    if isinstance(retry_after, int | float) and retry_after > 0:
+        delay = max(delay, float(retry_after))
+    return float(min(delay, timeout_s))
 
 
 async def complete(
@@ -60,21 +98,42 @@ async def complete(
     async def _once() -> Any:
         return await litellm.acompletion(**kwargs)
 
+    # Retry transient failures (timeouts, rate limits, 5xx/connection) with exponential
+    # backoff; knobs are config, not hardcoded (DD-35). Non-transient errors (bad request,
+    # auth, context-length) are surfaced on the first attempt. Rate limits, once retries are
+    # exhausted, become LLMRateLimitError so the routes' 429 mapping stays correct.
+    max_retries = settings.llm.llm_max_retries
+    backoff_base_s = settings.llm.llm_backoff_base_s
+    timeout_s = settings.llm.timeout_s
+
     start = time.perf_counter()
-    try:
-        resp: Any = await _once()
-    except _RateLimitError as exc:
-        # NOTE: single retry only, respecting Retry-After when the provider sends it.
-        # Full retry/backoff policy is parked — Phase 2 DEV_TODO "LLM retry/backoff".
-        retry_after = getattr(exc, "retry_after", None)
-        if isinstance(retry_after, int | float) and retry_after > 0:
-            await asyncio.sleep(min(float(retry_after), settings.llm.timeout_s))
+    attempt = 0
+    while True:
         try:
-            resp = await _once()
-        except _RateLimitError as exc2:
-            raise LLMRateLimitError(str(exc2)) from exc2
-    except Exception:
-        resp = await _once()
+            resp: Any = await _once()
+            break
+        except _RateLimitError as exc:
+            if attempt >= max_retries:
+                raise LLMRateLimitError(str(exc)) from exc
+            delay = _retry_delay(attempt, exc, backoff_base_s, timeout_s)
+            err_name = type(exc).__name__
+        except Exception as exc:
+            if not _is_transient(exc) or attempt >= max_retries:
+                raise
+            delay = _retry_delay(attempt, exc, backoff_base_s, timeout_s)
+            err_name = type(exc).__name__
+        log.warning(
+            "llm_retry",
+            caller=caller,
+            model=model,
+            tier=tier,
+            attempt=attempt + 1,
+            max_retries=max_retries,
+            delay_s=delay,
+            error=err_name,
+        )
+        await asyncio.sleep(delay)
+        attempt += 1
     latency_ms = round((time.perf_counter() - start) * 1000, 1)
 
     raw_usage = getattr(resp, "usage", None)

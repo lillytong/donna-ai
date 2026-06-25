@@ -443,6 +443,69 @@
   z-index: 1;
 }
 
+/* ---- Mark as sent (DD-71): per-card boundary event ---- */
+.markPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 13px;
+  padding-top: 12px;
+  border-top: 1px solid #f0f2f5;
+  position: relative;
+  z-index: 1;
+}
+.markPanelText {
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: #4b5563;
+}
+.markRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.markGo {
+  flex-shrink: 0;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #fff;
+  background: #1d4ed8;
+  border: none;
+  border-radius: 7px;
+  padding: 7px 12px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.markGo:hover:not(:disabled) {
+  background: #1742b0;
+}
+.markGo:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.markCancel {
+  flex-shrink: 0;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #6b7280;
+  background: none;
+  border: none;
+  border-radius: 7px;
+  padding: 7px 10px;
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+.markCancel:hover:not(:disabled) {
+  color: #1f2328;
+}
+.markDoneBadge {
+  font-size: 12px;
+  font-weight: 600;
+  color: #166534;
+}
+
 /* ---- status spines + badges (lifted from home's language) ---- */
 .spineDraft {
   border-left-color: #cbd3dc;
@@ -629,4 +692,37 @@
   .title {
     font-size: 25px;
   }
+}
+
+/* ---- F27: lifecycle badge on each card (colour-keyed by label) ---- */
+.lifeBadge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.lifeWorking {
+  color: #51585f;
+  background: #eef0f3;
+  border-color: #e0e3e8;
+}
+.lifeSent {
+  color: #166534;
+  background: #ecfdf3;
+  border-color: #abefc6;
+}
+.lifeMove {
+  color: #92400e;
+  background: #fef3c7;
+  border-color: #fcd9a0;
+}
+.lifeSigned {
+  color: #1e40af;
+  background: #e6edff;
+  border-color: #c3d4fb;
 }

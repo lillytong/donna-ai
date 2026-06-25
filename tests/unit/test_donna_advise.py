@@ -5,15 +5,35 @@ persistence map. No LLM, no DB."""
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from backend.models.donna import DonnaAskResponse, DonnaChatReply, DonnaContext
+from backend.models.recommendations import StoredRecommendation
 from backend.services.donna.advise import (
     _ACQUIRE_CONTEXT,
     _MODE_TO_KIND,
+    _compose_brainstorm_opening,
     finalize_reply,
     from_qa,
     has_context,
     parse_reply,
 )
+
+
+def _rec(**kw: object) -> StoredRecommendation:
+    base: dict[str, object] = dict(
+        id="r1",
+        issue_id="i1",
+        rationale="A twelve-month cap is favorable-but-fair.",
+        draft_recommended_position="Hold the twelve-month cap.",
+        draft_counter_language="Liability shall not exceed the fees paid.",
+        citations=["n-liab"],
+        model="claude-opus-4-8",
+        generated_at=datetime(2026, 6, 25),
+        confirmed=False,
+    )
+    base.update(kw)
+    return StoredRecommendation(**base)
 
 # --- parse_reply -----------------------------------------------------------
 
@@ -155,3 +175,30 @@ def test_mode_to_kind_maps_onto_the_three_schema_kinds() -> None:
     assert _MODE_TO_KIND["legal_referral"] == "deflected"
     assert _MODE_TO_KIND["need_context"] == "deflected"
     assert set(_MODE_TO_KIND.values()) <= {"answer", "not_found", "deflected"}
+
+
+# --- _compose_brainstorm_opening (server-composed primed turn) --------------
+
+
+def test_compose_brainstorm_restates_all_three_parts() -> None:
+    text = _compose_brainstorm_opening(3, _rec())
+    assert "issue #3" in text
+    assert "A twelve-month cap is favorable-but-fair." in text
+    assert "**Recommended position:** Hold the twelve-month cap." in text
+    assert "**Counter-language:**\nLiability shall not exceed the fees paid." in text
+
+
+def test_compose_brainstorm_omits_empty_optional_fields() -> None:
+    text = _compose_brainstorm_opening(
+        1, _rec(draft_recommended_position=None, draft_counter_language="   ")
+    )
+    assert "Recommended position" not in text
+    assert "Counter-language" not in text
+    # The rationale still leads the restatement.
+    assert "favorable-but-fair" in text
+
+
+def test_compose_brainstorm_falls_back_when_no_ordinal() -> None:
+    text = _compose_brainstorm_opening(None, _rec())
+    assert "this issue" in text
+    assert "issue #" not in text

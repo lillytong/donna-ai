@@ -20,6 +20,8 @@ from backend.api import (
     imports,
     issue_export,
     issues,
+    lineage,
+    mark_sent,
     nodes,
     redline,
     settings,
@@ -84,3 +86,5 @@ app.include_router(donna.router)
 app.include_router(donna_recommendations.router)
 app.include_router(clause_draft.router)
 app.include_router(cross_references.router)
+app.include_router(mark_sent.router)
+app.include_router(lineage.router)

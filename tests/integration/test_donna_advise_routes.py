@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from backend.api import donna as donna_api
-from backend.models.donna import DonnaChatResponse, DonnaContext
+from backend.models.donna import DonnaChatResponse, DonnaContext, DonnaMessage
 from backend.services.llm import LLMRateLimitError
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -99,3 +99,47 @@ def test_ask_maps_rate_limit_to_429(monkeypatch: Any) -> None:
 
 def test_ask_rejects_missing_question() -> None:
     assert client.post(_PATH, json={}).status_code == 422
+
+
+# --- seed-brainstorm (the server-composed primed opening turn) -------------
+
+_SEED_PATH = "/contracts/c1/donna/seed-brainstorm"
+
+
+def test_seed_brainstorm_returns_stored_message(monkeypatch: Any) -> None:
+    seen: dict[str, Any] = {}
+
+    async def fake_seed(cid: str, iid: str) -> DonnaMessage | None:
+        seen["cid"], seen["iid"] = cid, iid
+        return DonnaMessage(
+            role="assistant",
+            content="Let's brainstorm issue #3. Here's where I've landed…",
+            kind="answer",
+            citations=["n-liab"],
+        )
+
+    monkeypatch.setattr(donna_api, "seed_brainstorm", fake_seed)
+    resp = client.post(_SEED_PATH, json={"issue_id": "i1"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["seeded"] is True
+    assert body["message"]["role"] == "assistant"
+    assert body["message"]["kind"] == "answer"
+    assert body["message"]["citations"] == ["n-liab"]
+    assert (seen["cid"], seen["iid"]) == ("c1", "i1")
+
+
+def test_seed_brainstorm_no_draft_is_noop(monkeypatch: Any) -> None:
+    async def fake_seed(_cid: str, _iid: str) -> DonnaMessage | None:
+        return None
+
+    monkeypatch.setattr(donna_api, "seed_brainstorm", fake_seed)
+    resp = client.post(_SEED_PATH, json={"issue_id": "i1"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["seeded"] is False
+    assert body["message"] is None
+
+
+def test_seed_brainstorm_rejects_missing_issue_id() -> None:
+    assert client.post(_SEED_PATH, json={}).status_code == 422

@@ -110,7 +110,13 @@ async def _update_rolling_summary(
     await update_summary(conn, conversation_id, result.text.strip())
 
 
-async def ask(contract_id: str, question: str) -> DonnaAskResponse:
+async def ask(
+    contract_id: str, question: str, deflection_text: str | None = None
+) -> DonnaAskResponse:
+    # `deflection_text` (F10b): when the context-aware chat calls in with the softer
+    # acquire-context wording, a DEFLECTED turn is persisted with THAT text (and no
+    # citations) so a reloaded thread matches the live reply. The F10 direct path passes
+    # nothing and keeps the model's own deflection prose — preserving the read-and-explain eval.
     # F05b conceptual retrieval (own connection); no embeddings (DD-62).
     retrieval = await search_clause(contract_id, question)
 
@@ -150,6 +156,12 @@ async def ask(contract_id: str, question: str) -> DonnaAskResponse:
     # Scrub any leaked id from the prose (the citations array keeps the ids).
     id_labels = {**labels, **{i.id: i.title for i in issues}}
     answer_text = scrub_leaked_ids(answer.answer, id_labels)
+
+    # F10b: persist the softer acquire-context wording for a deflection (and drop the
+    # wall's citations) so the stored turn matches what advise.from_qa returns live.
+    if deflection_text is not None and answer.kind == "deflected":
+        answer_text = deflection_text
+        citations = []
 
     async with acquire() as conn:
         await append_message(conn, conversation.id, "user", question)

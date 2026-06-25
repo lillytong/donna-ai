@@ -5,8 +5,9 @@ in the service, stream the tracked-changes .docx.
 with `<w:ins>`/`<w:del>` tracked changes of the working copy against a baseline
 snapshot (null = the `last_shared_with_counterparty` pointer, DD-48/DD-61). Read-only
 (no snapshot cut, no pointer moved) — POST only for the request body. 409 when no
-baseline exists (the redline is unavailable; the UI disables it); 404 when an explicit
-`snapshot_id` is not this contract's.
+baseline exists (the redline is unavailable; the UI disables it) — per DD-71 the
+first **Mark as sent** is what cuts that first baseline snapshot, so the gate keys
+off marking, not export. 404 when an explicit `snapshot_id` is not this contract's.
 
 NOTE: not yet registered in main.py — register `redline.router` after merge.
 """
@@ -41,7 +42,7 @@ async def redline_export(contract_id: str, request: RedlineExportRequest) -> Res
         except NoBaselineSnapshot:
             raise HTTPException(
                 status_code=409,
-                detail="no baseline snapshot to diff against; share a copy first",
+                detail="no baseline snapshot to diff against; mark as sent first",
             ) from None
         except BaselineNotFound:
             raise HTTPException(

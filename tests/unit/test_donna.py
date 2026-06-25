@@ -303,3 +303,100 @@ def test_fetch_messages_round_trips_kind_and_citations() -> None:
     assert msgs[0].kind is None and msgs[0].citations is None
     assert msgs[1].kind == "answer"
     assert msgs[1].citations == ["n1", "i2"]
+
+
+# --- qa.ask deflection persistence (F10b) ----------------------------------
+# The context-aware chat passes a softer acquire-context wording; a DEFLECTED turn must
+# then be PERSISTED with that text (and no citations) so a reloaded thread matches the live
+# reply. Without the override (the F10 direct path) the model's own prose is kept.
+
+
+class _AppendCapturingConn:
+    """Captures append_message calls so the persisted deflection text can be asserted."""
+
+    def __init__(self) -> None:
+        self.appended: list[tuple[object, ...]] = []
+
+    async def execute(self, *_a: object) -> str:
+        return "OK"
+
+
+def _run_ask(monkeypatch: object, model_text: str, **ask_kwargs: object):  # type: ignore[no-untyped-def]
+    import asyncio
+    import contextlib
+
+    from backend.models.clause_search import ClauseSearchResult
+    from backend.models.donna import StoredConversation
+    from backend.services.donna import qa
+
+    captured: list[dict[str, object]] = []
+    conn = _AppendCapturingConn()
+
+    @contextlib.asynccontextmanager
+    async def fake_acquire():  # type: ignore[no-untyped-def]
+        yield conn
+
+    async def fake_search(_cid: str, _q: str) -> ClauseSearchResult:
+        return ClauseSearchResult(node_id=None)
+
+    async def fake_get_conv(_conn: object, _cid: str) -> StoredConversation:
+        return StoredConversation(id="conv1", contract_id="c1", running_summary=None)
+
+    async def fake_fetch_messages(*_a: object) -> list[object]:
+        return []
+
+    async def fake_list_issues(*_a: object) -> list[object]:
+        return []
+
+    async def fake_fetch_nodes(*_a: object) -> list[object]:
+        return []
+
+    async def fake_append(
+        _conn: object, _conv: str, role: str, content: str,
+        kind: object = None, citations: object = None,
+    ) -> str:
+        captured.append({"role": role, "content": content, "kind": kind, "citations": citations})
+        return "mid"
+
+    async def fake_update_summary(*_a: object, **_k: object) -> None:
+        return None
+
+    class _Result:
+        text = model_text
+
+    async def fake_complete(**_k: object) -> object:
+        return _Result()
+
+    monkeypatch.setattr(qa, "acquire", fake_acquire)  # type: ignore[attr-defined]
+    monkeypatch.setattr(qa, "search_clause", fake_search)  # type: ignore[attr-defined]
+    monkeypatch.setattr(qa, "get_or_create_conversation", fake_get_conv)  # type: ignore[attr-defined]
+    monkeypatch.setattr(qa, "fetch_messages", fake_fetch_messages)  # type: ignore[attr-defined]
+    monkeypatch.setattr(qa, "list_issues", fake_list_issues)  # type: ignore[attr-defined]
+    monkeypatch.setattr(qa, "fetch_nodes", fake_fetch_nodes)  # type: ignore[attr-defined]
+    monkeypatch.setattr(qa, "append_message", fake_append)  # type: ignore[attr-defined]
+    monkeypatch.setattr(qa, "_update_rolling_summary", fake_update_summary)  # type: ignore[attr-defined]
+    monkeypatch.setattr(qa, "render", lambda *_a, **_k: "prompt")  # type: ignore[attr-defined]
+    monkeypatch.setattr(qa, "complete", fake_complete)  # type: ignore[attr-defined]
+
+    result = asyncio.run(qa.ask("c1", "Should we accept this?", **ask_kwargs))  # type: ignore[arg-type]
+    assistant = next(c for c in captured if c["role"] == "assistant")
+    return result, assistant
+
+
+def test_ask_persists_softer_deflection_text_when_overridden(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from backend.services.donna.advise import _ACQUIRE_CONTEXT
+
+    deflected = '{"answer": "Raise an issue / get a lawyer.", "kind": "deflected", "citations": []}'
+    result, assistant = _run_ask(monkeypatch, deflected, deflection_text=_ACQUIRE_CONTEXT)
+    # Persisted text + the returned answer both carry the softer wording, citations dropped.
+    assert assistant["content"] == _ACQUIRE_CONTEXT
+    assert assistant["citations"] == []
+    assert result.answer == _ACQUIRE_CONTEXT
+    assert result.kind == "deflected"
+
+
+def test_ask_keeps_model_deflection_prose_without_override(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    deflected = '{"answer": "Raise an issue / get a lawyer.", "kind": "deflected", "citations": []}'
+    _result, assistant = _run_ask(monkeypatch, deflected)
+    # F10 direct path (no override): the model's own deflection prose is persisted unchanged.
+    assert assistant["content"] == "Raise an issue / get a lawyer."

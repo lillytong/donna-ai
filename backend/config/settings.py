@@ -29,6 +29,11 @@ class LlmSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="DONNA_LLM_")
 
     timeout_s: float = 30.0
+    # Retry-with-exponential-backoff for transient LLM failures (timeouts, rate limits,
+    # 5xx/connection) in services/llm.py. Per-attempt timeout stays `timeout_s`; total
+    # attempts = 1 + llm_max_retries. Knobs not hardcoded (DD-35).
+    llm_max_retries: int = 2
+    llm_backoff_base_s: float = 0.5
     clause_search_max_tokens: int = 64
     clause_search_temperature: float = 0.0
     # F10 Donna Q&A: the capable-tier answer (a few sentences + citations) and the
@@ -54,6 +59,29 @@ class LlmSettings(BaseSettings):
     chat_advise_temperature: float = 1.0
 
 
+class DistillationSettings(BaseSettings):
+    """F30 negotiation-pattern distillation knobs (DD-76). Runs at the MEDIUM tier
+    (Sonnet — judgment, but internal and never counterparty-facing, DD-35). Sonnet
+    supports temperature 0.0, so the extraction is pinned deterministic. Limits/temps
+    and the consolidation thresholds are config, never hardcoded (DD-35)."""
+
+    model_config = SettingsConfigDict(env_prefix="DONNA_DISTILL_")
+
+    max_tokens: int = 1024
+    temperature: float = 0.0
+    # New-record + reinforcement confidence model (0..1). A new pattern starts at
+    # `new_confidence`; a merge bumps it by `reinforce_increment`, capped at 1.0.
+    new_confidence: float = 0.5
+    reinforce_increment: float = 0.15
+    # Consolidation/prune (DD-76). Deal-close has a handler (settings_repo.update_deal)
+    # but wiring it is outside this build's file scope, so consolidation falls back to the
+    # N-counter: it runs once >= `consolidate_after_n` new patterns have been added since
+    # the last consolidation. Prune a pattern unreinforced across >= `prune_deals` distinct
+    # deals that is still at minimum evidence (never reinforced).
+    consolidate_after_n: int = 5
+    prune_deals: int = 3
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -69,6 +97,7 @@ class Settings(BaseSettings):
 
     models: ModelTiers = Field(default_factory=ModelTiers)
     llm: LlmSettings = Field(default_factory=LlmSettings)
+    distillation: DistillationSettings = Field(default_factory=DistillationSettings)
 
     @model_validator(mode="after")
     def _wire_export_author(self) -> "Settings":

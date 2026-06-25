@@ -9,8 +9,30 @@ so a clause number here matches the number the same clause carries everywhere el
 from __future__ import annotations
 
 from backend.models.imports import StoredNode
+from backend.models.insights import StoredPattern
 from backend.models.issues import StoredIssue
 from backend.services.export.render_docx import _plan
+
+# F30 / DD-76: how a learned-pattern block must be framed wherever it is injected. Patterns
+# are a RETRIEVAL INPUT — visibly distinct from grounded citations, operator-overridable,
+# NEVER authoritative, NEVER cited, NEVER exported (§2.4). This header restates that invariant
+# inside the prompt so the model treats patterns as background heuristics, not contract facts.
+_PATTERN_HEADER = (
+    "--- LEARNED NEGOTIATION PATTERNS (background heuristics — NOT authoritative, NOT "
+    "citable, NEVER exported) ---\n"
+    "These are heuristics Donna distilled from PAST closed issues, about how this operator / "
+    "counterparty / deal type tends to negotiate. They are NOT grounded facts about THIS "
+    "contract: do not cite them, do not treat them as binding, and never reproduce them in "
+    "any drafted or exported language. The operator may override any of them. Use them only "
+    "as soft prior context; the cited clauses and issue ledger are the authoritative grounding."
+)
+
+_PATTERN_LABELS = {
+    "operator_style": "operator style",
+    "counterparty_behavior": "counterparty",
+    "deal_type_norm": "deal-type norm",
+    "legal_team_tendency": "legal-team tendency",
+}
 
 _BODY_CHARS = 600
 
@@ -108,6 +130,21 @@ def build_issue_focus(issue: StoredIssue, labels: dict[str, str]) -> str:
         f"Their position: {issue.their_position or '—'}\n"
         f"Options on table: {issue.options_on_table or '—'}"
     )
+
+
+def build_pattern_grounding(patterns: list[StoredPattern]) -> str:
+    """The learned-pattern retrieval block (F30 tier 8) for injection into Donna's prompt,
+    or empty when there are none. NO ids in the lines (patterns are never cited) — each line
+    is `- [<subject label>] <insight>`, under the non-authoritative header. Returned as a
+    self-contained block the caller appends to the rendered prompt, so no prompt template
+    gains a new slot (and existing callers/evals are unaffected)."""
+    if not patterns:
+        return ""
+    lines = [
+        f"- [{_PATTERN_LABELS.get(p.subject_type, p.subject_type)}] {p.insight}"
+        for p in patterns
+    ]
+    return f"{_PATTERN_HEADER}\n" + "\n".join(lines)
 
 
 def build_issue_ledger(issues: list[StoredIssue], labels: dict[str, str]) -> str:

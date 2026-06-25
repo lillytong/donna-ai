@@ -1,7 +1,7 @@
-"""Export route (F15b): status codes, headers, streamed body, and the snapshot +
-pointer side effects. DB faked (a conn recording the snapshot insert / pointer
-upsert), render real, record_event stubbed. TestClient used without its context
-manager so the app lifespan never runs.
+"""Export route (F15b, DD-71): export is now a pure grab — no body, no recipient,
+no snapshot, no pointer. It only stamps `last_export_at` (DD-72 drift marker) and
+streams the .docx. DB faked (a conn recording any execute), render real. TestClient
+used without its context manager so the app lifespan never runs.
 """
 
 from __future__ import annotations
@@ -15,8 +15,7 @@ from backend.api import export
 from backend.main import app
 from backend.models.imports import StoredNode
 from backend.models.settings import StoredClient, StoredContract
-from backend.services import snapshot
-from backend.services.export import clean_copy, filename
+from backend.services.export import filename
 from fastapi.testclient import TestClient
 
 client = TestClient(app)
@@ -24,13 +23,13 @@ client = TestClient(app)
 _DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _DOCX_MAGIC = b"PK\x03\x04"
 _NOW = datetime(2026, 6, 24, tzinfo=UTC)
-_POINTER_SQL = "snapshot_pointers"
 _CLIENT_NAME = "Acme"
 _TODAY = date.today().strftime("%y%m%d")
 
 
 class _FakeConn:
-    """Records the snapshot insert and any pointer upsert cut_snapshot issues."""
+    """Records every execute (so the export's last_export_at stamp is observable)
+    and every fetchrow (which a snapshot cut WOULD issue — asserted never to fire)."""
 
     def __init__(self) -> None:
         self.inserts: list[tuple[Any, ...]] = []
@@ -45,13 +44,7 @@ class _FakeConn:
 
     async def fetchrow(self, _sql: str, *args: Any) -> dict[str, Any]:
         self.inserts.append(args)
-        return {
-            "id": "s1",
-            "contract_id": args[0],
-            "label": args[1],
-            "origin": args[3],
-            "created_at": _NOW,
-        }
+        return {"id": "s1", "contract_id": args[0] if args else None, "created_at": _NOW}
 
     async def execute(self, sql: str, *args: Any) -> str:
         self.executes.append((sql, args))
@@ -99,9 +92,6 @@ def _install(
     async def fake_get(_conn: Any, _cid: str) -> StoredContract | None:
         return contract
 
-    async def fake_record(_conn: Any, _event: Any) -> None:
-        return None
-
     async def fake_get_client(_conn: Any, _cid: str) -> StoredClient:
         return StoredClient(
             id="cl1",
@@ -117,33 +107,20 @@ def _install(
     monkeypatch.setattr(export, "acquire", _fake_acquire)
     monkeypatch.setattr(export, "fetch_nodes", fake_fetch)
     monkeypatch.setattr(export, "get_contract", fake_get)
-    monkeypatch.setattr(snapshot, "record_event", fake_record)
     monkeypatch.setattr(filename, "get_client", fake_get_client)
     monkeypatch.setattr(filename, "list_snapshots", fake_list_snapshots)
 
 
-def _pointer_upserts(conn: _FakeConn) -> list[tuple[Any, ...]]:
-    return [args for sql, args in conn.executes if _POINTER_SQL in sql]
-
-
-def _spy_cut_snapshot(monkeypatch: Any) -> list[Any]:
-    """Record any call to the snapshot service so grabs can assert it never fired."""
-    calls: list[Any] = []
-    real = snapshot.cut_snapshot
-
-    async def _spy(conn: Any, contract_id: str, request: Any) -> Any:
-        calls.append((contract_id, request))
-        return await real(conn, contract_id, request)
-
-    monkeypatch.setattr(clean_copy, "cut_snapshot", _spy)
-    return calls
+def _last_export_stamps(conn: _FakeConn) -> list[tuple[Any, ...]]:
+    return [args for sql, args in conn.executes if "last_export_at" in sql]
 
 
 def test_export_returns_docx(monkeypatch: Any) -> None:
+    """POST with no body streams the clean copy at the working version (v1)."""
     conn = _FakeConn()
     _install(monkeypatch, conn, nodes=_nodes(), contract=_contract())
 
-    resp = client.post("/contracts/c1/export", json={"recipient": "counterparty"})
+    resp = client.post("/contracts/c1/export")
 
     assert resp.status_code == 200
     assert resp.headers["content-type"] == _DOCX_MEDIA_TYPE
@@ -153,101 +130,49 @@ def test_export_returns_docx(monkeypatch: Any) -> None:
     assert resp.content.startswith(_DOCX_MAGIC)
 
 
-def test_send_cuts_snapshot(monkeypatch: Any) -> None:
-    """A send (counterparty/legal) cuts exactly one origin='export' snapshot (DD-61)."""
-    conn = _FakeConn()
-    _install(monkeypatch, conn, nodes=_nodes(), contract=_contract())
-    calls = _spy_cut_snapshot(monkeypatch)
-
-    resp = client.post("/contracts/c1/export", json={"recipient": "counterparty"})
-
-    assert resp.status_code == 200
-    assert len(calls) == 1
-    assert len(conn.inserts) == 1
-    contract_id, _label, _tree, origin = conn.inserts[0]
-    assert contract_id == "c1"
-    assert origin == "export"
-
-
-def test_export_counterparty_advances_shared_pointer(monkeypatch: Any) -> None:
+def test_export_cuts_no_snapshot_or_pointer(monkeypatch: Any) -> None:
+    """DD-71: export is a pure grab — it cuts no snapshot and advances no pointer."""
     conn = _FakeConn()
     _install(monkeypatch, conn, nodes=_nodes(), contract=_contract())
 
-    resp = client.post("/contracts/c1/export", json={"recipient": "counterparty"})
+    resp = client.post("/contracts/c1/export")
 
     assert resp.status_code == 200
-    upserts = _pointer_upserts(conn)
-    assert len(upserts) == 1
-    contract_id, party, direction, snapshot_id = upserts[0]
-    assert (contract_id, party, direction) == ("c1", "counterparty", "shared")
-    assert snapshot_id == "s1"
+    assert conn.inserts == []  # no snapshot insert (fetchrow) fired
+    assert not any("snapshot_pointers" in sql for sql, _ in conn.executes)
 
 
-def test_export_legal_advances_legal_team_shared_pointer(monkeypatch: Any) -> None:
+def test_export_stamps_last_export_at(monkeypatch: Any) -> None:
+    """DD-72: each export stamps contracts.last_export_at for the drift marker."""
     conn = _FakeConn()
     _install(monkeypatch, conn, nodes=_nodes(), contract=_contract())
 
-    resp = client.post("/contracts/c1/export", json={"recipient": "legal"})
+    resp = client.post("/contracts/c1/export")
 
     assert resp.status_code == 200
-    upserts = _pointer_upserts(conn)
-    assert len(upserts) == 1
-    _cid, party, direction, _sid = upserts[0]
-    assert (party, direction) == ("legal_team", "shared")
-
-
-def test_grab_copy_only_cuts_no_snapshot(monkeypatch: Any) -> None:
-    """Copy-only is a pure download (DD-61): no snapshot, no pointer, no stamping."""
-    conn = _FakeConn()
-    _install(monkeypatch, conn, nodes=_nodes(), contract=_contract())
-    calls = _spy_cut_snapshot(monkeypatch)
-
-    resp = client.post("/contracts/c1/export", json={"recipient": "copy_only"})
-
-    assert resp.status_code == 200
-    assert calls == []  # snapshot service never called
-    assert conn.inserts == []  # no snapshot row created (no snapshot SQL fired)
-    assert _pointer_upserts(conn) == []  # no pointer advanced
-
-
-def test_grab_internal_cuts_no_snapshot(monkeypatch: Any) -> None:
-    """Internal is a pure download (DD-61): no snapshot, no pointer, no stamping."""
-    conn = _FakeConn()
-    _install(monkeypatch, conn, nodes=_nodes(), contract=_contract())
-    calls = _spy_cut_snapshot(monkeypatch)
-
-    resp = client.post("/contracts/c1/export", json={"recipient": "internal"})
-
-    assert resp.status_code == 200
-    assert calls == []  # snapshot service never called
-    assert conn.inserts == []  # no snapshot row created (no snapshot SQL fired)
-    assert _pointer_upserts(conn) == []  # no pointer advanced
+    stamps = _last_export_stamps(conn)
+    assert len(stamps) == 1
+    assert stamps[0] == ("c1",)
 
 
 def test_export_404_when_no_nodes(monkeypatch: Any) -> None:
     conn = _FakeConn()
     _install(monkeypatch, conn, nodes=[])
 
-    resp = client.post("/contracts/missing/export", json={"recipient": "counterparty"})
+    resp = client.post("/contracts/missing/export")
 
     assert resp.status_code == 404
-    assert conn.inserts == []  # no snapshot cut when there is nothing to export
+    assert _last_export_stamps(conn) == []  # nothing stamped when there is nothing to export
 
 
 def test_export_filename_falls_back_to_generic_when_contract_absent(monkeypatch: Any) -> None:
-    """No contract row → generic placeholder fields and working version v1, not the
-    contract id stem (the new resolve_export_filename fallback)."""
+    """No contract row → generic placeholder fields and working version v1."""
     conn = _FakeConn()
     _install(monkeypatch, conn, nodes=_nodes(), contract=None)
 
-    resp = client.post("/contracts/c1/export", json={"recipient": "internal"})
+    resp = client.post("/contracts/c1/export")
 
     assert resp.status_code == 200
     assert resp.headers["content-disposition"] == (
         f'attachment; filename="Client_Contract_{_TODAY}_v1.docx"'
     )
-
-
-def test_export_rejects_unknown_recipient() -> None:
-    resp = client.post("/contracts/c1/export", json={"recipient": "bogus"})
-    assert resp.status_code == 422

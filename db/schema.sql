@@ -74,6 +74,7 @@ CREATE TABLE contracts (
     style_template_id     UUID REFERENCES style_templates(id),  -- nullable: inherits template
     style_config          JSONB NOT NULL DEFAULT '{}'::jsonb,    -- per-contract overrides on top
     origin                TEXT CHECK (origin IN ('us','our_legal','counterparty')),  -- who drafted the baseline (first upload); sets Donna's starting redline stance, distinct from per-revision source (DD-47)
+    last_export_at        TIMESTAMPTZ,  -- DD-72: stamped on every clean-copy export; Mark-as-sent compares node.updated_at against it for the "edited since last export" drift warning
     created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -346,6 +347,35 @@ CREATE TABLE donna_recommendations (
 );
 
 -- ============================================================================
+-- Negotiation patterns (F30, DD-76; amends DD-55/DD-73) — compact, operator-GLOBAL
+-- insights distilled on issue-close from the COMMITTED issue ledger (never the raw
+-- brainstorm transcript). NO contract_id — patterns transcend a single contract.
+-- `subject_ref` is polymorphic (no FK): NULL for operator_style/legal_team_tendency,
+-- clients.id for counterparty_behavior, contract_types.id for deal_type_norm — derived
+-- deterministically from the closed issue's contract context, never from the model.
+-- Patterns are a RETRIEVAL INPUT for Donna: never authoritative, never exported (§2.4).
+-- ============================================================================
+
+CREATE TABLE negotiation_patterns (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    subject_type            TEXT NOT NULL CHECK (subject_type IN
+                            ('operator_style','counterparty_behavior','deal_type_norm','legal_team_tendency')),
+    subject_ref             UUID,                                  -- polymorphic; NO FK
+    insight                 TEXT NOT NULL,                         -- 1-3 sentence compact principle
+    evidence_count          INTEGER NOT NULL DEFAULT 1,            -- reinforcement events
+    confidence              REAL NOT NULL DEFAULT 0.5,             -- 0..1; bumped on reinforcement
+    contradiction_flag      BOOLEAN NOT NULL DEFAULT false,        -- surfaced, never silent overwrite
+    last_reinforced_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_reinforced_deal_id UUID REFERENCES deals(id),
+    is_deleted              BOOLEAN NOT NULL DEFAULT false,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX negotiation_patterns_subject_idx
+    ON negotiation_patterns (subject_type, subject_ref)
+    WHERE is_deleted = false;
+
+-- ============================================================================
 -- Embeddings (pgvector) — built in Phase 2 (nodes) / Phase 2+ (comments).
 -- VECTOR DIMENSION IS PROVISIONAL: tied to the Phase-2 embedding-model choice
 -- (e.g. Voyage 1024, OpenAI 1536). Confirm/alter before first embed. [FLAGGED]
@@ -393,4 +423,6 @@ INSERT INTO schema_migrations (version) VALUES
     ('0001_issue_status_binary'),
     ('0002_drop_issue_comments'),
     ('0003_donna_recommendations'),
-    ('0004_donna_message_meta');
+    ('0004_donna_message_meta'),
+    ('0005_contract_last_export_at'),
+    ('0006_negotiation_patterns');

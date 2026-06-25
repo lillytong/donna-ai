@@ -1,18 +1,12 @@
-"""Export request models (F15b, DD-60).
+"""Export request models (F15b, DD-43, DD-71).
 
-The clean-copy export is a mutation (it cuts a snapshot), so its route is a POST
-with a body. The recipient selector (DD-48) chooses which "shared with" pointer
-the cut advances; `internal`/`copy_only` advance none.
+DD-71 decoupled export from "send": a clean-copy export is now a pure grab — it
+renders the current DB state to a .docx and streams it, cutting no snapshot and
+advancing no pointer. So the export route takes **no request body** (the prior
+`recipient` selector + `CleanCopyExportRequest` are gone — the snapshot-cut +
+pointer-advance moved to the separate Mark-as-sent action, `models/mark_sent.py`).
+This module is intentionally empty of request shapes; it stays as the documented
+home for the export contract.
 """
 
 from __future__ import annotations
-
-from typing import Literal
-
-from pydantic import BaseModel
-
-ExportRecipient = Literal["counterparty", "legal", "internal", "copy_only"]
-
-
-class CleanCopyExportRequest(BaseModel):
-    recipient: ExportRecipient

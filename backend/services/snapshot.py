@@ -20,7 +20,14 @@ from typing import Any
 
 from backend.config.settings import get_settings
 from backend.models.audit import EVENT_SNAPSHOT_CUT, AuditEvent
-from backend.models.snapshots import CutSnapshotRequest, SnapshotNode, StoredSnapshot
+from backend.models.imports import ContractTreeResponse, StoredNode
+from backend.models.lineage import PointerRow
+from backend.models.snapshots import (
+    CutSnapshotRequest,
+    SnapshotNode,
+    SnapshotPointerTarget,
+    StoredSnapshot,
+)
 from backend.services.audit_repo import record_event
 
 _FETCH_TREE = """
@@ -63,6 +70,23 @@ _FETCH_SNAPSHOT = """
 SELECT id, contract_id, label, tree, origin, created_at
 FROM contract_snapshots
 WHERE id = $1
+"""
+
+# Numbered timeline (DD-70): every snapshot gets its position via ROW_NUMBER over
+# created_at, so v-numbers are stable as Mode B later interleaves receives — adding
+# a receive never renumbers an existing version. Heavy `tree` JSONB is omitted.
+_LIST_NUMBERED = """
+SELECT id, contract_id, label, origin, created_at,
+       ROW_NUMBER() OVER (PARTITION BY contract_id ORDER BY created_at) AS version
+FROM contract_snapshots
+WHERE contract_id = $1
+ORDER BY created_at
+"""
+
+_LIST_POINTERS = """
+SELECT party, direction, snapshot_id
+FROM snapshot_pointers
+WHERE contract_id = $1
 """
 
 
@@ -129,6 +153,19 @@ async def cut_snapshot(conn: Any, contract_id: str, request: CutSnapshotRequest)
     return _to_stored_snapshot(snapshot_record, tree=tree)
 
 
+async def set_pointer(
+    conn: Any, contract_id: str, target: SnapshotPointerTarget, snapshot_id: str
+) -> None:
+    """Advance one of the four named DD-48 pointers to an existing snapshot.
+
+    Exposed for Mark-as-sent (DD-71), which cuts ONE snapshot and may advance TWO
+    pointers (recipient='both' → counterparty + legal_team), so the pointer move is
+    decoupled from `cut_snapshot`'s single-pointer convenience path."""
+    await conn.execute(
+        _UPSERT_POINTER, contract_id, target.party, target.direction, snapshot_id
+    )
+
+
 async def list_snapshots(conn: Any, contract_id: str) -> list[StoredSnapshot]:
     records = await conn.fetch(_LIST_SNAPSHOTS, contract_id)
     return [_to_stored_snapshot(r, tree=None) for r in records]
@@ -143,3 +180,55 @@ async def get_snapshot(conn: Any, snapshot_id: str) -> StoredSnapshot | None:
         raw_tree = json.loads(raw_tree)
     tree = [SnapshotNode.model_validate(n) for n in raw_tree]
     return _to_stored_snapshot(record, tree=tree)
+
+
+async def list_numbered_snapshots(conn: Any, contract_id: str) -> list[tuple[int, StoredSnapshot]]:
+    """All snapshots oldest-first, each paired with its lineage v-number (ROW_NUMBER
+    over created_at, DD-70). Tree omitted (list view). Lineage assembly consumes
+    this; the numbering is receive-ready (position over ALL snapshots)."""
+    records = await conn.fetch(_LIST_NUMBERED, contract_id)
+    return [(int(r["version"]), _to_stored_snapshot(r, tree=None)) for r in records]
+
+
+async def list_pointers(conn: Any, contract_id: str) -> list[PointerRow]:
+    """The DD-48 named pointers currently set for the contract (party × direction →
+    snapshot). At most four rows; in v1 only the `shared` pointers are ever set."""
+    records = await conn.fetch(_LIST_POINTERS, contract_id)
+    return [
+        PointerRow(
+            party=r["party"], direction=r["direction"], snapshot_id=str(r["snapshot_id"])
+        )
+        for r in records
+    ]
+
+
+async def get_snapshot_tree(
+    conn: Any, contract_id: str, snapshot_id: str
+) -> ContractTreeResponse | None:
+    """Read-only render adapter (F27): rebuild the nested, render-ready node tree
+    from a snapshot's frozen JSONB dump — the SAME shape the cockpit renders live
+    nodes from (`ContractTreeResponse`), so the frontend can render a historical
+    version read-only with the existing tree component. Soft-deleted nodes are
+    dropped (the live tree excludes them too). Returns None if the snapshot is
+    missing or belongs to a different contract.
+
+    Note: the stored snapshot shape (DD/schema) carries no `role`/`table_data`/
+    `has_placeholder`, so those fall back to the StoredNode defaults — the historical
+    render is structurally faithful (topology + headings + bodies) but does not
+    reconstruct front-matter roles. Sufficient for a read-only lineage view."""
+    snapshot = await get_snapshot(conn, snapshot_id)
+    if snapshot is None or snapshot.contract_id != contract_id:
+        return None
+    rows = [
+        StoredNode(
+            id=n.id,
+            parent_id=n.parent_id,
+            order_index=n.order_index,
+            content_type=n.content_type,
+            heading=n.heading,
+            body=n.body,
+        )
+        for n in (snapshot.tree or [])
+        if not n.is_deleted
+    ]
+    return ContractTreeResponse.from_rows(contract_id, rows)

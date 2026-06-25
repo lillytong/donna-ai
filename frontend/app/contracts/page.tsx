@@ -13,16 +13,27 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import styles from "./contracts-list.module.css";
 import {
+  exportCleanCopy,
   listContracts,
   listClients,
   listContractTypes,
   listIssues,
+  markSent,
   updateContract,
   deleteContract,
+  type ContractBadge,
+  type MarkSentRecipient,
   type StoredContract,
   type StoredClient,
   type StoredContractType,
 } from "../lib/api";
+
+// Mark-as-sent recipient labels (DD-71), shared with the cockpit control.
+const MARK_LABEL: Record<MarkSentRecipient, string> = {
+  counterparty: "Counterparty",
+  legal: "Legal",
+  both: "Counterparty & Legal",
+};
 
 const PAGE_SIZE = 12;
 
@@ -51,6 +62,22 @@ interface CardContract {
   openIssues: number;
   lastActivity: string;
   createdAt: string;
+  // F27 lifecycle badge, carried set-based on the list response (no per-card fetch).
+  badge: ContractBadge | null;
+}
+
+// F27 badge colour-key, by lifecycle label (mirrors the cockpit's badgeTone).
+function badgeToneClass(label: string): string {
+  if (label === "Your move") return styles.lifeMove;
+  if (label.startsWith("Sent to")) return styles.lifeSent;
+  if (label === "Signed") return styles.lifeSigned;
+  return styles.lifeWorking;
+}
+function badgeText(b: ContractBadge): string {
+  let t = b.label;
+  if (b.version != null) t += ` · v${b.version}`;
+  if (b.marker) t += " · edited since sent";
+  return t;
 }
 
 // created_at (ISO) -> compact relative string for the card's "last activity".
@@ -148,7 +175,46 @@ function TrashIcon(): React.JSX.Element {
   );
 }
 
-type CardMode = "idle" | "editing" | "confirm";
+function SendIcon(): React.JSX.Element {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M22 2 11 13" />
+      <path d="M22 2 15 22l-4-9-9-4Z" />
+    </svg>
+  );
+}
+
+function ExportIcon(): React.JSX.Element {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <path d="M7 10l5 5 5-5" />
+      <path d="M12 15V3" />
+    </svg>
+  );
+}
+
+type CardMode = "idle" | "editing" | "confirm" | "marking";
 
 function ContractCard({
   c,
@@ -169,6 +235,58 @@ function ContractCard({
   const [draft, setDraft] = useState(c.name);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // F27: one-click clean-copy export (.docx download).
+  const [exporting, setExporting] = useState(false);
+
+  async function runExport(): Promise<void> {
+    if (exporting) return;
+    setExporting(true);
+    setErr(null);
+    try {
+      await exportCleanCopy(c.id);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't export. Try again.");
+    } finally {
+      setExporting(false);
+    }
+  }
+  // Mark as sent (DD-71): per-card boundary event. `markDrift` holds the non-blocking
+  // DD-72 "edited since last export" warning; `markDone` the transient confirmation.
+  const [markBusy, setMarkBusy] = useState<MarkSentRecipient | null>(null);
+  const [markDrift, setMarkDrift] = useState<{
+    recipient: MarkSentRecipient;
+    version: number;
+    lastExportAt: string | null;
+  } | null>(null);
+  const [markDone, setMarkDone] = useState<{ recipient: MarkSentRecipient; version: number } | null>(
+    null,
+  );
+
+  async function runMarkSent(recipient: MarkSentRecipient, acknowledgeDrift = false): Promise<void> {
+    if (markBusy) return;
+    setMarkBusy(recipient);
+    setErr(null);
+    try {
+      const res = await markSent(c.id, recipient, acknowledgeDrift);
+      if (!res.marked && res.drift) {
+        setMarkDrift({ recipient, version: res.version, lastExportAt: res.last_export_at });
+        return;
+      }
+      setMarkDone({ recipient, version: res.version });
+      setMarkDrift(null);
+      setMode("idle");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't mark as sent. Try again.");
+    } finally {
+      setMarkBusy(null);
+    }
+  }
+
+  useEffect(() => {
+    if (!markDone) return;
+    const t = setTimeout(() => setMarkDone(null), 4500);
+    return () => clearTimeout(t);
+  }, [markDone]);
 
   async function saveRename(): Promise<void> {
     const next = draft.trim();
@@ -214,10 +332,30 @@ function ContractCard({
 
       <div className={styles.cardTop}>
         <span className={`${styles.badge} ${cfg.badge}`}>{cfg.label}</span>
+        {c.badge && (
+          <span
+            className={`${styles.lifeBadge} ${badgeToneClass(c.badge.label)}`}
+            title="Lifecycle status"
+          >
+            {badgeText(c.badge)}
+          </span>
+        )}
         <span className={styles.type}>{c.typeName}</span>
         <span className={styles.activity}>{c.lastActivity}</span>
         {mode === "idle" && (
           <div className={styles.actions}>
+            <button
+              type="button"
+              className={styles.iconBtn}
+              aria-label={`Mark ${c.name} as sent`}
+              onClick={() => {
+                setErr(null);
+                setMarkDrift(null);
+                setMode("marking");
+              }}
+            >
+              <SendIcon />
+            </button>
             <button
               type="button"
               className={styles.iconBtn}
@@ -229,6 +367,16 @@ function ContractCard({
               }}
             >
               <PencilIcon />
+            </button>
+            <button
+              type="button"
+              className={styles.iconBtn}
+              aria-label={`Export ${c.name} as a clean copy`}
+              title={exporting ? "Exporting…" : "Export clean copy (.docx)"}
+              disabled={exporting}
+              onClick={() => void runExport()}
+            >
+              <ExportIcon />
             </button>
             <button
               type="button"
@@ -308,12 +456,79 @@ function ContractCard({
             Keep
           </button>
         </div>
+      ) : mode === "marking" ? (
+        <div className={styles.markPanel} role="group" aria-label={`Mark ${c.name} as sent`}>
+          {markDrift ? (
+            <>
+              <span className={styles.markPanelText}>
+                You&apos;ve edited since the last export
+                {markDrift.lastExportAt
+                  ? ` (${new Date(markDrift.lastExportAt).toLocaleDateString()})`
+                  : ""}
+                . Mark current version (v{markDrift.version}) as sent to{" "}
+                {MARK_LABEL[markDrift.recipient]}?
+              </span>
+              <div className={styles.markRow}>
+                <button
+                  type="button"
+                  className={styles.markGo}
+                  disabled={markBusy !== null}
+                  onClick={() => void runMarkSent(markDrift.recipient, true)}
+                >
+                  {markBusy ? "Marking…" : "Mark anyway"}
+                </button>
+                <button
+                  type="button"
+                  className={styles.markCancel}
+                  disabled={markBusy !== null}
+                  onClick={() => {
+                    setMarkDrift(null);
+                    setMode("idle");
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <span className={styles.markPanelText}>Mark as sent to…</span>
+              <div className={styles.markRow}>
+                {(["counterparty", "legal", "both"] as MarkSentRecipient[]).map((r) => (
+                  <button
+                    key={r}
+                    type="button"
+                    className={styles.markGo}
+                    disabled={markBusy !== null}
+                    onClick={() => void runMarkSent(r)}
+                  >
+                    {markBusy === r ? "Marking…" : MARK_LABEL[r]}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className={styles.markCancel}
+                  disabled={markBusy !== null}
+                  onClick={() => setMode("idle")}
+                >
+                  Cancel
+                </button>
+              </div>
+            </>
+          )}
+        </div>
       ) : (
         <div className={styles.cardFoot}>
-          <span className={`${styles.issues} ${issuesClass}`}>
-            <span className={styles.issuesNum}>{c.openIssues}</span> open{" "}
-            {c.openIssues === 1 ? "issue" : "issues"}
-          </span>
+          {markDone ? (
+            <span className={styles.markDoneBadge} role="status">
+              Sent to {MARK_LABEL[markDone.recipient]} · v{markDone.version}
+            </span>
+          ) : (
+            <span className={`${styles.issues} ${issuesClass}`}>
+              <span className={styles.issuesNum}>{c.openIssues}</span> open{" "}
+              {c.openIssues === 1 ? "issue" : "issues"}
+            </span>
+          )}
           <span className={styles.open}>
             Open
             <span className={styles.openArrow} aria-hidden>
@@ -431,6 +646,7 @@ export default function AllContracts(): React.JSX.Element {
           openIssues: openCounts[i],
           lastActivity: relativeTime(c.created_at),
           createdAt: c.created_at,
+          badge: c.badge ?? null,
         }));
 
         // Counterparty A→Z; within a counterparty, most recent first.

@@ -16,6 +16,7 @@ import {
   listIssues,
   updateContract,
   deleteContract,
+  type ContractBadge,
   type StoredContract,
   type StoredClient,
   type StoredDeal,
@@ -36,6 +37,22 @@ interface ResumeContract {
   status: Status;
   openIssues: number;
   lastActivity: string;
+  // F27 lifecycle badge from the list response (set-based, no per-card fetch).
+  badge: ContractBadge | null;
+}
+
+// F27 badge colour-key, by lifecycle label (mirrors the cockpit/list tone map).
+function badgeToneClass(label: string): string {
+  if (label === "Your move") return styles.lifeMove;
+  if (label.startsWith("Sent to")) return styles.lifeSent;
+  if (label === "Signed") return styles.lifeSigned;
+  return styles.lifeWorking;
+}
+function badgeText(b: ContractBadge): string {
+  let t = b.label;
+  if (b.version != null) t += ` · v${b.version}`;
+  if (b.marker) t += " · edited since sent";
+  return t;
 }
 
 // status -> spine class, badge class+label, and a plain-language cue of what's owed
@@ -204,6 +221,14 @@ function ResumeCard({
 
       <div className={styles.cardTop}>
         <span className={`${styles.badge} ${cfg.badge}`}>{cfg.label}</span>
+        {c.badge && (
+          <span
+            className={`${styles.lifeBadge} ${badgeToneClass(c.badge.label)}`}
+            title="Lifecycle status"
+          >
+            {badgeText(c.badge)}
+          </span>
+        )}
         <span className={styles.cue}>{cfg.cue(c.openIssues)}</span>
         <span className={styles.activity}>{c.lastActivity}</span>
         {mode === "idle" && (
@@ -411,6 +436,7 @@ export default function Home(): React.JSX.Element {
           status: "In flight",
           openIssues: openCounts[i],
           lastActivity: relativeTime(c.created_at),
+          badge: c.badge ?? null,
         }));
 
         setContracts(resume);

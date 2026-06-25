@@ -27,6 +27,7 @@ from backend.models.settings import (
     StoredContractType,
     StoredDeal,
 )
+from backend.services.lineage import derive_status_for_contracts
 
 # --- clients ---------------------------------------------------------------
 
@@ -308,12 +309,25 @@ async def create_contract(conn: Any, payload: ContractCreate) -> str:
 
 async def list_contracts(conn: Any) -> list[StoredContract]:
     records = await conn.fetch(_LIST_CONTRACTS)
-    return [_to_contract(r) for r in records]
+    contracts = [_to_contract(r) for r in records]
+    # F27/DD-74: attach the derived lifecycle badge to every card in ONE set-based
+    # query (no N+1) so My Contracts + home can render "where are we" per contract.
+    if contracts:
+        badges = await derive_status_for_contracts(conn, [c.id for c in contracts])
+        for c in contracts:
+            c.badge = badges.get(c.id)
+    return contracts
 
 
 async def get_contract(conn: Any, contract_id: str) -> StoredContract | None:
     record = await conn.fetchrow(_GET_CONTRACT, contract_id)
     return _to_contract(record) if record is not None else None
+
+
+# DD-72: the clean-copy export route stamps this on every export so Mark-as-sent
+# can detect "edited since last export" drift (node.updated_at > last_export_at).
+async def touch_last_export(conn: Any, contract_id: str) -> None:
+    await conn.execute("UPDATE contracts SET last_export_at = now() WHERE id = $1", contract_id)
 
 
 _CONTRACT_RETURNING = (

@@ -195,6 +195,10 @@ export interface StoredContract {
   style_template_id: string | null;
   style_config: Record<string, unknown>;
   created_at: string;
+  // F27 lifecycle badge. Set-based on the LIST read (GET /contracts) so a card can
+  // render the badge with no extra call; null on a single GET /contracts/{id}
+  // (the cockpit calls /lineage for the full view instead).
+  badge: ContractBadge | null;
 }
 
 // Carries the HTTP status alongside the `detail` message so callers can branch on
@@ -359,6 +363,84 @@ export interface StoredIssue {
 
 export const getContractTree = (id: string): Promise<ContractTreeResponse> =>
   getJson(`/contracts/${id}/tree`);
+
+// --- F27: persistent lifecycle badge + version/snapshot lineage (DD-70/DD-48) -
+// The badge is the at-a-glance lifecycle state, shown persistently in the cockpit
+// header and on every contract card. `label` is the lifecycle phase; `version` is
+// the lineage v-number (null for an unsent Working copy — never numbered); `marker`
+// is the "edited since sent" drift flag (DD-72); `party` is who the latest send
+// went to; `based_on` is a human note of the snapshot the working copy descends
+// from (e.g. "v3"). Same shape on `lineage.badge` and on each list contract's badge.
+export type BadgeLabel =
+  | "Working copy"
+  | "Sent to counterparty"
+  | "Sent to legal"
+  | "Sent to counterparty & legal"
+  | "Your move"
+  | "Signed";
+export type BadgeParty = "counterparty" | "legal" | "both";
+
+export interface ContractBadge {
+  label: BadgeLabel | string;
+  version: number | null;
+  marker: boolean;
+  party: BadgeParty | null;
+  based_on: string | null;
+}
+
+// One row of the version timeline (v1…vN), newest or oldest order as the backend
+// returns it. `direction` is whether we sent it out or received it back; `party` is
+// the counterpart; `snapshot_id` is the immutable tree captured at that boundary
+// (clickable → read-only view); `pointer_labels` are the DD-48 baseline pointers
+// that currently point here (mapped to friendly tags in the UI); `is_current_baseline`
+// flags the row the redline currently diffs against.
+export type LineageDirection = "sent" | "received";
+
+export interface LineageTimelineEntry {
+  version: number;
+  direction: LineageDirection;
+  party: string;
+  created_at: string;
+  snapshot_id: string;
+  pointer_labels: string[];
+  is_current_baseline: boolean;
+}
+
+// The live working copy, pinned at the top of the lineage view — never a numbered
+// version. `diverged_since_last_send` is the DD-72 drift flag (edited since the
+// last send), surfaced as "edited since v{n}".
+export interface LineageWorkingCopy {
+  label: string;
+  diverged_since_last_send: boolean;
+}
+
+// A reserved (not-yet-populated) lineage slot — a placeholder for a revision that
+// will arrive with a future import. Rendered greyed/disabled.
+export interface LineageReserved {
+  party: string;
+  direction: LineageDirection;
+  label: string;
+  populated: false;
+}
+
+export interface LineageView {
+  contract_id: string;
+  badge: ContractBadge;
+  timeline: LineageTimelineEntry[];
+  working_copy: LineageWorkingCopy;
+  reserved: LineageReserved[];
+}
+
+export const getLineage = (id: string): Promise<LineageView> =>
+  getJson(`/contracts/${id}/lineage`);
+
+// Read a past snapshot's tree (same shape as GET /contracts/{id}/tree), so the
+// existing tree renderer can show it read-only. 404 if the snapshot is missing or
+// belongs to another contract.
+export const getSnapshotTree = (
+  id: string,
+  snapshotId: string,
+): Promise<ContractTreeResponse> => getJson(`/contracts/${id}/snapshots/${snapshotId}/tree`);
 
 export const listIssues = (contractId: string): Promise<StoredIssue[]> =>
   getJson(`/contracts/${contractId}/issues`);
@@ -582,11 +664,11 @@ export interface DefinedTermsResponse {
 export const getDefinedTerms = (contractId: string): Promise<DefinedTermsResponse> =>
   getJson(`/contracts/${contractId}/defined-terms`);
 
-// --- Cockpit: document export (SPEC §9) -------------------------------------
+// --- Cockpit: document export (SPEC §9, DD-71) ------------------------------
 // These endpoints stream a .docx (binary), not JSON, so they bypass the JSON
-// helpers above. Each cuts a server-side snapshot and hands the browser a file
-// to save. The recipient on a clean copy sets the version pointer server-side.
-export type ExportRecipient = "counterparty" | "legal" | "internal" | "copy_only";
+// helpers above. DD-71: export is a pure grab — it cuts NO snapshot and advances
+// NO pointer (the snapshot/pointer boundary is the separate Mark-as-sent action,
+// `markSent` below). There is no recipient selector on export anymore.
 
 // Pull the server-set name out of Content-Disposition (RFC 5987 filename*= wins
 // over a plain filename=); fall back to the caller's default when absent.
@@ -632,9 +714,11 @@ async function downloadDocx(
   URL.revokeObjectURL(url);
 }
 
-// Clean copy: POST cuts a snapshot for the chosen recipient and streams the .docx.
-export const exportCleanCopy = (contractId: string, recipient: ExportRecipient): Promise<void> =>
-  downloadDocx("POST", `/contracts/${contractId}/export`, "contract.docx", { recipient });
+// Clean copy: POST renders the current working copy and streams the .docx (a pure
+// grab — no snapshot, no pointer; DD-71). POST (not GET) only because it stamps
+// `last_export_at` server-side for the Mark-as-sent drift marker (DD-72). No body.
+export const exportCleanCopy = (contractId: string): Promise<void> =>
+  downloadDocx("POST", `/contracts/${contractId}/export`, "contract.docx");
 
 // Issue list: GET streams the call's issue list as a .docx.
 export const exportIssueList = (contractId: string): Promise<void> =>
@@ -648,6 +732,36 @@ export const exportIssueList = (contractId: string): Promise<void> =>
 export const exportRedline = (contractId: string): Promise<void> =>
   downloadDocx("POST", `/contracts/${contractId}/redline-export`, "redline.docx", {
     snapshot_id: null,
+  });
+
+// --- Mark as sent (DD-71): the boundary event, decoupled from export ---------
+// The app can't actually send — the operator exports, sends manually, then records
+// it here. Marking cuts a snapshot of the CURRENT working copy, advances the DD-48
+// `last_shared_with_X` pointer(s) (recipient "both" → one snapshot, two pointers),
+// and mints the next lineage v-number (DD-70). When the working copy was edited
+// since the last export, the first call returns `marked:false, drift:true` WITHOUT
+// cutting (the non-blocking DD-72 warning); re-call with `acknowledge_drift:true`
+// to proceed ("Mark anyway").
+export type MarkSentRecipient = "counterparty" | "legal" | "both";
+
+export interface MarkSentResult {
+  marked: boolean;
+  drift: boolean;
+  recipient: MarkSentRecipient;
+  version: number;
+  pointers: string[];
+  snapshot_id: string | null;
+  last_export_at: string | null;
+}
+
+export const markSent = (
+  contractId: string,
+  recipient: MarkSentRecipient,
+  acknowledgeDrift = false,
+): Promise<MarkSentResult> =>
+  postJson(`/contracts/${contractId}/mark-sent`, {
+    recipient,
+    acknowledge_drift: acknowledgeDrift,
   });
 
 // --- Donna tab: context-aware grounded chat (F10b, SPEC §9) ----------------
@@ -705,6 +819,21 @@ export interface DonnaThread {
 
 export const getDonnaThread = (contractId: string): Promise<DonnaThread> =>
   getJson(`/contracts/${contractId}/donna/thread`);
+
+// Seed the Brainstorm primed opening turn (F10b). The server composes the restatement of
+// the issue's current recommendation draft and persists it as one assistant turn, so a
+// reloaded thread shows the primed opening. `seeded` is false (message null) when the issue
+// has no draft yet — nothing to restate.
+export interface DonnaSeedBrainstormResponse {
+  seeded: boolean;
+  message: DonnaThreadMessage | null;
+}
+
+export const seedBrainstorm = (
+  contractId: string,
+  issueId: string,
+): Promise<DonnaSeedBrainstormResponse> =>
+  postJson(`/contracts/${contractId}/donna/seed-brainstorm`, { issue_id: issueId });
 
 // Context is optional: omitted when there's no active selection (JSON.stringify
 // drops the undefined key), so an open ask sends just `{ question }`.

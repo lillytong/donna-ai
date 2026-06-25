@@ -22,15 +22,21 @@ import {
   getContractTree,
   getDefinedTerms,
   getDonnaThread,
+  getLineage,
   getRecommendation,
+  getSnapshotTree,
   listIssues,
+  markSent,
   searchClause,
+  seedBrainstorm,
   updateIssue,
   updateIssueStatus,
   type DefinedTerm,
   type DonnaAnswerKind,
   type DonnaChatMode,
-  type ExportRecipient,
+  type LineageView,
+  type LineageTimelineEntry,
+  type MarkSentRecipient,
   type Initiator,
   type IssueStatus,
   type NodeTreeItem,
@@ -155,6 +161,51 @@ const REGION_HINT: Record<Region, string> = {
   body: "numbered · the operative tree",
   back: "not numbered · section / body styling",
 };
+
+// Mark-as-sent recipient labels (DD-71).
+const MARK_LABEL: Record<MarkSentRecipient, string> = {
+  counterparty: "Counterparty",
+  legal: "Legal",
+  both: "Counterparty & Legal",
+};
+
+// F27 badge colour-key, by lifecycle label. "Your move" reads amber (action owed),
+// any "Sent to…" reads green (out the door), "Working copy" stays neutral, and
+// "Signed" reads as a done/settled blue. Unknown labels fall back to neutral.
+function badgeTone(label: string): string {
+  if (label === "Your move") return styles.badgeToneMove;
+  if (label.startsWith("Sent to")) return styles.badgeToneSent;
+  if (label === "Signed") return styles.badgeToneSigned;
+  return styles.badgeToneWorking;
+}
+
+// The full badge text: label + " · v{n}" (when numbered) + " · edited since sent"
+// (when the working copy drifted past the last send).
+function badgeText(b: { label: string; version: number | null; marker: boolean }): string {
+  let t = b.label;
+  if (b.version != null) t += ` · v${b.version}`;
+  if (b.marker) t += " · edited since sent";
+  return t;
+}
+
+// DD-48 baseline pointers → friendly tags for the lineage rows.
+function friendlyPointer(p: string): string {
+  const map: Record<string, string> = {
+    last_shared_with_counterparty: "Counterparty baseline",
+    last_shared_with_legal: "Legal baseline",
+    counterparty: "Counterparty baseline",
+    legal: "Legal baseline",
+  };
+  return map[p] ?? p.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
+}
+
+// Compact date for lineage rows / the snapshot banner.
+function lineageDate(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? ""
+    : d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
 
 // A node has children iff the next row in document order is deeper — children
 // always follow their parent immediately (mirrors the import review's childrenSet).
@@ -618,16 +669,52 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
   const [rearranging, setRearranging] = useState(false);
   const menuRef = useRef<HTMLSpanElement | null>(null);
 
-  // Export ▾ menu (SPEC §9). Each item downloads directly on click — clean copy
-  // is a grab (recipient "copy_only", no snapshot). `busy` is the action in
+  // Export ▾ menu (SPEC §9, DD-71). Every item is a pure grab — clean copy, redline,
+  // and issue list all just download (no snapshot/pointer). `busy` is the action in
   // flight, driving the brief "Exporting…" tag.
   const [exportOpen, setExportOpen] = useState(false);
-  const [exportBusy, setExportBusy] = useState<ExportRecipient | "issues" | "redline" | null>(null);
+  const [exportBusy, setExportBusy] = useState<"clean" | "issues" | "redline" | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
-  // Redline has no baseline until a clean copy is sent; the backend signals that
-  // with a 409, which we turn into the friendly inline hint instead of a raw error.
+  // Redline has no baseline until the first Mark as sent (DD-71); the backend signals
+  // that with a 409, which we turn into the friendly inline hint instead of a raw error.
   const [redlineNoBaseline, setRedlineNoBaseline] = useState(false);
   const exportRef = useRef<HTMLDivElement | null>(null);
+
+  // Mark as sent (DD-71): the boundary event, separate from export. Records that the
+  // exported .docx went out — cuts the baseline snapshot + advances the DD-48
+  // pointer(s). `markDrift` holds the non-blocking DD-72 "edited since last export"
+  // warning (Mark anyway / Re-export); `markDone` is the transient confirmation.
+  const [markOpen, setMarkOpen] = useState(false);
+  const [markBusy, setMarkBusy] = useState<MarkSentRecipient | null>(null);
+  const [markError, setMarkError] = useState<string | null>(null);
+  const [markDrift, setMarkDrift] = useState<{
+    recipient: MarkSentRecipient;
+    version: number;
+    lastExportAt: string | null;
+  } | null>(null);
+  const [markDone, setMarkDone] = useState<{ recipient: MarkSentRecipient; version: number } | null>(
+    null,
+  );
+  const markRef = useRef<HTMLDivElement | null>(null);
+
+  // F27 lifecycle badge + lineage drawer. `lineage` is the full version/snapshot
+  // view (badge + timeline + working copy + reserved slots), loaded on mount and
+  // refreshed after a Mark-as-sent. `lineageOpen` toggles the in-place drawer the
+  // header badge opens. `snapshotView` (when set) swaps the live tree for a past
+  // snapshot rendered read-only, behind a banner — null = the live working copy.
+  const [lineage, setLineage] = useState<LineageView | null>(null);
+  const [lineageOpen, setLineageOpen] = useState(false);
+  const [snapshotView, setSnapshotView] = useState<{
+    snapshotId: string;
+    version: number;
+    direction: string;
+    party: string;
+    date: string;
+    loading: boolean;
+    error: string | null;
+    rows: FlatNode[];
+  } | null>(null);
+  const lineageRef = useRef<HTMLDivElement | null>(null);
 
   // Issue status write in flight (DD-65 toggle), keyed by issue id.
   const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
@@ -689,6 +776,9 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
   // that view's recommendation finishes loading (see the effect below).
   const [pendingDraftLang, setPendingDraftLang] = useState<string | null>(null);
   const [copiedDraft, setCopiedDraft] = useState(false);
+  // F10b draft-apply error surface: a visible note when the issue's recommendation can't be
+  // loaded to apply drafted language INTO (otherwise the apply would silently no-op).
+  const [draftApplyError, setDraftApplyError] = useState<string | null>(null);
   const donnaScrollRef = useRef<HTMLDivElement | null>(null);
   const donnaInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -720,6 +810,31 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
         setState({ kind: "ready", rows, issues, terms });
       } catch (e) {
         if (live) setState({ kind: "error", message: e instanceof Error ? e.message : "Failed to load" });
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [id, reloadKey]);
+
+  // F27: load the lifecycle badge + lineage. An enrichment, not a load gate — a
+  // failure just leaves the badge absent (the tree still renders). Re-run on
+  // reloadKey so a Mark-as-sent (which bumps it) refreshes the badge + timeline.
+  const loadLineage = async () => {
+    try {
+      setLineage(await getLineage(id));
+    } catch {
+      setLineage(null);
+    }
+  };
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      try {
+        const lv = await getLineage(id);
+        if (live) setLineage(lv);
+      } catch {
+        if (live) setLineage(null);
       }
     })();
     return () => {
@@ -1080,6 +1195,7 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
     setAskError(null);
     setDonnaContext(null);
     setPendingDraftLang(null);
+    setDraftApplyError(null);
   }, [id]);
 
   // DD-68 reuse for a draft turn's "Use this language" with an issue in context:
@@ -1088,7 +1204,15 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
   // pending draft language into the rec [Edit] buffer and open it — the operator then
   // commits via the SAME edited-confirm path the card uses (useRecommendation(_, true)).
   useEffect(() => {
-    if (!pendingDraftLang || !rec || rec.status !== "ready" || !rec.draft) return;
+    if (!pendingDraftLang || !rec) return;
+    // The issue's recommendation errored while we waited to apply into it — surface a
+    // visible note instead of silently dropping the drafted language (F10b polish).
+    if (rec.status === "error") {
+      setDraftApplyError("Couldn't load the issue's recommendation to apply into — try again.");
+      setPendingDraftLang(null);
+      return;
+    }
+    if (rec.status !== "ready" || !rec.draft) return;
     setRec((s) =>
       s && s.status === "ready" && s.draft
         ? {
@@ -1102,6 +1226,14 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
     );
     setPendingDraftLang(null);
   }, [pendingDraftLang, rec]);
+
+  // Auto-dismiss the draft-apply error note after a few seconds (a transient toast-style
+  // surface, not a persistent error). Cleared early when a new apply starts.
+  useEffect(() => {
+    if (!draftApplyError) return;
+    const t = window.setTimeout(() => setDraftApplyError(null), 5000);
+    return () => window.clearTimeout(t);
+  }, [draftApplyError]);
 
   // Lazily load the persistent thread the first time Donna's tab is opened. Stored
   // history has no live citations/kind, so it renders as plain grounded answers.
@@ -1219,10 +1351,11 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
   // F10b "Brainstorm with Donna ↗" from the F11 rec card: leave the resolution view,
   // set the issue (+ its clause) as context, and PRIME the chat with an opening turn that
   // restates Donna's current recommendation — so the operator lands in a conversation that
-  // already knows it and can iterate ("make it more aggressive", "shorter"). The seed is a
-  // local opening message; subsequent asks carry the issue context, so Donna's advise
-  // engine continues it.
-  function brainstormFromRec(issueId: string, d: StoredRecommendation) {
+  // already knows it and can iterate ("make it more aggressive", "shorter"). The opening is
+  // composed + PERSISTED server-side (seedBrainstorm), so a reloaded thread still shows it;
+  // subsequent asks carry the issue context, so Donna's advise engine continues it. A failed
+  // seed falls back to a local-only opening so the operator still lands primed.
+  async function brainstormFromRec(issueId: string, d: StoredRecommendation) {
     const clauseId = resolveClauseRow?.id ?? null;
     // Tear down the resolution view directly (closeResolve would return to the prior tab,
     // not Donna).
@@ -1231,23 +1364,43 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
     setEditingId(null);
     setRec(null);
     setDonnaContext({ issueId, nodeIds: clauseId ? [clauseId] : [] });
-    const num = issueNumberById.get(issueId) ?? "—";
-    const parts: string[] = [d.rationale.trim()];
-    if (d.draft_recommended_position?.trim())
-      parts.push(`**Recommended position:** ${d.draft_recommended_position.trim()}`);
-    if (d.draft_counter_language?.trim())
-      parts.push(`**Counter-language:**\n${d.draft_counter_language.trim()}`);
-    const opening: DonnaUiMessage = {
-      role: "donna",
-      content:
-        `Let's brainstorm issue #${num}. Here's where I've landed — tell me to make it more ` +
-        `aggressive, tighten it, or take a different angle.\n\n${parts.join("\n\n")}`,
-      mode: "advise",
-      citations: resolveCitations(d.citations ?? [], rowById, issueById),
-    };
-    setDonnaMessages((m) => [...(m ?? []), opening]);
     setRailTab("donna");
     requestAnimationFrame(() => donnaInputRef.current?.focus());
+
+    const localOpening = (): DonnaUiMessage => {
+      const num = issueNumberById.get(issueId) ?? "—";
+      const parts: string[] = [d.rationale.trim()];
+      if (d.draft_recommended_position?.trim())
+        parts.push(`**Recommended position:** ${d.draft_recommended_position.trim()}`);
+      if (d.draft_counter_language?.trim())
+        parts.push(`**Counter-language:**\n${d.draft_counter_language.trim()}`);
+      return {
+        role: "donna",
+        content:
+          `Let's brainstorm issue #${num}. Here's where I've landed — tell me to make it more ` +
+          `aggressive, tighten it, or take a different angle.\n\n${parts.join("\n\n")}`,
+        mode: "advise",
+        citations: resolveCitations(d.citations ?? [], rowById, issueById),
+      };
+    };
+
+    try {
+      const res = await seedBrainstorm(id, issueId);
+      const seeded = res.seeded && res.message;
+      const opening: DonnaUiMessage = seeded
+        ? {
+            role: "donna",
+            content: res.message!.content,
+            mode: "advise",
+            ...(res.message!.kind ? { kind: res.message!.kind } : {}),
+            citations: resolveCitations(res.message!.citations ?? [], rowById, issueById),
+          }
+        : localOpening();
+      setDonnaMessages((m) => [...(m ?? []), opening]);
+    } catch {
+      // Seeding failed (e.g. network) — still prime the conversation locally.
+      setDonnaMessages((m) => [...(m ?? []), localOpening()]);
+    }
   }
 
   // A draft turn's "Use this language" — never a new write. Route into an EXISTING
@@ -1259,6 +1412,7 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
   async function applyDraftLanguage(draftLang: string) {
     const text = draftLang.trim();
     if (!text) return;
+    setDraftApplyError(null);
     const issueId = donnaContext?.issueId ?? null;
     if (issueId) {
       const node = issueById.get(issueId)?.node_id ?? null;
@@ -1443,12 +1597,12 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
     setExportError(null);
     setRedlineNoBaseline(false);
   }
-  async function runCleanCopy(recipient: ExportRecipient) {
+  async function runCleanCopy() {
     if (exportBusy) return;
-    setExportBusy(recipient);
+    setExportBusy("clean");
     setExportError(null);
     try {
-      await exportCleanCopy(id, recipient);
+      await exportCleanCopy(id);
       closeExport();
     } catch (e) {
       setExportError(e instanceof Error ? e.message : "Export failed");
@@ -1489,6 +1643,127 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
       setExportBusy(null);
     }
   }
+
+  function closeMark() {
+    setMarkOpen(false);
+    setMarkDrift(null);
+    setMarkError(null);
+  }
+  // Mark as sent (DD-71). On the first call for a drifted contract the backend
+  // returns marked:false/drift:true (nothing cut) → show the non-blocking warning;
+  // "Mark anyway" re-calls with acknowledge=true; "Re-export" grabs a fresh .docx.
+  async function runMarkSent(recipient: MarkSentRecipient, acknowledgeDrift = false) {
+    if (markBusy) return;
+    setMarkBusy(recipient);
+    setMarkError(null);
+    try {
+      const res = await markSent(id, recipient, acknowledgeDrift);
+      if (!res.marked && res.drift) {
+        setMarkDrift({ recipient, version: res.version, lastExportAt: res.last_export_at });
+        return;
+      }
+      setMarkDone({ recipient, version: res.version });
+      closeMark();
+      // The send moved the lifecycle on — refresh the badge + timeline.
+      void loadLineage();
+    } catch (e) {
+      setMarkError(e instanceof Error ? e.message : "Couldn't mark as sent");
+    } finally {
+      setMarkBusy(null);
+    }
+  }
+  // "Re-export" from the drift warning: grab a fresh clean copy (which restamps
+  // last_export_at), then drop the warning so the operator can mark cleanly.
+  async function reExportFromDrift() {
+    setMarkDrift(null);
+    await runCleanCopy();
+  }
+
+  // F27: open a past version's snapshot read-only in the document panel. Closes the
+  // drawer, shows the snapshot rows (built the same way as the live tree) behind a
+  // banner, and clears any in-flight selection/edit so nothing dangles from the
+  // live tree. "Return to working copy" (closeSnapshot) restores the live view.
+  async function openSnapshot(entry: LineageTimelineEntry) {
+    setLineageOpen(false);
+    setSelectedId(null);
+    setMenuFor(null);
+    setEditing(null);
+    setInserting(null);
+    setDeleteState(null);
+    setSnapshotView({
+      snapshotId: entry.snapshot_id,
+      version: entry.version,
+      direction: entry.direction,
+      party: entry.party,
+      date: lineageDate(entry.created_at),
+      loading: true,
+      error: null,
+      rows: [],
+    });
+    try {
+      const tree = await getSnapshotTree(id, entry.snapshot_id);
+      const rows = withNumbers(flatten(tree.nodes));
+      setSnapshotView((s) =>
+        s && s.snapshotId === entry.snapshot_id ? { ...s, loading: false, rows } : s,
+      );
+    } catch (e) {
+      setSnapshotView((s) =>
+        s && s.snapshotId === entry.snapshot_id
+          ? { ...s, loading: false, error: e instanceof Error ? e.message : "Couldn't load this version" }
+          : s,
+      );
+    }
+  }
+  function closeSnapshot() {
+    setSnapshotView(null);
+  }
+
+  // Close the lineage drawer on an outside click or Escape (mirrors the Export menu).
+  useEffect(() => {
+    if (!lineageOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (lineageRef.current && !lineageRef.current.contains(e.target as Node)) setLineageOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        setLineageOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey, true);
+    };
+  }, [lineageOpen]);
+
+  // Transient "Marked as sent" confirmation — clears itself after a few seconds.
+  useEffect(() => {
+    if (!markDone) return;
+    const t = setTimeout(() => setMarkDone(null), 4500);
+    return () => clearTimeout(t);
+  }, [markDone]);
+
+  // Close the Mark-as-sent menu on an outside click or Escape (mirrors Export).
+  useEffect(() => {
+    if (!markOpen) return;
+    function onDown(e: MouseEvent) {
+      if (markRef.current && !markRef.current.contains(e.target as Node)) closeMark();
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        closeMark();
+      }
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey, true);
+    };
+  }, [markOpen]);
 
   const selectedRow = selectedId ? rowById.get(selectedId) ?? null : null;
   // Right-pane "Selected clause" card state. Edit shows only for a node with real
@@ -2145,6 +2420,28 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
     );
   };
 
+  // F27: one read-only snapshot row. Mirrors renderRow's visual vocabulary (the
+  // same .row / .num / .roleLabel / .text classes) but carries NO interactivity —
+  // no select, no twirl, no actions — since a past version is immutable. Defined
+  // terms still resolve (the deal-level registry is version-independent).
+  const renderSnapshotRow = (r: FlatNode) => (
+    <div
+      key={r.id}
+      className={[styles.row, styles.rowReadonly].join(" ")}
+      style={{ paddingLeft: 18 + r.depth * 22 }}
+    >
+      <span className={styles.twirlSpace} aria-hidden />
+      {r.role === "clause" ? (
+        <span className={styles.num}>{r.number}</span>
+      ) : (
+        <span className={styles.roleLabel}>{nonClauseLabel(r)}</span>
+      )}
+      <span className={[styles.text, r.isHeading ? styles.headingText : ""].join(" ")}>
+        {r.text ? renderClauseText(r.text) : <em>(no text)</em>}
+      </span>
+    </div>
+  );
+
   // One issue card, shared by the Issues tab and the Current Clause open-issues list.
   // In the Issues tab a clause-anchored card is a navigation instrument: clicking it
   // jumps to the clause and opens the Current Clause tab (DD-66.4). Free-floating
@@ -2368,7 +2665,7 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
                   type="button"
                   className={styles.brainstormBtn}
                   disabled={busy || refreshing}
-                  onClick={() => brainstormFromRec(issueId, d)}
+                  onClick={() => void brainstormFromRec(issueId, d)}
                   title="Open a conversation with Donna primed on this recommendation"
                 >
                   Brainstorm with Donna ↗
@@ -2421,6 +2718,9 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
         </div>
 
         <div className={styles.resolveScroll}>
+          {/* F10b: a visible note when drafted chat language couldn't be applied because
+              the issue's recommendation failed to load (otherwise it would silently no-op). */}
+          {draftApplyError && <p className={styles.askError}>{draftApplyError}</p>}
           {/* Clause context — compact reference; clause-anchored issues carry it,
               free-floating issues show a note instead. */}
           {clause ? (
@@ -2717,6 +3017,107 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
         </div>
 
         <div className={styles.right}>
+          {/* F27: persistent lifecycle badge — always visible, colour-keyed by
+              label. Clicking opens the lineage drawer (version/snapshot history). */}
+          {lineage && (
+            <div className={styles.lineageWrap} ref={lineageRef}>
+              <button
+                type="button"
+                className={[styles.lifecycleBadge, badgeTone(lineage.badge.label)].join(" ")}
+                aria-haspopup="dialog"
+                aria-expanded={lineageOpen}
+                title="Version history"
+                onClick={() => setLineageOpen((v) => !v)}
+              >
+                <span className={styles.lifecycleDot} aria-hidden />
+                {badgeText(lineage.badge)}
+                <span className={styles.lifecycleCaret} aria-hidden>
+                  ▾
+                </span>
+              </button>
+              {lineageOpen && (
+                <div className={styles.lineageDrawer} role="dialog" aria-label="Version history">
+                  <div className={styles.lineageHead}>
+                    <span className={styles.lineageHeadTitle}>Version history</span>
+                    <button
+                      type="button"
+                      className={styles.lineageClose}
+                      aria-label="Close version history"
+                      onClick={() => setLineageOpen(false)}
+                    >
+                      ×
+                    </button>
+                  </div>
+
+                  {/* Working copy — pinned, never a numbered version. */}
+                  <div className={[styles.lineageRow, styles.lineageWorking].join(" ")}>
+                    <div className={styles.lineageRowMain}>
+                      <span className={styles.lineageWorkLabel}>{lineage.working_copy.label}</span>
+                      <span className={styles.lineageTagMuted}>Working copy — not a version</span>
+                    </div>
+                    {lineage.working_copy.diverged_since_last_send && lineage.badge.based_on && (
+                      <span className={styles.lineageDrift}>
+                        edited since {lineage.badge.based_on}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Timeline v1…vN — each row opens its snapshot read-only. */}
+                  {lineage.timeline.length === 0 ? (
+                    <p className={styles.lineageEmpty}>
+                      No versions yet — Mark as sent to record the first.
+                    </p>
+                  ) : (
+                    lineage.timeline.map((t) => (
+                      <button
+                        key={t.snapshot_id}
+                        type="button"
+                        className={[
+                          styles.lineageRow,
+                          styles.lineageRowClickable,
+                          snapshotView?.snapshotId === t.snapshot_id ? styles.lineageRowActive : "",
+                        ].join(" ")}
+                        onClick={() => void openSnapshot(t)}
+                      >
+                        <div className={styles.lineageRowMain}>
+                          <span className={styles.lineageVer}>v{t.version}</span>
+                          <span className={styles.lineageDir}>
+                            {t.direction === "sent" ? "→ Sent to" : "← Received from"} {t.party}
+                          </span>
+                          <span className={styles.lineageDate}>{lineageDate(t.created_at)}</span>
+                        </div>
+                        <div className={styles.lineageTags}>
+                          {t.is_current_baseline && (
+                            <span className={styles.lineageBaseline}>current baseline</span>
+                          )}
+                          {t.pointer_labels.map((p) => (
+                            <span key={p} className={styles.lineageTag}>
+                              {friendlyPointer(p)}
+                            </span>
+                          ))}
+                        </div>
+                      </button>
+                    ))
+                  )}
+
+                  {/* Reserved slots — placeholders, greyed/disabled. */}
+                  {lineage.reserved.map((r, i) => (
+                    <div
+                      key={`reserved-${i}`}
+                      className={[styles.lineageRow, styles.lineageReserved].join(" ")}
+                      aria-disabled
+                    >
+                      <div className={styles.lineageRowMain}>
+                        <span className={styles.lineageDir}>{r.label}</span>
+                      </div>
+                      <span className={styles.lineageTagMuted}>arrives with revision import</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           <a className={styles.navLink} href="/contracts">
             ← All contracts
           </a>
@@ -2739,12 +3140,12 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
                   type="button"
                   role="menuitem"
                   className={[styles.menuItem, styles.exportItem].join(" ")}
-                  disabled={exportBusy === "copy_only"}
-                  onClick={() => void runCleanCopy("copy_only")}
+                  disabled={exportBusy === "clean"}
+                  onClick={() => void runCleanCopy()}
                 >
                   <span className={styles.exportItemLabel}>Clean copy</span>
                   <span className={styles.exportItemMeta}>
-                    {exportBusy === "copy_only" ? "Exporting…" : ".docx"}
+                    {exportBusy === "clean" ? "Exporting…" : ".docx"}
                   </span>
                 </button>
                 <div className={styles.exportRedline}>
@@ -2762,7 +3163,7 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
                   </button>
                   {redlineNoBaseline && (
                     <p className={styles.exportRedlineHint}>
-                      Available after you send a clean copy — that sets the baseline.
+                      Available after you Mark as sent — that sets the baseline.
                     </p>
                   )}
                 </div>
@@ -2782,6 +3183,77 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
                 {exportError && <p className={styles.exportError}>{exportError}</p>}
               </div>
             )}
+          </div>
+
+          {/* Mark as sent (DD-71): the boundary event, separate from Export. */}
+          <div className={styles.markWrap} ref={markRef}>
+            <button
+              type="button"
+              className={[styles.markBtn, markOpen ? styles.markBtnOn : ""].join(" ")}
+              aria-haspopup="menu"
+              aria-expanded={markOpen}
+              onClick={() => (markOpen ? closeMark() : (setMarkDone(null), setMarkOpen(true)))}
+            >
+              Mark as sent{" "}
+              <span className={styles.exportCaret} aria-hidden>
+                ▾
+              </span>
+            </button>
+            {markOpen && (
+              <div className={styles.exportMenu} role="menu">
+                {markDrift ? (
+                  <div className={styles.markDrift} role="alert">
+                    <p className={styles.markDriftText}>
+                      You&apos;ve edited since your last export
+                      {markDrift.lastExportAt
+                        ? ` (${new Date(markDrift.lastExportAt).toLocaleString()})`
+                        : ""}
+                      . Marking now records your <strong>current</strong> version (v
+                      {markDrift.version}) as sent to {MARK_LABEL[markDrift.recipient]}.
+                    </p>
+                    <div className={styles.markDriftActions}>
+                      <button
+                        type="button"
+                        className={styles.markDriftPrimary}
+                        disabled={markBusy !== null}
+                        onClick={() => void runMarkSent(markDrift.recipient, true)}
+                      >
+                        {markBusy ? "Marking…" : "Mark anyway"}
+                      </button>
+                      <button
+                        type="button"
+                        className={styles.markDriftSecondary}
+                        disabled={markBusy !== null || exportBusy !== null}
+                        onClick={() => void reExportFromDrift()}
+                      >
+                        Re-export
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    {(["counterparty", "legal", "both"] as MarkSentRecipient[]).map((r) => (
+                      <button
+                        key={r}
+                        type="button"
+                        role="menuitem"
+                        className={[styles.menuItem, styles.exportItem].join(" ")}
+                        disabled={markBusy !== null}
+                        onClick={() => void runMarkSent(r)}
+                      >
+                        <span className={styles.exportItemLabel}>{MARK_LABEL[r]}</span>
+                        <span className={styles.exportItemMeta}>
+                          {markBusy === r ? "Marking…" : "→"}
+                        </span>
+                      </button>
+                    ))}
+                  </>
+                )}
+                {markError && <p className={styles.exportError}>{markError}</p>}
+              </div>
+            )}
+            {/* The transient "Sent to…" toast is replaced by the persistent
+                lifecycle badge (F27), which the Mark-as-sent refreshes. */}
           </div>
         </div>
       </header>
@@ -2818,9 +3290,13 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
             <div className={styles.panelHead}>
               Clauses
               <span className={styles.panelHint}>
-                {rearranging ? "drag to reorder or nest" : "click to anchor an issue · press / to jump"}
+                {snapshotView
+                  ? `viewing v${snapshotView.version} — read-only`
+                  : rearranging
+                    ? "drag to reorder or nest"
+                    : "click to anchor an issue · press / to jump"}
               </span>
-              {presentRegions.size > 0 && (
+              {!snapshotView && presentRegions.size > 0 && (
                 <div className={styles.headTools}>
                   <button
                     className={[styles.rearrangeBtn, rearranging ? styles.rearrangeOn : ""].join(" ")}
@@ -2846,8 +3322,32 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
                 "Collapse all" then Rearrange gives a short top-level list. The
                 twirl toggles the same `collapsed` set, so collapse state is shared
                 with the read tree and survives leaving Rearrange. */}
+            {/* F27: read-only banner shown while viewing a past snapshot. */}
+            {snapshotView && (
+              <div className={styles.snapshotBanner} role="status">
+                <span className={styles.snapshotBannerText}>
+                  Viewing v{snapshotView.version} ({snapshotView.direction} {snapshotView.party},{" "}
+                  {snapshotView.date}) — read-only
+                </span>
+                <button
+                  type="button"
+                  className={styles.snapshotReturn}
+                  onClick={closeSnapshot}
+                >
+                  Return to working copy
+                </button>
+              </div>
+            )}
             <div className={styles.rows}>
-              {rearranging ? (
+              {snapshotView ? (
+                snapshotView.loading ? (
+                  <p className={styles.snapshotLoading}>Loading v{snapshotView.version}…</p>
+                ) : snapshotView.error ? (
+                  <p className={styles.snapshotError}>{snapshotView.error}</p>
+                ) : (
+                  snapshotView.rows.map(renderSnapshotRow)
+                )
+              ) : rearranging ? (
                 <RearrangeTree
                   contractId={id}
                   rows={visibleBody}

@@ -1,0 +1,80 @@
+{
+  "_comment": "Fully SYNTHETIC, generic commercial agreement. No real client, counterparty, deal, person names, or real contract content. Invented for the Mode B (F03b) clause-matcher eval only. One baseline tree + 3 adversarial after-variants (renumber / reword+delete / add), each with an exact gold match map. Privacy-safe and committable; does NOT depend on the gitignored spike data.",
+  "contract_label": "Generic Licence & Services Agreement (synthetic)",
+  "baseline": [
+    { "id": "b0", "parent": null, "order": 0, "heading": "Definitions and Interpretation", "body": "" },
+    { "id": "b1", "parent": null, "order": 1, "heading": "Term", "body": "" },
+    { "id": "b2", "parent": null, "order": 2, "heading": "Payment Terms", "body": "" },
+    { "id": "b3", "parent": "b2", "order": 3, "heading": "", "body": "the client shall pay each invoice within thirty days of the invoice date" },
+    { "id": "b4", "parent": null, "order": 4, "heading": "Confidentiality", "body": "" },
+    { "id": "b5", "parent": "b4", "order": 5, "heading": "", "body": "each party shall keep the other party confidential information secret and use it solely to perform this agreement" },
+    { "id": "b6", "parent": null, "order": 6, "heading": "Audit Rights", "body": "" },
+    { "id": "b7", "parent": "b6", "order": 7, "heading": "", "body": "the supplier may audit client records once per calendar year" },
+    { "id": "b8", "parent": null, "order": 8, "heading": "Indemnity", "body": "" },
+    { "id": "b9", "parent": null, "order": 9, "heading": "Governing Law", "body": "" }
+  ],
+  "variants": [
+    {
+      "name": "A renumber + light reword",
+      "incoming": [
+        { "order": 0, "parent": null, "heading": "Definitions and Interpretation", "body": "" },
+        { "order": 1, "parent": null, "heading": "Conditions Precedent", "body": "" },
+        { "order": 2, "parent": null, "heading": "Term", "body": "" },
+        { "order": 3, "parent": null, "heading": "Payment Terms", "body": "" },
+        { "order": 4, "parent": 3, "heading": "", "body": "the client shall pay each invoice within thirty days after the invoice date" },
+        { "order": 5, "parent": null, "heading": "Confidentiality", "body": "" },
+        { "order": 6, "parent": 5, "heading": "", "body": "each party shall keep the other party confidential information secret and use it solely to perform this agreement" },
+        { "order": 7, "parent": null, "heading": "Audit Rights", "body": "" },
+        { "order": 8, "parent": 7, "heading": "", "body": "the supplier may audit client records once per calendar year" },
+        { "order": 9, "parent": null, "heading": "Indemnity", "body": "" },
+        { "order": 10, "parent": null, "heading": "Governing Law", "body": "" }
+      ],
+      "gold": {
+        "matches": { "0": "b0", "2": "b1", "3": "b2", "4": "b3", "5": "b4", "6": "b5", "7": "b6", "8": "b7", "9": "b8", "10": "b9" },
+        "new": [1],
+        "deleted": []
+      }
+    },
+    {
+      "name": "B heavy reword + delete",
+      "incoming": [
+        { "order": 0, "parent": null, "heading": "Definitions and Interpretation", "body": "" },
+        { "order": 1, "parent": null, "heading": "Term", "body": "" },
+        { "order": 2, "parent": null, "heading": "Payment Terms", "body": "" },
+        { "order": 3, "parent": 2, "heading": "", "body": "the client shall pay each invoice within thirty days of the invoice date" },
+        { "order": 4, "parent": null, "heading": "Confidentiality", "body": "" },
+        { "order": 5, "parent": 4, "heading": "", "body": "each party shall keep the other party confidential information secret and use it solely to perform this agreement" },
+        { "order": 6, "parent": null, "heading": "Audit Rights", "body": "" },
+        { "order": 7, "parent": 6, "heading": "", "body": "the supplier may audit client accounts following sixty days notice" },
+        { "order": 8, "parent": null, "heading": "Indemnity", "body": "" }
+      ],
+      "gold": {
+        "matches": { "0": "b0", "1": "b1", "2": "b2", "3": "b3", "4": "b4", "5": "b5", "6": "b6", "7": "b7", "8": "b8" },
+        "new": [],
+        "deleted": ["b9"]
+      }
+    },
+    {
+      "name": "C add two clauses",
+      "incoming": [
+        { "order": 0, "parent": null, "heading": "Definitions and Interpretation", "body": "" },
+        { "order": 1, "parent": null, "heading": "Term", "body": "" },
+        { "order": 2, "parent": null, "heading": "Payment Terms", "body": "" },
+        { "order": 3, "parent": 2, "heading": "", "body": "the client shall pay each invoice within thirty days of the invoice date" },
+        { "order": 4, "parent": null, "heading": "Confidentiality", "body": "" },
+        { "order": 5, "parent": 4, "heading": "", "body": "each party shall keep the other party confidential information secret and use it solely to perform this agreement" },
+        { "order": 6, "parent": null, "heading": "Audit Rights", "body": "" },
+        { "order": 7, "parent": 6, "heading": "", "body": "the supplier may audit client records once per calendar year" },
+        { "order": 8, "parent": null, "heading": "Indemnity", "body": "" },
+        { "order": 9, "parent": null, "heading": "Governing Law", "body": "" },
+        { "order": 10, "parent": null, "heading": "Limitation of Liability", "body": "" },
+        { "order": 11, "parent": null, "heading": "Insurance", "body": "" }
+      ],
+      "gold": {
+        "matches": { "0": "b0", "1": "b1", "2": "b2", "3": "b3", "4": "b4", "5": "b5", "6": "b6", "7": "b7", "8": "b8", "9": "b9" },
+        "new": [10, 11],
+        "deleted": []
+      }
+    }
+  ]
+}

@@ -35,11 +35,13 @@ from backend.prompts.utils import render
 from backend.services.clause_search import search_clause
 from backend.services.contract_repo import fetch_nodes
 from backend.services.donna import recommendation_repo
+from backend.services.donna.distillation import fetch_patterns_for_issue
 from backend.services.donna.grounding import (
     build_clause_grounding,
     build_issue_focus,
     build_issue_ledger,
     build_label_map,
+    build_pattern_grounding,
 )
 from backend.services.donna.qa import scrub_leaked_ids
 from backend.services.issue_repo import get_issue, list_issues
@@ -112,6 +114,10 @@ async def generate_recommendation(contract_id: str, issue_id: str) -> StoredReco
             raise IssueNotFound(issue_id)
         nodes = await fetch_nodes(conn, contract_id)
         issues = await list_issues(conn, contract_id)
+        # F30 tier-8 retrieval (DD-76): operator-style always, counterparty when same client,
+        # deal-type when same contract type. A background RETRIEVAL INPUT — never authoritative,
+        # never cited, never exported (§2.4); appended below as a clearly-labelled block.
+        patterns = await fetch_patterns_for_issue(conn, contract_id)
 
     matched_node_id = issue.node_id
     if matched_node_id is None:  # free-floating: resolve a clause via F05b (no embeddings)
@@ -128,6 +134,13 @@ async def generate_recommendation(contract_id: str, issue_id: str) -> StoredReco
         ledger=build_issue_ledger([i for i in issues if i.id != issue.id], labels)
         or "(no other issues on record)",
     )
+
+    # Append the learned-pattern block AFTER the rendered prompt (not as a template slot), so
+    # the recommendation prompt template and its eval are untouched and patterns stay visibly
+    # distinct from the authoritative, citable grounding above (DD-76).
+    pattern_block = build_pattern_grounding(patterns)
+    if pattern_block:
+        prompt = f"{prompt}\n\n{pattern_block}"
 
     result = await complete(
         tier="high",

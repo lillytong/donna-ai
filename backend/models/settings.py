@@ -17,6 +17,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from backend.models.lineage import ContractBadge
+
 RelationshipType = Literal["counterparty", "partner", "licensee", "other"]
 ClientStatus = Literal["active", "archived"]
 DealStatus = Literal["active", "signed", "closed"]
@@ -140,6 +142,10 @@ class StoredContract(BaseModel):
     style_config: dict[str, Any] = Field(default_factory=dict)
     origin: str | None = None
     created_at: datetime
+    # Derived lifecycle badge (F27/DD-75) — populated on the LIST read (My Contracts
+    # + home) via the set-based resolver so every card shows its "where are we"
+    # state; None on single-contract reads (the cockpit uses GET …/lineage instead).
+    badge: ContractBadge | None = None
 
 
 # A contract owns its content, so deleting it cascades through the rows beneath
