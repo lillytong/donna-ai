@@ -12,8 +12,6 @@ lives in the export service.
 
 from __future__ import annotations
 
-import re
-
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
@@ -21,16 +19,12 @@ from backend.db import acquire
 from backend.models.export import CleanCopyExportRequest
 from backend.services.contract_repo import fetch_nodes
 from backend.services.export.clean_copy import export_clean_copy
+from backend.services.export.filename import resolve_export_filename
 from backend.services.settings_repo import get_contract
 
 router = APIRouter()
 
 _DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-
-
-def _safe_filename(stem: str) -> str:
-    slug = re.sub(r"[^A-Za-z0-9 ._-]", "_", stem).strip() or "contract"
-    return f"{slug}.docx"
 
 
 @router.post("/contracts/{contract_id}/export")
@@ -42,10 +36,10 @@ async def export_contract(contract_id: str, request: CleanCopyExportRequest) -> 
         contract = await get_contract(conn, contract_id)
         style_config = contract.style_config if contract is not None else {}
         data = await export_clean_copy(conn, contract_id, nodes, style_config, request.recipient)
+        filename = await resolve_export_filename(conn, contract)
 
-    stem = contract.name if contract is not None else contract_id
     return Response(
         content=data,
         media_type=_DOCX_MEDIA_TYPE,
-        headers={"Content-Disposition": f'attachment; filename="{_safe_filename(stem)}"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

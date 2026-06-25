@@ -37,6 +37,11 @@ class LlmSettings(BaseSettings):
     donna_qa_temperature: float = 0.0
     donna_summary_max_tokens: int = 256
     donna_summary_temperature: float = 0.0
+    # F11 issue recommendation: a grounded rationale + draft position/counter-language at
+    # the capable tier (high/Opus, DD-35 — counter-language is high-consequence). Opus 4.8
+    # only supports temperature=1 (it rejects 0.0), so this tier's temp is pinned to 1.0.
+    donna_recommendation_max_tokens: int = 1024
+    donna_recommendation_temperature: float = 1.0
 
 
 class Settings(BaseSettings):

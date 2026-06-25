@@ -10,11 +10,12 @@ import json
 import zipfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from backend.api import redline as redline_api
-from backend.models.settings import StoredContract
+from backend.models.settings import StoredClient, StoredContract
+from backend.services.export import filename
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -22,6 +23,8 @@ _DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessing
 _DOCX_MAGIC = b"PK\x03\x04"
 _NOW = datetime(2026, 6, 24, tzinfo=UTC)
 _BASE_TS = datetime(2026, 6, 1, tzinfo=UTC)
+_CLIENT_NAME = "Acme"
+_TODAY = date.today().strftime("%y%m%d")
 
 app = FastAPI()
 app.include_router(redline_api.router)
@@ -110,8 +113,22 @@ def _install(monkeypatch: Any, *, pointer: dict[str, Any] | None) -> None:
     async def _fake_get(_conn: Any, _cid: str) -> StoredContract:
         return _contract()
 
+    async def _fake_get_client(_conn: Any, _cid: str) -> StoredClient:
+        return StoredClient(
+            id="cl1",
+            name=_CLIENT_NAME,
+            relationship_type="client",
+            status="active",
+            created_at=_NOW,
+        )
+
+    async def _fake_list_snapshots(_conn: Any, _cid: str) -> list[Any]:
+        return []
+
     monkeypatch.setattr(redline_api, "acquire", _fake_acquire)
     monkeypatch.setattr(redline_api, "get_contract", _fake_get)
+    monkeypatch.setattr(filename, "get_client", _fake_get_client)
+    monkeypatch.setattr(filename, "list_snapshots", _fake_list_snapshots)
 
 
 def _document_xml(data: bytes) -> str:
@@ -126,9 +143,8 @@ def test_redline_returns_tracked_changes_docx(monkeypatch: Any) -> None:
 
     assert resp.status_code == 200
     assert resp.headers["content-type"] == _DOCX_MEDIA_TYPE
-    assert (
-        resp.headers["content-disposition"]
-        == 'attachment; filename="Project Crimson JVA (redline).docx"'
+    assert resp.headers["content-disposition"] == (
+        f'attachment; filename="{_CLIENT_NAME}_Project Crimson JVA_{_TODAY}_v1_redline.docx"'
     )
     assert resp.content.startswith(_DOCX_MAGIC)
     xml = _document_xml(resp.content)

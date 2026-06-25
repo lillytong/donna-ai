@@ -12,6 +12,7 @@ from backend.api import (
     clause_search,
     defined_terms,
     donna,
+    donna_recommendations,
     export,
     health,
     imports,
@@ -74,3 +75,4 @@ app.include_router(defined_terms.router)
 app.include_router(issue_export.router)
 app.include_router(redline.router)
 app.include_router(donna.router)
+app.include_router(donna_recommendations.router)

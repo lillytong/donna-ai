@@ -85,6 +85,31 @@ def build_clause_grounding(
     return "\n".join(lines)
 
 
+def build_issue_focus(issue: StoredIssue, labels: dict[str, str]) -> str:
+    """The single issue under recommendation (F11) as a labelled block — the focal
+    grounding the recommendation prompt resolves. The anchor is the clause's legible
+    label (never a raw id); `initiator` is spelled out because it drives propose-vs-counter
+    (operator = we propose; counterparty = we counter their change)."""
+    if issue.node_id is not None:
+        anchor = labels.get(issue.node_id, issue.node_id)
+    else:
+        anchor = "contract-level (free-floating)"
+    stance = (
+        "counterparty (their_position is their proposed change — we are countering)"
+        if issue.initiator == "counterparty"
+        else f"{issue.initiator} (we raised this — we are proposing)"
+    )
+    return (
+        f"Title: {issue.title}\n"
+        f"Raised by: {stance}\n"
+        f"Status: {issue.status}\n"
+        f"Anchored clause: {anchor}\n"
+        f"Our position: {issue.our_position or '—'}\n"
+        f"Their position: {issue.their_position or '—'}\n"
+        f"Options on table: {issue.options_on_table or '—'}"
+    )
+
+
 def build_issue_ledger(issues: list[StoredIssue], labels: dict[str, str]) -> str:
     """The issue ledger as id-tagged status lines — the grounding for status-briefing
     questions. The clause reference is the legible label in a bare parenthetical

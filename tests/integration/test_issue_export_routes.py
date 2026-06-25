@@ -11,20 +11,23 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from backend.api import issue_export
 from backend.models.imports import StoredNode
 from backend.models.issues import StoredIssue
-from backend.models.settings import StoredContract
+from backend.models.settings import StoredClient, StoredContract
 from backend.services import issue_repo
+from backend.services.export import filename
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 _NOW = datetime(2026, 6, 24, tzinfo=UTC)
 _DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _DOCX_MAGIC = b"PK\x03\x04"
+_CLIENT_NAME = "Acme"
+_TODAY = date.today().strftime("%y%m%d")
 
 
 def _app() -> FastAPI:
@@ -102,10 +105,24 @@ def _install(
     async def fake_nodes(_conn: Any, _cid: str) -> list[StoredNode]:
         return nodes
 
+    async def fake_get_client(_conn: Any, _cid: str) -> StoredClient:
+        return StoredClient(
+            id="cl1",
+            name=_CLIENT_NAME,
+            relationship_type="client",
+            status="active",
+            created_at=_NOW,
+        )
+
+    async def fake_list_snapshots(_conn: Any, _cid: str) -> list[Any]:
+        return []
+
     monkeypatch.setattr(issue_export, "acquire", fake_acquire)
     monkeypatch.setattr(issue_export, "get_contract", fake_get)
     monkeypatch.setattr(issue_repo, "list_issues", fake_list)
     monkeypatch.setattr(issue_export, "fetch_nodes", fake_nodes)
+    monkeypatch.setattr(filename, "get_client", fake_get_client)
+    monkeypatch.setattr(filename, "list_snapshots", fake_list_snapshots)
 
 
 def test_export_returns_docx(monkeypatch: Any) -> None:
@@ -114,7 +131,7 @@ def test_export_returns_docx(monkeypatch: Any) -> None:
     assert resp.status_code == 200
     assert resp.headers["content-type"] == _DOCX_MEDIA_TYPE
     assert resp.headers["content-disposition"] == (
-        'attachment; filename="Generic Agreement - open issues.docx"'
+        f'attachment; filename="{_CLIENT_NAME}_Generic Agreement_{_TODAY}_v1_open-issues.docx"'
     )
     assert resp.content.startswith(_DOCX_MAGIC)
 

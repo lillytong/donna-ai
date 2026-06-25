@@ -2393,3 +2393,259 @@
     transform: none;
   }
 }
+
+/* ============================================================================
+   DD-68 — single-issue resolution view (the place where an issue is worked).
+   A master-detail drill-in that replaces the rail tabs while active. Reuses the
+   cockpit's own tokens (anchorNum, detailField, statusToggle, editForm); the one
+   bespoke surface is the F11 resolution slot, a designed-in "reserved" placeholder.
+   ============================================================================ */
+.resolve {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.resolveHead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: inherit;
+  border-bottom: 1px solid #eceef1;
+}
+/* back affordance — reads as "leave this issue, return to where I came from" */
+.backBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #6b7280;
+  background: none;
+  border: none;
+  border-radius: 7px;
+  padding: 4px 8px 4px 4px;
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.backBtn:hover {
+  color: #1d4ed8;
+  background: #eef4ff;
+}
+.backBtn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
+}
+.backArrow {
+  font-size: 16px;
+  line-height: 1;
+  transition: transform 0.12s ease;
+}
+.backBtn:hover .backArrow {
+  transform: translateX(-2px);
+}
+.resolveHead .who {
+  margin-left: auto;
+}
+.resolveScroll {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 14px 44px;
+}
+
+/* clause context — compact reference for the contested clause */
+.resolveClause {
+  padding: 12px 14px;
+  background: #fbfcfd;
+  border: 1px solid #e3e6ea;
+  border-radius: 11px;
+}
+.resolveClauseHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.resolveClauseTools {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.resolveJump {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: #2563eb;
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 5px;
+}
+.resolveJump:hover {
+  text-decoration: underline;
+}
+.resolveJump:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
+}
+.resolveClauseText {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #374151;
+  white-space: pre-wrap;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+.resolveClauseFull {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #374151;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.resolveMore {
+  margin-top: 6px;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #2563eb;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.resolveMore:hover {
+  text-decoration: underline;
+}
+/* free-floating (no clause) variant — a quiet note instead of a clause panel */
+.resolveClauseFree {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.resolveFreeLabel {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #8a929c;
+}
+.resolveFreeNote {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #6b7280;
+}
+
+/* editable issue block */
+.resolveIssue {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.resolveTitle {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: #1f2328;
+}
+
+/* status row */
+.resolveStatus {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ---- F11 resolution slot (Phase 2 placeholder) — the single bespoke surface.
+   A reserved, clearly-labeled bay for advanced Donna: a soft violet wash + dashed
+   frame say "designed-in, not yet active" without reading as a broken empty state.
+   Violet is used nowhere else, so it reads as the advanced-Donna zone. ---- */
+.donnaSlot {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  border: 1px dashed #c5bdf0;
+  border-radius: 12px;
+  background:
+    radial-gradient(120% 80% at 0% 0%, #f3f0fe 0%, rgba(243, 240, 254, 0) 60%),
+    linear-gradient(180deg, #faf9ff 0%, #f6f4fd 100%);
+}
+.donnaSlotEyebrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6d5bd0;
+}
+.donnaSlotMark {
+  font-size: 13px;
+  line-height: 1;
+  color: #7c66e0;
+}
+.donnaSlotPhase {
+  margin-left: auto;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #6d5bd0;
+  background: #ece7fb;
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.donnaSlotTitle {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #2c2a3a;
+}
+.donnaSlotLead {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #6b6880;
+}
+/* ghosted preview of the actions F11 will bring — non-interactive on purpose */
+.donnaSlotChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+.donnaSlotChip {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #8b85a8;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid #ded8f3;
+  border-radius: 7px;
+  padding: 4px 10px;
+}
+.donnaSlotNote {
+  margin: 2px 0 0;
+  font-size: 11px;
+  font-style: italic;
+  color: #9a95b3;
+}

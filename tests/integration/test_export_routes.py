@@ -8,15 +8,15 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from backend.api import export
 from backend.main import app
 from backend.models.imports import StoredNode
-from backend.models.settings import StoredContract
+from backend.models.settings import StoredClient, StoredContract
 from backend.services import snapshot
-from backend.services.export import clean_copy
+from backend.services.export import clean_copy, filename
 from fastapi.testclient import TestClient
 
 client = TestClient(app)
@@ -25,6 +25,8 @@ _DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessing
 _DOCX_MAGIC = b"PK\x03\x04"
 _NOW = datetime(2026, 6, 24, tzinfo=UTC)
 _POINTER_SQL = "snapshot_pointers"
+_CLIENT_NAME = "Acme"
+_TODAY = date.today().strftime("%y%m%d")
 
 
 class _FakeConn:
@@ -100,10 +102,24 @@ def _install(
     async def fake_record(_conn: Any, _event: Any) -> None:
         return None
 
+    async def fake_get_client(_conn: Any, _cid: str) -> StoredClient:
+        return StoredClient(
+            id="cl1",
+            name=_CLIENT_NAME,
+            relationship_type="client",
+            status="active",
+            created_at=_NOW,
+        )
+
+    async def fake_list_snapshots(_conn: Any, _cid: str) -> list[Any]:
+        return []
+
     monkeypatch.setattr(export, "acquire", _fake_acquire)
     monkeypatch.setattr(export, "fetch_nodes", fake_fetch)
     monkeypatch.setattr(export, "get_contract", fake_get)
     monkeypatch.setattr(snapshot, "record_event", fake_record)
+    monkeypatch.setattr(filename, "get_client", fake_get_client)
+    monkeypatch.setattr(filename, "list_snapshots", fake_list_snapshots)
 
 
 def _pointer_upserts(conn: _FakeConn) -> list[tuple[Any, ...]]:
@@ -131,7 +147,9 @@ def test_export_returns_docx(monkeypatch: Any) -> None:
 
     assert resp.status_code == 200
     assert resp.headers["content-type"] == _DOCX_MEDIA_TYPE
-    assert resp.headers["content-disposition"] == 'attachment; filename="Project Crimson JVA.docx"'
+    assert resp.headers["content-disposition"] == (
+        f'attachment; filename="{_CLIENT_NAME}_Project Crimson JVA_{_TODAY}_v1.docx"'
+    )
     assert resp.content.startswith(_DOCX_MAGIC)
 
 
@@ -216,14 +234,18 @@ def test_export_404_when_no_nodes(monkeypatch: Any) -> None:
     assert conn.inserts == []  # no snapshot cut when there is nothing to export
 
 
-def test_export_filename_falls_back_to_id_when_contract_absent(monkeypatch: Any) -> None:
+def test_export_filename_falls_back_to_generic_when_contract_absent(monkeypatch: Any) -> None:
+    """No contract row → generic placeholder fields and working version v1, not the
+    contract id stem (the new resolve_export_filename fallback)."""
     conn = _FakeConn()
     _install(monkeypatch, conn, nodes=_nodes(), contract=None)
 
     resp = client.post("/contracts/c1/export", json={"recipient": "internal"})
 
     assert resp.status_code == 200
-    assert resp.headers["content-disposition"] == 'attachment; filename="c1.docx"'
+    assert resp.headers["content-disposition"] == (
+        f'attachment; filename="Client_Contract_{_TODAY}_v1.docx"'
+    )
 
 
 def test_export_rejects_unknown_recipient() -> None:

@@ -1,0 +1,38 @@
+{
+  "_note": "Synthetic generic contract — no real client/deal/counterparty/firm content (repo privacy rule). Drives the F11 recommendation grounding/citation/honesty risk gate: grounded + cited, propose-vs-counter, framed on the reasonableness spectrum, honest about a missing market benchmark (never a fabricated number).",
+  "nodes": [
+    {"id": "n-liab", "heading": "Limitation of Liability", "body": "The aggregate liability of either party under this Agreement shall not exceed the total fees paid in the twelve months preceding the claim."},
+    {"id": "n-pay", "heading": "Payment Terms", "body": "The Customer shall pay each undisputed invoice within thirty days of the invoice date."},
+    {"id": "n-roy", "heading": "Royalty", "body": "The Licensee shall pay the Licensor a royalty on Net Sales at the rate set out in Schedule A."},
+    {"id": "n-term", "heading": "Term and Termination", "body": "This Agreement runs for an initial term of two years and renews for successive one-year terms unless either party gives ninety days' notice."}
+  ],
+  "ledger_issues": [
+    {"id": "i-pay", "node_id": "n-pay", "title": "Payment window", "status": "closed", "initiator": "operator", "our_position": "Thirty days net.", "their_position": "Thirty days net."}
+  ],
+  "cases": [
+    {
+      "name": "counter — counterparty wants uncapped liability",
+      "issue": {"id": "i-liab", "node_id": "n-liab", "title": "Liability cap level", "status": "open", "initiator": "counterparty", "our_position": "Cap liability at twelve months of fees.", "their_position": "Liability should be uncapped.", "options_on_table": null},
+      "matched_node_id": "n-liab",
+      "expect": {"must_cite": "n-liab", "counter": true, "position": false, "missing_benchmark": false, "forbid_numbers": false, "spectrum": true}
+    },
+    {
+      "name": "propose — tighten the payment window",
+      "issue": {"id": "i-pay2", "node_id": "n-pay", "title": "Shorten payment window", "status": "open", "initiator": "operator", "our_position": "We want each undisputed invoice paid within fifteen days.", "their_position": null, "options_on_table": null},
+      "matched_node_id": "n-pay",
+      "expect": {"must_cite": "n-pay", "counter": false, "position": true, "missing_benchmark": false, "forbid_numbers": false, "spectrum": true}
+    },
+    {
+      "name": "market gap — set the royalty rate, no benchmark provided",
+      "issue": {"id": "i-roy", "node_id": "n-roy", "title": "Royalty rate on Net Sales", "status": "open", "initiator": "operator", "our_position": "We need to set the royalty rate on Net Sales.", "their_position": null, "options_on_table": null},
+      "matched_node_id": "n-roy",
+      "expect": {"must_cite": "n-roy", "counter": false, "position": false, "missing_benchmark": true, "forbid_numbers": true, "spectrum": false}
+    },
+    {
+      "name": "counter — extend the termination notice period",
+      "issue": {"id": "i-term", "node_id": "n-term", "title": "Notice period for termination", "status": "open", "initiator": "counterparty", "our_position": "Ninety days' notice is sufficient.", "their_position": "Extend the notice period to one hundred eighty days.", "options_on_table": null},
+      "matched_node_id": "n-term",
+      "expect": {"must_cite": "n-term", "counter": true, "position": false, "missing_benchmark": false, "forbid_numbers": false, "spectrum": false}
+    }
+  ]
+}

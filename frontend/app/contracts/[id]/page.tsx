@@ -307,15 +307,6 @@ function shortTime(iso: string): string {
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-// Clean-copy recipients (SPEC §9 labels). The recipient sets the
-// version pointer server-side; the operator just picks who the copy is for.
-const RECIPIENTS: { value: ExportRecipient; label: string }[] = [
-  { value: "counterparty", label: "Counterparty" },
-  { value: "legal", label: "Legal" },
-  { value: "internal", label: "Internal" },
-  { value: "copy_only", label: "Copy-only" },
-];
-
 // --- F10 Donna tab: chat model + citation resolution ------------------------
 // Example prompts that seed the empty thread — one of each question shape (status
 // / explain / locate) so the operator sees what Donna can do.
@@ -573,11 +564,10 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
   const [rearranging, setRearranging] = useState(false);
   const menuRef = useRef<HTMLSpanElement | null>(null);
 
-  // Export ▾ menu (SPEC §9). `view` switches the popover between the action list
-  // and the clean-copy recipient selector; `busy` is the action in flight (a
-  // recipient for a clean copy, or "issues"), driving the brief "Exporting…" tag.
+  // Export ▾ menu (SPEC §9). Each item downloads directly on click — clean copy
+  // is a grab (recipient "copy_only", no snapshot). `busy` is the action in
+  // flight, driving the brief "Exporting…" tag.
   const [exportOpen, setExportOpen] = useState(false);
-  const [exportView, setExportView] = useState<"root" | "recipient">("root");
   const [exportBusy, setExportBusy] = useState<ExportRecipient | "issues" | "redline" | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   // Redline has no baseline until a clean copy is sent; the backend signals that
@@ -585,12 +575,10 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
   const [redlineNoBaseline, setRedlineNoBaseline] = useState(false);
   const exportRef = useRef<HTMLDivElement | null>(null);
 
-  // Issue detail (F07): one expanded issue at a time shows its status control and
-  // its editable description.
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Issue status write in flight (DD-65 toggle), keyed by issue id.
   const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
-  // Inline description edit (DD-67): one issue at a time, keyed by id (mirrors
-  // expandedId/statusBusyId). Drafts are prefilled from the issue on enter.
+  // Inline description edit (DD-67) in the resolution view: keyed by issue id.
+  // Drafts are prefilled from the issue on enter.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editOur, setEditOur] = useState("");
@@ -613,6 +601,14 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
   const [freeError, setFreeError] = useState<string | null>(null);
   // Closed issues stay accessible but collapsed out of the working view (DD-65.4).
   const [showClosed, setShowClosed] = useState(false);
+
+  // DD-68 single-issue resolution view — a master-detail drill-in over the rail.
+  // When `resolvingId` is set the rail shows the resolution view instead of a tab;
+  // `resolveOrigin` is the surface the back arrow returns to (the issue list, or
+  // the Current Clause tab). The clause context is compact by default.
+  const [resolvingId, setResolvingId] = useState<string | null>(null);
+  const [resolveOrigin, setResolveOrigin] = useState<"issues" | "clause">("issues");
+  const [clauseCtxOpen, setClauseCtxOpen] = useState(false);
 
   // F10 Donna tab. The rail cycles Issues | Current Clause (DD-66) | Donna without
   // unmounting the tree. `donnaMessages` is null until the thread is first loaded
@@ -808,6 +804,23 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
     requestAnimationFrame(() => donnaInputRef.current?.focus());
   }
 
+  // DD-68: drill into an issue's resolution view from either door (the Issues list
+  // or the Current Clause tab). Selecting + flashing the issue's clause keeps it in
+  // context (reuses the tree jump/flash); the rail switches to the resolution view
+  // without touching the underlying tab, so Back returns to where the drill started.
+  function openResolve(issueId: string, origin: "issues" | "clause", nodeId: string | null) {
+    setResolveOrigin(origin);
+    setResolvingId(issueId);
+    setClauseCtxOpen(false);
+    setEditingId(null);
+    if (nodeId) jumpTo(nodeId);
+  }
+  function closeResolve() {
+    setResolvingId(null);
+    setEditingId(null);
+    setRailTab(resolveOrigin);
+  }
+
   function toggleCollapse(nodeId: string) {
     setCollapsed((c) => {
       const n = new Set(c);
@@ -873,6 +886,7 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
   // Reset Donna's session when the contract changes — the thread is per-contract.
   useEffect(() => {
     setRailTab("issues");
+    setResolvingId(null);
     setDonnaMessages(null);
     setDonnaError(null);
     setDonnaInput("");
@@ -1115,7 +1129,6 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
 
   function closeExport() {
     setExportOpen(false);
-    setExportView("root");
     setExportError(null);
     setRedlineNoBaseline(false);
   }
@@ -1173,6 +1186,12 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
   const deletingSelected = !!selectedRow && deleteState?.nodeId === selectedRow.id;
   const canEditSelected =
     !!selectedRow && selectedRow.text.trim().length > 0 && selectedRow.contentType !== "table";
+
+  // DD-68: the issue currently drilled into (null = no resolution view). Resolves
+  // live from `issues` so an inline edit / status toggle reflects server truth.
+  const resolvingIssue = resolvingId ? issues.find((i) => i.id === resolvingId) ?? null : null;
+  const resolveClauseRow =
+    resolvingIssue?.node_id ? rowById.get(resolvingIssue.node_id) ?? null : null;
 
   // DD-59: the single Description is the operator's substance and routes to the
   // stance side by who raised it (initiator); `title` is a deterministic snippet
@@ -1714,28 +1733,19 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
   // jumps to the clause and opens the Current Clause tab (DD-66.4). Free-floating
   // cards — and every card already on the Current Clause tab — expand inline to the
   // status toggle and an editable description (DD-67) instead.
+  // DD-68: every issue card is a drill-in to the resolution view (refines DD-66.4 —
+  // an issue-card click navigates to the Issue view, not merely the Current Clause
+  // tab). The card shows the anchor/status/who at a glance; clicking it opens the
+  // view where the issue is worked (edit, status, resolve-by-editing-the-clause).
   const renderIssueCard = (i: StoredIssue, context: "issues" | "clause") => {
     const anchor = i.node_id ? rowById.get(i.node_id) ?? null : null;
     const isCp = i.initiator === "counterparty";
     const isDonna = i.initiator === "donna";
     const status = asStatus(i.status);
-    const isExpanded = expandedId === i.id;
-    const statusBusy = statusBusyId === i.id;
-    // Only an OPEN, clause-anchored card on the Issues tab is a jump-to-clause
-    // instrument. A closed card stays expandable so its toggle can reopen it.
-    const navigable = context === "issues" && !!i.node_id && status === "open";
     return (
-      <div key={i.id} className={[styles.issueCard, isExpanded ? styles.issueCardOpen : ""].join(" ")}>
+      <div key={i.id} className={styles.issueCard}>
         <div className={styles.issueTop}>
-          <span
-            className={[styles.issueAnchor, i.node_id ? "" : styles.issueAnchorNone].join(" ")}
-            onClick={(e) => {
-              e.stopPropagation();
-              if (i.node_id) jumpAndCapture(i.node_id);
-            }}
-            style={{ cursor: i.node_id ? "pointer" : "default" }}
-            title={i.node_id ? "Go to clause" : undefined}
-          >
+          <span className={[styles.issueAnchor, i.node_id ? "" : styles.issueAnchorNone].join(" ")}>
             {anchor ? (anchor.number ? `§${anchor.number}` : titleCase(anchor.role)) : "Contract"}
           </span>
           <span className={[styles.status, styles[STATUS_CLASS[status]]].join(" ")}>
@@ -1754,51 +1764,121 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
         <button
           type="button"
           className={styles.issueBody}
-          aria-expanded={navigable ? undefined : isExpanded}
-          onClick={() =>
-            navigable && i.node_id
-              ? jumpAndCapture(i.node_id)
-              : setExpandedId((cur) => (cur === i.id ? null : i.id))
-          }
+          onClick={() => openResolve(i.id, context, i.node_id)}
         >
           <span className={styles.issueTitle}>{i.title}</span>
           {i.our_position && <span className={styles.issueNote}>{i.our_position}</span>}
-          <span className={styles.issueExpand}>
-            {navigable ? "Go to clause ▸" : isExpanded ? "Hide detail ▾" : "Edit detail ▸"}
-          </span>
+          <span className={styles.issueExpand}>Open to resolve ▸</span>
         </button>
+      </div>
+    );
+  };
 
-        {!navigable && isExpanded && (
-          <div className={styles.issueDetail}>
-            <div className={styles.statusRow}>
-              <span className={styles.detailLabel}>Status</span>
-              <div className={styles.statusToggle} role="radiogroup" aria-label="Issue status">
-                {STATUS_ORDER.map((s) => (
+  // DD-68 single-issue resolution view — the surface where one issue is worked.
+  // Rendered in place of the rail tabs while a drill-in is active. Top → bottom:
+  // clause context (compact, jump/edit) → editable issue → Open/Closed → the F11
+  // resolution slot. The clause edit + status toggle reuse the cockpit's own
+  // mechanisms (startEdit/saveEdit, changeStatus).
+  const renderResolveView = (i: StoredIssue) => {
+    const status = asStatus(i.status);
+    const statusBusy = statusBusyId === i.id;
+    const isCp = i.initiator === "counterparty";
+    const isDonna = i.initiator === "donna";
+    const clause = resolveClauseRow;
+    const clauseEditing = !!clause && editing?.nodeId === clause.id;
+    const clauseEditable = !!clause && clause.text.trim().length > 0 && clause.contentType !== "table";
+    return (
+      <div className={styles.resolve}>
+        <div className={styles.resolveHead}>
+          <button
+            type="button"
+            className={styles.backBtn}
+            onClick={closeResolve}
+            aria-label={resolveOrigin === "issues" ? "Back to issues" : "Back to the current clause"}
+          >
+            <span className={styles.backArrow} aria-hidden>
+              ←
+            </span>
+            {resolveOrigin === "issues" ? "Issues" : "Current clause"}
+          </button>
+          <span
+            className={[styles.who, isCp ? styles.whoCp : isDonna ? styles.whoDonna : styles.whoUs].join(" ")}
+          >
+            {isCp ? "Counterparty" : isDonna ? "Donna" : "Us"}
+          </span>
+        </div>
+
+        <div className={styles.resolveScroll}>
+          {/* Clause context — compact reference; clause-anchored issues carry it,
+              free-floating issues show a note instead. */}
+          {clause ? (
+            <section className={styles.resolveClause}>
+              <div className={styles.resolveClauseHead}>
+                <span className={styles.anchorNum}>
+                  {clause.number ? `§${clause.number}` : titleCase(clause.role)}
+                </span>
+                <div className={styles.resolveClauseTools}>
+                  {clauseEditable && !clauseEditing && (
+                    <button
+                      type="button"
+                      className={styles.selIcon}
+                      aria-label="Edit clause text"
+                      title="Edit clause"
+                      onClick={() => startEdit(clause)}
+                    >
+                      {EditIcon}
+                    </button>
+                  )}
                   <button
-                    key={s}
                     type="button"
-                    role="radio"
-                    aria-checked={status === s}
-                    disabled={statusBusy}
-                    className={[
-                      styles.statusToggleOption,
-                      status === s
-                        ? s === "open"
-                          ? styles.statusToggleOpen
-                          : styles.statusToggleClosed
-                        : "",
-                    ].join(" ")}
-                    onClick={() => {
-                      if (status !== s) changeStatus(i.id, s);
-                    }}
+                    className={styles.resolveJump}
+                    onClick={() => jumpTo(clause.id)}
+                    title="Find this clause in the tree"
                   >
-                    {STATUS_LABEL[s]}
+                    Find in tree
                   </button>
-                ))}
+                </div>
               </div>
-              {statusBusy && <span className={styles.statusBusy}>Saving…</span>}
-            </div>
+              {clauseEditing && editing ? (
+                renderEditor({
+                  draft: editing.draft,
+                  saving: editing.saving,
+                  error: editing.error,
+                  busyLabel: "Saving…",
+                  saveLabel: "Save clause",
+                  onChange: (v) => setEditing((s) => (s ? { ...s, draft: v } : s)),
+                  onSave: saveEdit,
+                  onCancel: cancelEdit,
+                })
+              ) : (
+                <>
+                  <p className={clauseCtxOpen ? styles.resolveClauseFull : styles.resolveClauseText}>
+                    {clause.text || "(no text)"}
+                  </p>
+                  {(clause.text?.length ?? 0) > 180 && (
+                    <button
+                      type="button"
+                      className={styles.resolveMore}
+                      onClick={() => setClauseCtxOpen((v) => !v)}
+                    >
+                      {clauseCtxOpen ? "Show less" : "Show full clause"}
+                    </button>
+                  )}
+                </>
+              )}
+            </section>
+          ) : (
+            <section className={[styles.resolveClause, styles.resolveClauseFree].join(" ")}>
+              <span className={styles.resolveFreeLabel}>Contract-level issue</span>
+              <p className={styles.resolveFreeNote}>
+                This issue isn&apos;t tied to a clause, so there&apos;s no clause to edit here. Work it
+                through the positions and status below.
+              </p>
+            </section>
+          )}
 
+          {/* The editable issue (DD-67) — title + our/their position. */}
+          <section className={styles.resolveIssue}>
             {editingId === i.id ? (
               <div className={styles.editForm}>
                 <div className={styles.detailField}>
@@ -1852,6 +1932,7 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
               </div>
             ) : (
               <>
+                <h2 className={styles.resolveTitle}>{i.title}</h2>
                 {i.our_position && (
                   <div className={styles.detailField}>
                     <span className={styles.detailLabel}>Our position</span>
@@ -1864,13 +1945,70 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
                     <p className={styles.detailText}>{i.their_position}</p>
                   </div>
                 )}
+                {!i.our_position && !i.their_position && (
+                  <p className={styles.detailText}>No positions recorded yet — add them with Edit.</p>
+                )}
                 <button type="button" className={styles.editLink} onClick={() => startIssueEdit(i)}>
-                  Edit
+                  Edit issue
                 </button>
               </>
             )}
-          </div>
-        )}
+          </section>
+
+          {/* Status (DD-65). */}
+          <section className={styles.resolveStatus}>
+            <span className={styles.detailLabel}>Status</span>
+            <div className={styles.statusToggle} role="radiogroup" aria-label="Issue status">
+              {STATUS_ORDER.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  role="radio"
+                  aria-checked={status === s}
+                  disabled={statusBusy}
+                  className={[
+                    styles.statusToggleOption,
+                    status === s
+                      ? s === "open"
+                        ? styles.statusToggleOpen
+                        : styles.statusToggleClosed
+                      : "",
+                  ].join(" ")}
+                  onClick={() => {
+                    if (status !== s) changeStatus(i.id, s);
+                  }}
+                >
+                  {STATUS_LABEL[s]}
+                </button>
+              ))}
+            </div>
+            {statusBusy && <span className={styles.statusBusy}>Saving…</span>}
+          </section>
+
+          {/* F11 resolution slot — designed-in placeholder for advanced Donna
+              (Phase 2). Not wired; clearly reserved, not broken. */}
+          <section className={styles.donnaSlot} aria-label="Donna's resolution — coming with advanced Donna">
+            <div className={styles.donnaSlotEyebrow}>
+              <span className={styles.donnaSlotMark} aria-hidden>
+                ✦
+              </span>
+              Advanced Donna
+              <span className={styles.donnaSlotPhase}>Phase 2 · F11</span>
+            </div>
+            <p className={styles.donnaSlotTitle}>Donna will help you resolve this here</p>
+            <p className={styles.donnaSlotLead}>
+              A recommended landing on the reasonableness spectrum, a proposed redline for the clause,
+              and a back-and-forth to think it through — grounded in this contract and cited.
+            </p>
+            <div className={styles.donnaSlotChips} aria-hidden>
+              <span className={styles.donnaSlotChip}>Use Donna&apos;s language</span>
+              <span className={styles.donnaSlotChip}>Edit</span>
+              <span className={styles.donnaSlotChip}>Reject</span>
+              <span className={styles.donnaSlotChip}>Brainstorm</span>
+            </div>
+            <p className={styles.donnaSlotNote}>Arrives with advanced Donna — not active yet.</p>
+          </section>
+        </div>
       </div>
     );
   };
@@ -2004,88 +2142,51 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
             </button>
             {exportOpen && (
               <div className={styles.exportMenu} role="menu">
-                {exportView === "root" ? (
-                  <>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      className={[styles.menuItem, styles.exportItem].join(" ")}
-                      onClick={() => {
-                        setExportError(null);
-                        setExportView("recipient");
-                      }}
-                    >
-                      <span className={styles.exportItemLabel}>Clean copy</span>
-                      <span className={styles.exportItemMeta}>.docx ›</span>
-                    </button>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      className={[styles.menuItem, styles.exportItem].join(" ")}
-                      disabled={exportBusy === "issues"}
-                      onClick={() => void runIssueList()}
-                    >
-                      <span className={styles.exportItemLabel}>Issue list</span>
-                      <span className={styles.exportItemMeta}>
-                        {exportBusy === "issues" ? "Exporting…" : ".docx"}
-                      </span>
-                    </button>
-                    <div className={styles.menuSep} />
-                    <div className={styles.exportRedline}>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        className={[styles.menuItem, styles.exportItem].join(" ")}
-                        disabled={exportBusy === "redline"}
-                        onClick={() => void runRedline()}
-                      >
-                        <span className={styles.exportItemLabel}>Redline</span>
-                        <span className={styles.exportItemMeta}>
-                          {exportBusy === "redline" ? "Exporting…" : ".docx"}
-                        </span>
-                      </button>
-                      {redlineNoBaseline && (
-                        <p className={styles.exportRedlineHint}>
-                          Available after you send a clean copy — that sets the baseline.
-                        </p>
-                      )}
-                    </div>
-                    {exportError && <p className={styles.exportError}>{exportError}</p>}
-                  </>
-                ) : (
-                  <>
-                    <div className={styles.exportSubHead}>
-                      <button
-                        type="button"
-                        className={styles.exportBack}
-                        aria-label="Back to export options"
-                        onClick={() => {
-                          setExportView("root");
-                          setExportError(null);
-                        }}
-                      >
-                        ‹
-                      </button>
-                      <span>Clean copy for…</span>
-                    </div>
-                    {RECIPIENTS.map((r) => (
-                      <button
-                        key={r.value}
-                        type="button"
-                        role="menuitem"
-                        className={[styles.menuItem, styles.exportItem].join(" ")}
-                        disabled={!!exportBusy}
-                        onClick={() => void runCleanCopy(r.value)}
-                      >
-                        <span className={styles.exportItemLabel}>{r.label}</span>
-                        {exportBusy === r.value && (
-                          <span className={styles.exportItemMeta}>Exporting…</span>
-                        )}
-                      </button>
-                    ))}
-                    {exportError && <p className={styles.exportError}>{exportError}</p>}
-                  </>
-                )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  className={[styles.menuItem, styles.exportItem].join(" ")}
+                  disabled={exportBusy === "copy_only"}
+                  onClick={() => void runCleanCopy("copy_only")}
+                >
+                  <span className={styles.exportItemLabel}>Clean copy</span>
+                  <span className={styles.exportItemMeta}>
+                    {exportBusy === "copy_only" ? "Exporting…" : ".docx"}
+                  </span>
+                </button>
+                <div className={styles.exportRedline}>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className={[styles.menuItem, styles.exportItem].join(" ")}
+                    disabled={exportBusy === "redline"}
+                    onClick={() => void runRedline()}
+                  >
+                    <span className={styles.exportItemLabel}>Redline</span>
+                    <span className={styles.exportItemMeta}>
+                      {exportBusy === "redline" ? "Exporting…" : ".docx"}
+                    </span>
+                  </button>
+                  {redlineNoBaseline && (
+                    <p className={styles.exportRedlineHint}>
+                      Available after you send a clean copy — that sets the baseline.
+                    </p>
+                  )}
+                </div>
+                <div className={styles.menuSep} />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className={[styles.menuItem, styles.exportItem].join(" ")}
+                  disabled={exportBusy === "issues"}
+                  onClick={() => void runIssueList()}
+                >
+                  <span className={styles.exportItemLabel}>Issue list</span>
+                  <span className={styles.exportItemMeta}>
+                    {exportBusy === "issues" ? "Exporting…" : ".docx"}
+                  </span>
+                </button>
+                {exportError && <p className={styles.exportError}>{exportError}</p>}
               </div>
             )}
           </div>
@@ -2175,7 +2276,13 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
             </div>
           </section>
 
-          <section className={[styles.rail, railTab === "donna" ? styles.railChat : ""].join(" ")}>
+          <section
+            className={[styles.rail, !resolvingIssue && railTab === "donna" ? styles.railChat : ""].join(" ")}
+          >
+            {resolvingIssue ? (
+              renderResolveView(resolvingIssue)
+            ) : (
+            <>
             <div className={styles.panelHead}>
               <div className={styles.railTabs} role="tablist" aria-label="View issues, the current clause, or ask Donna">
                 <button
@@ -2635,6 +2742,8 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
                 </p>
               </div>
             )}
+            </>
+            )}
           </section>
         </div>
 
@@ -2642,7 +2751,7 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
             screen's bottom-right. It opens Donna's tab and focuses her composer. Hidden
             while already on Donna's tab — there the composer's own send button owns this
             corner, so the FAB would clash + duplicate it. */}
-        {railTab !== "donna" && (
+        {railTab !== "donna" && !resolvingId && (
           <button
             type="button"
             className={styles.donnaFab}

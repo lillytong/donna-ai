@@ -13,13 +13,12 @@ NOTE: not yet registered in main.py — register `redline.router` after merge.
 
 from __future__ import annotations
 
-import re
-
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
 from backend.db import acquire
 from backend.models.redline import RedlineExportRequest
+from backend.services.export.filename import resolve_export_filename
 from backend.services.export.redline import (
     BaselineNotFound,
     NoBaselineSnapshot,
@@ -30,11 +29,6 @@ from backend.services.settings_repo import get_contract
 router = APIRouter()
 
 _DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-
-
-def _safe_filename(stem: str) -> str:
-    slug = re.sub(r"[^A-Za-z0-9 ._-]", "_", stem).strip() or "contract"
-    return f"{slug} (redline).docx"
 
 
 @router.post("/contracts/{contract_id}/redline-export")
@@ -53,10 +47,10 @@ async def redline_export(contract_id: str, request: RedlineExportRequest) -> Res
             raise HTTPException(
                 status_code=404, detail="baseline snapshot not found for this contract"
             ) from None
+        filename = await resolve_export_filename(conn, contract, kind="redline")
 
-    stem = contract.name if contract is not None else contract_id
     return Response(
         content=data,
         media_type=_DOCX_MEDIA_TYPE,
-        headers={"Content-Disposition": f'attachment; filename="{_safe_filename(stem)}"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
