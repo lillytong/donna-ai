@@ -479,7 +479,15 @@ export default function Home(): React.JSX.Element {
             <span>All caught up</span>
           )}
         </div>
-        <h1 className={styles.title}>Jump back in</h1>
+        <div className={styles.headRow}>
+          <h1 className={styles.title}>Jump back in</h1>
+          <Link href="/import" className={styles.importCta}>
+            <span className={styles.importPlus} aria-hidden>
+              +
+            </span>
+            Import new contract
+          </Link>
+        </div>
         <p className={styles.lead}>
           Pick up where you left off. The deals the counterparty handed back are floated to the top
           — those are the moves you owe.

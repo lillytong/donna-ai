@@ -58,6 +58,56 @@
   align-items: center;
   gap: 16px;
 }
+/* right cluster: this screen's own actions + the primary nav. SiteNav hides on
+   /import, so its Import / Contracts / Settings links live here, far-right, with
+   a hairline separating them from the per-screen actions. */
+.end {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+.end .right:not(:empty) {
+  padding-right: 18px;
+  border-right: 1px solid #e3e6ea;
+}
+.primaryNav {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+/* matches SiteNav link styling: muted by default, ink + 2px accent underline
+   on the active route ("Import" here) */
+.navItem {
+  position: relative;
+  padding: 4px 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: #6b7280;
+  text-decoration: none;
+  transition: color 0.12s ease;
+}
+.navItem:hover {
+  color: #2563eb;
+}
+.navItem:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+.navItemActive {
+  color: #1f2328;
+  font-weight: 600;
+}
+.navItemActive::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: #2563eb;
+}
 .navLink {
   font-size: 13px;
   font-weight: 500;

@@ -48,6 +48,52 @@
   letter-spacing: -0.02em;
   line-height: 1.1;
 }
+
+/* title shares a row with the primary "import" action — the one thing the
+   operator does most, given equal weight to the heading rather than buried in
+   the top-right nav */
+.headRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 10px 0 4px;
+}
+.headRow .title {
+  margin: 0;
+}
+.importCta {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #fff;
+  background: #2563eb;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 16px;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
+}
+.importCta:hover {
+  background: #1d4ed8;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.24);
+  transform: translateY(-1px);
+}
+.importCta:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.3);
+}
+.importPlus {
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+}
 .lead {
   margin: 0 0 28px;
   font-size: 14px;
@@ -537,6 +583,15 @@
 }
 
 @media (max-width: 560px) {
+  .headRow {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 14px;
+  }
+  .importCta {
+    width: 100%;
+    justify-content: center;
+  }
   .cardTop {
     flex-wrap: wrap;
   }
