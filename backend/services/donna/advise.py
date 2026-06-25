@@ -37,10 +37,8 @@ from backend.models.donna import (
     DonnaChatReply,
     DonnaChatResponse,
     DonnaContext,
-    DonnaMessage,
     DonnaTurn,
 )
-from backend.models.recommendations import StoredRecommendation
 from backend.prompts.utils import render
 from backend.services.contract_repo import fetch_nodes
 from backend.services.donna import qa
@@ -56,7 +54,6 @@ from backend.services.donna.grounding import (
     build_label_map,
 )
 from backend.services.donna.qa import scrub_leaked_ids
-from backend.services.donna.recommendation_repo import get_by_issue
 from backend.services.donna.windowing import render_history, to_turns, window
 from backend.services.issue_repo import get_issue, list_issues
 from backend.services.llm import complete
@@ -225,53 +222,3 @@ async def chat(
         citations=reply.citations,
         draft_language=reply.draft_language,
     )
-
-
-def _compose_brainstorm_opening(num: int | None, draft: StoredRecommendation) -> str:
-    """The server-authored Brainstorm opening: a short lead-in + the restated recommendation
-    (rationale, then the recommended position and counter-language when present). Mirrors the
-    cockpit's primed-turn copy, but composed here so the assistant turn is server-controlled."""
-    parts: list[str] = [draft.rationale.strip()]
-    position = (draft.draft_recommended_position or "").strip()
-    if position:
-        parts.append(f"**Recommended position:** {position}")
-    counter = (draft.draft_counter_language or "").strip()
-    if counter:
-        parts.append(f"**Counter-language:**\n{counter}")
-    label = f"issue #{num}" if num is not None else "this issue"
-    lead = (
-        f"Let's brainstorm {label}. Here's where I've landed — tell me to make it more "
-        "aggressive, tighten it, or take a different angle."
-    )
-    return f"{lead}\n\n" + "\n\n".join(parts)
-
-
-async def seed_brainstorm(contract_id: str, issue_id: str) -> DonnaMessage | None:
-    """Persist the Brainstorm primed opening turn (F10b). Restates the issue's CURRENT
-    recommendation draft SERVER-SIDE and appends it as ONE assistant turn (kind mapped from
-    `advise`), so a reloaded thread shows the primed turn. The content is composed here — the
-    client never supplies assistant text. No draft on the issue (or the issue is not in this
-    contract) -> no-op (returns None, nothing to seed)."""
-    async with acquire() as conn:
-        issue = await get_issue(conn, issue_id)
-        if issue is None or issue.contract_id != contract_id:
-            return None
-        draft = await get_by_issue(conn, issue_id)
-        if draft is None:
-            return None
-        issues = await list_issues(conn, contract_id)
-        conversation = await get_or_create_conversation(conn, contract_id)
-
-    # The per-contract issue ordinal (#N) by creation order — mirrors the cockpit handle.
-    ordered = sorted(issues, key=lambda i: i.created_at)
-    num = next((idx + 1 for idx, i in enumerate(ordered) if i.id == issue_id), None)
-    content = _compose_brainstorm_opening(num, draft)
-    citations = draft.citations or []
-    kind = _MODE_TO_KIND["advise"]
-
-    async with acquire() as conn:
-        await append_message(
-            conn, conversation.id, "assistant", content, kind=kind, citations=citations
-        )
-
-    return DonnaMessage(role="assistant", content=content, kind=kind, citations=citations)

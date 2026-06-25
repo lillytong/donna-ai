@@ -5,10 +5,14 @@ app lifespan never runs (mirrors tests/integration/test_donna_routes.py)."""
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import Any
 
 from backend.api import donna as donna_api
-from backend.models.donna import DonnaChatResponse, DonnaContext, DonnaMessage
+from backend.models.brainstorm import BrainstormTurnResponse, StoredBrainstormSummary
+from backend.models.donna import DonnaChatResponse, DonnaContext
 from backend.services.llm import LLMRateLimitError
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -18,6 +22,7 @@ app.include_router(donna_api.router)
 client = TestClient(app)
 
 _PATH = "/contracts/c1/donna/ask"
+_NOW = datetime(2026, 6, 25, 12, 0, tzinfo=UTC)
 
 
 def test_ask_without_context_returns_explain(monkeypatch: Any) -> None:
@@ -101,45 +106,110 @@ def test_ask_rejects_missing_question() -> None:
     assert client.post(_PATH, json={}).status_code == 422
 
 
-# --- seed-brainstorm (the server-composed primed opening turn) -------------
+# --- brainstorm overlay (DD-73/DD-77: stateless turn, distil-on-close, history) ---
 
-_SEED_PATH = "/contracts/c1/donna/seed-brainstorm"
+_BRAINSTORM_PATH = "/contracts/c1/donna/brainstorm"
+_CLOSE_PATH = "/contracts/c1/donna/brainstorm/close"
 
 
-def test_seed_brainstorm_returns_stored_message(monkeypatch: Any) -> None:
+def test_brainstorm_turn_returns_reply(monkeypatch: Any) -> None:
     seen: dict[str, Any] = {}
 
-    async def fake_seed(cid: str, iid: str) -> DonnaMessage | None:
-        seen["cid"], seen["iid"] = cid, iid
-        return DonnaMessage(
-            role="assistant",
-            content="Let's brainstorm issue #3. Here's where I've landed…",
-            kind="answer",
-            citations=["n-liab"],
+    async def fake_turn(cid: str, payload: Any) -> BrainstormTurnResponse:
+        seen["cid"], seen["payload"] = cid, payload
+        return BrainstormTurnResponse(reply="Let's weigh a 12-month cap.", citations=["n-liab"])
+
+    monkeypatch.setattr(donna_api, "brainstorm_turn", fake_turn)
+    resp = client.post(
+        _BRAINSTORM_PATH,
+        json={
+            "issue_id": "i1",
+            "turns": [{"question": "where do we start?", "answer": "with the cap"}],
+            "message": "what about a 12-month cap?",
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["reply"].startswith("Let's weigh")
+    assert body["citations"] == ["n-liab"]
+    # The running transcript + new message are parsed into the request and passed through.
+    assert seen["cid"] == "c1"
+    assert seen["payload"].issue_id == "i1"
+    assert seen["payload"].message == "what about a 12-month cap?"
+    assert len(seen["payload"].turns) == 1
+
+
+def test_brainstorm_turn_maps_rate_limit_to_429(monkeypatch: Any) -> None:
+    async def fake_turn(_cid: str, _payload: Any) -> BrainstormTurnResponse:
+        raise LLMRateLimitError("429 from provider")
+
+    monkeypatch.setattr(donna_api, "brainstorm_turn", fake_turn)
+    resp = client.post(_BRAINSTORM_PATH, json={"issue_id": "i1", "message": "hi"})
+    assert resp.status_code == 429
+
+
+def test_brainstorm_turn_rejects_missing_message() -> None:
+    assert client.post(_BRAINSTORM_PATH, json={"issue_id": "i1"}).status_code == 422
+
+
+def test_brainstorm_close_stores_and_returns_summary(monkeypatch: Any) -> None:
+    seen: dict[str, Any] = {}
+
+    async def fake_close(cid: str, iid: str, turns: Any) -> StoredBrainstormSummary:
+        seen["cid"], seen["iid"], seen["turns"] = cid, iid, turns
+        return StoredBrainstormSummary(
+            id="bs1",
+            issue_id=iid,
+            question="Where should the liability cap land?",
+            conclusion="Open at a 12-month cap.",
+            fallbacks="Considered uncapped; passed over as unacceptable.",
+            created_at=_NOW,
         )
 
-    monkeypatch.setattr(donna_api, "seed_brainstorm", fake_seed)
-    resp = client.post(_SEED_PATH, json={"issue_id": "i1"})
+    monkeypatch.setattr(donna_api, "close_brainstorm", fake_close)
+    resp = client.post(
+        _CLOSE_PATH,
+        json={"issue_id": "i1", "turns": [{"question": "q", "answer": "a"}]},
+    )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["seeded"] is True
-    assert body["message"]["role"] == "assistant"
-    assert body["message"]["kind"] == "answer"
-    assert body["message"]["citations"] == ["n-liab"]
+    assert body["id"] == "bs1"
+    assert body["conclusion"] == "Open at a 12-month cap."
     assert (seen["cid"], seen["iid"]) == ("c1", "i1")
+    assert len(seen["turns"]) == 1
 
 
-def test_seed_brainstorm_no_draft_is_noop(monkeypatch: Any) -> None:
-    async def fake_seed(_cid: str, _iid: str) -> DonnaMessage | None:
+def test_brainstorm_close_empty_distillation_is_204(monkeypatch: Any) -> None:
+    async def fake_close(_cid: str, _iid: str, _turns: Any) -> StoredBrainstormSummary | None:
         return None
 
-    monkeypatch.setattr(donna_api, "seed_brainstorm", fake_seed)
-    resp = client.post(_SEED_PATH, json={"issue_id": "i1"})
+    monkeypatch.setattr(donna_api, "close_brainstorm", fake_close)
+    resp = client.post(_CLOSE_PATH, json={"issue_id": "i1", "turns": []})
+    assert resp.status_code == 204
+    assert resp.content == b""
+
+
+def test_brainstorm_summaries_returns_history(monkeypatch: Any) -> None:
+    @asynccontextmanager
+    async def fake_acquire() -> AsyncIterator[object]:
+        yield object()
+
+    async def fake_list(_conn: Any, issue_id: str) -> list[StoredBrainstormSummary]:
+        return [
+            StoredBrainstormSummary(
+                id="bs2",
+                issue_id=issue_id,
+                question="q2",
+                conclusion="c2",
+                fallbacks="f2",
+                created_at=_NOW,
+            )
+        ]
+
+    monkeypatch.setattr(donna_api, "acquire", fake_acquire)
+    monkeypatch.setattr(donna_api, "list_brainstorm_summaries", fake_list)
+    resp = client.get("/issues/i1/brainstorm-summaries")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["seeded"] is False
-    assert body["message"] is None
-
-
-def test_seed_brainstorm_rejects_missing_issue_id() -> None:
-    assert client.post(_SEED_PATH, json={}).status_code == 422
+    assert len(body["summaries"]) == 1
+    assert body["summaries"][0]["id"] == "bs2"

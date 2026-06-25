@@ -820,20 +820,73 @@ export interface DonnaThread {
 export const getDonnaThread = (contractId: string): Promise<DonnaThread> =>
   getJson(`/contracts/${contractId}/donna/thread`);
 
-// Seed the Brainstorm primed opening turn (F10b). The server composes the restatement of
-// the issue's current recommendation draft and persists it as one assistant turn, so a
-// reloaded thread shows the primed opening. `seeded` is false (message null) when the issue
-// has no draft yet — nothing to restate.
-export interface DonnaSeedBrainstormResponse {
-  seeded: boolean;
-  message: DonnaThreadMessage | null;
+// --- Brainstorm overlay (F10b, DD-73/DD-77): stateless ephemeral exploration ---
+// The client holds the running transcript and replays it each turn; the backend
+// persists NOTHING until close. On close Donna distils one compact summary onto the
+// issue (table `brainstorm_summaries`), or returns 204 when nothing was substantive.
+
+// One prior exchange in the running transcript: the operator's message + Donna's reply.
+export interface BrainstormTurn {
+  question: string;
+  answer: string;
 }
 
-export const seedBrainstorm = (
+export interface BrainstormTurnRequest {
+  issue_id: string;
+  turns: BrainstormTurn[];
+  message: string;
+}
+
+export interface BrainstormTurnResponse {
+  reply: string;
+  citations: string[];
+}
+
+export interface BrainstormCloseRequest {
+  issue_id: string;
+  turns: BrainstormTurn[];
+}
+
+// One distilled brainstorm pass stored on the issue. `created_at` is an ISO timestamp.
+export interface StoredBrainstormSummary {
+  id: string;
+  issue_id: string;
+  question: string | null;
+  conclusion: string | null;
+  fallbacks: string | null;
+  created_at: string;
+}
+
+export interface BrainstormSummariesResponse {
+  summaries: StoredBrainstormSummary[];
+}
+
+export const brainstormTurn = (
   contractId: string,
+  body: BrainstormTurnRequest,
+): Promise<BrainstormTurnResponse> =>
+  postJson(`/contracts/${contractId}/donna/brainstorm`, body);
+
+// Close distils ONE summary, or 204 (nothing substantive) → null. A 429 surfaces as
+// ApiError like every other call, so the overlay can show the rate-limit line.
+export async function closeBrainstorm(
+  contractId: string,
+  body: BrainstormCloseRequest,
+): Promise<StoredBrainstormSummary | null> {
+  const res = await fetch(`${API_BASE}/contracts/${contractId}/donna/brainstorm/close`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 204) return null;
+  if (!res.ok) throw await errorFrom(res);
+  return res.json();
+}
+
+export const getBrainstormSummaries = (
   issueId: string,
-): Promise<DonnaSeedBrainstormResponse> =>
-  postJson(`/contracts/${contractId}/donna/seed-brainstorm`, { issue_id: issueId });
+): Promise<BrainstormSummariesResponse> =>
+  getJson(`/issues/${issueId}/brainstorm-summaries`);
 
 // Context is optional: omitted when there's no active selection (JSON.stringify
 // drops the undefined key), so an open ask sends just `{ question }`.

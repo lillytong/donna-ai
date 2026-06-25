@@ -153,6 +153,52 @@ async def cut_snapshot(conn: Any, contract_id: str, request: CutSnapshotRequest)
     return _to_stored_snapshot(snapshot_record, tree=tree)
 
 
+async def snapshot_tree(
+    conn: Any,
+    contract_id: str,
+    tree: list[SnapshotNode],
+    *,
+    origin: str,
+    label: str | None = None,
+    pointer: SnapshotPointerTarget | None = None,
+) -> StoredSnapshot:
+    """Snapshot an ARBITRARY caller-supplied tree (additive sibling of `cut_snapshot`).
+
+    `cut_snapshot` dumps the LIVE node tree; the Mode B revision-import path (F03b)
+    needs to freeze the PARSED INCOMING tree instead (origin='as_received', DD-48) —
+    which is not in the `nodes` table. So this writes the given JSONB dump directly
+    and does NOT stamp `node_versions` (there is no live edit group to close — the
+    received copy is not the working copy). Optionally advances one named pointer
+    (the F03b `received` pointer). Records the same `snapshot_cut` audit event."""
+    tree_json = json.dumps([n.model_dump() for n in tree])
+    async with conn.transaction():
+        snapshot_record = await conn.fetchrow(
+            _INSERT_SNAPSHOT, contract_id, label, tree_json, origin
+        )
+        snapshot_id = str(snapshot_record["id"])
+
+        if pointer is not None:
+            await conn.execute(
+                _UPSERT_POINTER, contract_id, pointer.party, pointer.direction, snapshot_id
+            )
+
+        payload: dict[str, Any] = {"snapshot_id": snapshot_id, "origin": origin}
+        if pointer is not None:
+            payload["pointer"] = pointer.model_dump()
+        await record_event(
+            conn,
+            AuditEvent(
+                event_type=EVENT_SNAPSHOT_CUT,
+                entity_type="contract",
+                entity_id=contract_id,
+                actor=get_settings().operator_actor,
+                payload=payload,
+            ),
+        )
+
+    return _to_stored_snapshot(snapshot_record, tree=tree)
+
+
 async def set_pointer(
     conn: Any, contract_id: str, target: SnapshotPointerTarget, snapshot_id: str
 ) -> None:
@@ -161,9 +207,7 @@ async def set_pointer(
     Exposed for Mark-as-sent (DD-71), which cuts ONE snapshot and may advance TWO
     pointers (recipient='both' → counterparty + legal_team), so the pointer move is
     decoupled from `cut_snapshot`'s single-pointer convenience path."""
-    await conn.execute(
-        _UPSERT_POINTER, contract_id, target.party, target.direction, snapshot_id
-    )
+    await conn.execute(_UPSERT_POINTER, contract_id, target.party, target.direction, snapshot_id)
 
 
 async def list_snapshots(conn: Any, contract_id: str) -> list[StoredSnapshot]:
@@ -195,9 +239,7 @@ async def list_pointers(conn: Any, contract_id: str) -> list[PointerRow]:
     snapshot). At most four rows; in v1 only the `shared` pointers are ever set."""
     records = await conn.fetch(_LIST_POINTERS, contract_id)
     return [
-        PointerRow(
-            party=r["party"], direction=r["direction"], snapshot_id=str(r["snapshot_id"])
-        )
+        PointerRow(party=r["party"], direction=r["direction"], snapshot_id=str(r["snapshot_id"]))
         for r in records
     ]
 

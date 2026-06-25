@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, use, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import styles from "../cockpit.module.css";
@@ -8,6 +8,8 @@ import { deriveNumbers } from "../../lib/numbering";
 import {
   ApiError,
   askDonna,
+  brainstormTurn,
+  closeBrainstorm,
   confirmRecommendation,
   createIssue,
   createNode,
@@ -19,6 +21,7 @@ import {
   exportIssueList,
   exportRedline,
   generateRecommendation,
+  getBrainstormSummaries,
   getContractTree,
   getDefinedTerms,
   getDonnaThread,
@@ -28,9 +31,9 @@ import {
   listIssues,
   markSent,
   searchClause,
-  seedBrainstorm,
   updateIssue,
   updateIssueStatus,
+  type BrainstormTurn,
   type DefinedTerm,
   type DonnaAnswerKind,
   type DonnaChatMode,
@@ -41,6 +44,7 @@ import {
   type IssueStatus,
   type NodeTreeItem,
   type Role,
+  type StoredBrainstormSummary,
   type StoredIssue,
   type StoredRecommendation,
 } from "../../lib/api";
@@ -782,6 +786,41 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
   const donnaScrollRef = useRef<HTMLDivElement | null>(null);
   const donnaInputRef = useRef<HTMLInputElement | null>(null);
 
+  // F10b / DD-73 / DD-77: the Brainstorm overlay is a STATELESS EPHEMERAL surface.
+  // The transcript lives only here in React state — never persisted, never the Donna
+  // thread, never localStorage. `brainstorm` is null when closed; opening seeds the
+  // first assistant turn client-side from the current recommendation. On close the
+  // transcript is distilled into a stored summary and DISCARDED.
+  const [brainstorm, setBrainstorm] = useState<{
+    issueId: string;
+    transcript: DonnaUiMessage[];
+  } | null>(null);
+  const [brainstormInput, setBrainstormInput] = useState("");
+  const [brainstormBusy, setBrainstormBusy] = useState(false);
+  const [brainstormError, setBrainstormError] = useState<string | null>(null);
+  const [brainstormClosing, setBrainstormClosing] = useState(false);
+  // A transient note after close: a saved summary, or a quiet "nothing to save".
+  const [brainstormNotice, setBrainstormNotice] = useState<
+    { kind: "saved"; summary: StoredBrainstormSummary } | { kind: "empty" } | null
+  >(null);
+  // Stored brainstorm history per issue (DD-77), loaded for the resolving issue.
+  const [brainstormSummaries, setBrainstormSummaries] = useState<
+    Record<string, StoredBrainstormSummary[]>
+  >({});
+  const brainstormScrollRef = useRef<HTMLDivElement | null>(null);
+  const brainstormInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Refresh an issue's stored brainstorm history (DD-77). Non-critical — a failure leaves the
+  // prior list untouched rather than surfacing an error.
+  const refreshBrainstormSummaries = useCallback(async (issueId: string) => {
+    try {
+      const res = await getBrainstormSummaries(issueId);
+      setBrainstormSummaries((m) => ({ ...m, [issueId]: res.summaries }));
+    } catch {
+      // history is a continuity convenience, not load-bearing — leave it as-is
+    }
+  }, []);
+
   const rowRefs = useRef(new Map<string, HTMLElement>());
   const jumpRef = useRef<HTMLInputElement>(null);
   const flashTimer = useRef<number | null>(null);
@@ -1296,6 +1335,19 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
     if (el) el.scrollTop = el.scrollHeight;
   }, [donnaMessages, asking, railTab]);
 
+  // Load the resolving issue's stored brainstorm history (DD-77) when its view opens.
+  useEffect(() => {
+    if (!resolvingId) return;
+    void refreshBrainstormSummaries(resolvingId);
+  }, [resolvingId, refreshBrainstormSummaries]);
+
+  // Pin the brainstorm overlay to its newest turn as messages land / the wait shows.
+  useEffect(() => {
+    if (!brainstorm) return;
+    const el = brainstormScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [brainstorm, brainstormBusy]);
+
   // Ask Donna a grounded question. The operator's turn lands immediately; the
   // answer's citation ids resolve to clause chips against the current tree + ledger.
   async function sendDonna(raw: string) {
@@ -1348,58 +1400,111 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
     requestAnimationFrame(() => donnaInputRef.current?.focus());
   }
 
-  // F10b "Brainstorm with Donna ↗" from the F11 rec card: leave the resolution view,
-  // set the issue (+ its clause) as context, and PRIME the chat with an opening turn that
-  // restates Donna's current recommendation — so the operator lands in a conversation that
-  // already knows it and can iterate ("make it more aggressive", "shorter"). The opening is
-  // composed + PERSISTED server-side (seedBrainstorm), so a reloaded thread still shows it;
-  // subsequent asks carry the issue context, so Donna's advise engine continues it. A failed
-  // seed falls back to a local-only opening so the operator still lands primed.
-  async function brainstormFromRec(issueId: string, d: StoredRecommendation) {
-    const clauseId = resolveClauseRow?.id ?? null;
-    // Tear down the resolution view directly (closeResolve would return to the prior tab,
-    // not Donna).
-    setResolvingId(null);
-    resolvingIdRef.current = null;
-    setEditingId(null);
-    setRec(null);
-    setDonnaContext({ issueId, nodeIds: clauseId ? [clauseId] : [] });
-    setRailTab("donna");
-    requestAnimationFrame(() => donnaInputRef.current?.focus());
-
-    const localOpening = (): DonnaUiMessage => {
-      const num = issueNumberById.get(issueId) ?? "—";
-      const parts: string[] = [d.rationale.trim()];
-      if (d.draft_recommended_position?.trim())
-        parts.push(`**Recommended position:** ${d.draft_recommended_position.trim()}`);
-      if (d.draft_counter_language?.trim())
-        parts.push(`**Counter-language:**\n${d.draft_counter_language.trim()}`);
-      return {
-        role: "donna",
-        content:
-          `Let's brainstorm issue #${num}. Here's where I've landed — tell me to make it more ` +
-          `aggressive, tighten it, or take a different angle.\n\n${parts.join("\n\n")}`,
-        mode: "advise",
-        citations: resolveCitations(d.citations ?? [], rowById, issueById),
-      };
+  // F10b / DD-73: "Brainstorm with Donna ↗" opens the EPHEMERAL OVERLAY, primed with an
+  // opening turn that restates the current recommendation `d`. The restatement is composed
+  // CLIENT-SIDE (the server no longer seeds it) so the operator lands in a conversation that
+  // already knows the rec and can iterate ("more aggressive", "tighter"). Nothing is persisted
+  // — the transcript lives only in `brainstorm` state until close. Opening fresh always starts
+  // empty (no reload of prior turns); stored summaries surface separately in the rec card.
+  function brainstormFromRec(issueId: string, d: StoredRecommendation) {
+    const num = issueNumberById.get(issueId) ?? "—";
+    const parts: string[] = [d.rationale.trim()];
+    if (d.draft_recommended_position?.trim())
+      parts.push(`**Recommended position:** ${d.draft_recommended_position.trim()}`);
+    if (d.draft_counter_language?.trim())
+      parts.push(`**Counter-language:**\n${d.draft_counter_language.trim()}`);
+    const opening: DonnaUiMessage = {
+      role: "donna",
+      content:
+        `Let's brainstorm issue #${num}. Here's where I've landed — tell me to make it more ` +
+        `aggressive, tighten it, or take a different angle.\n\n${parts.join("\n\n")}`,
+      mode: "advise",
+      citations: resolveCitations(d.citations ?? [], rowById, issueById),
     };
+    setBrainstormInput("");
+    setBrainstormError(null);
+    setBrainstormNotice(null);
+    setBrainstorm({ issueId, transcript: [opening] });
+    requestAnimationFrame(() => brainstormInputRef.current?.focus());
+  }
 
+  // Encode the running transcript into the {question, answer} pairs the backend replays.
+  // Each operator message pairs with the Donna reply that follows it. The seeded opening
+  // (a Donna turn with no preceding operator message) is carried as an answer-only turn so
+  // Donna re-reads her own starting position on every replay (and the close distiller sees it).
+  function transcriptToTurns(transcript: DonnaUiMessage[]): BrainstormTurn[] {
+    const turns: BrainstormTurn[] = [];
+    let pendingQuestion: string | null = null;
+    for (const m of transcript) {
+      if (m.role === "user") {
+        pendingQuestion = m.content;
+      } else {
+        turns.push({ question: pendingQuestion ?? "", answer: m.content });
+        pendingQuestion = null;
+      }
+    }
+    return turns;
+  }
+
+  // One ephemeral brainstorm turn (DD-77): append the operator message locally, replay the
+  // whole running transcript to the stateless endpoint, append Donna's reply. Persists nothing.
+  async function sendBrainstorm(raw: string) {
+    const message = raw.trim();
+    if (!message || brainstormBusy || brainstormClosing || !brainstorm) return;
+    const { issueId, transcript } = brainstorm;
+    const turns = transcriptToTurns(transcript);
+    setBrainstormInput("");
+    setBrainstormError(null);
+    setBrainstorm((b) =>
+      b ? { ...b, transcript: [...b.transcript, { role: "user", content: message }] } : b,
+    );
+    setBrainstormBusy(true);
     try {
-      const res = await seedBrainstorm(id, issueId);
-      const seeded = res.seeded && res.message;
-      const opening: DonnaUiMessage = seeded
-        ? {
-            role: "donna",
-            content: res.message!.content,
-            mode: "advise",
-            ...(res.message!.kind ? { kind: res.message!.kind } : {}),
-            citations: resolveCitations(res.message!.citations ?? [], rowById, issueById),
-          }
-        : localOpening();
-      setDonnaMessages((m) => [...(m ?? []), opening]);
-    } catch {
-      // Seeding failed (e.g. network) — still prime the conversation locally.
-      setDonnaMessages((m) => [...(m ?? []), localOpening()]);
+      const res = await brainstormTurn(id, { issue_id: issueId, turns, message });
+      const citations = resolveCitations(res.citations, rowById, issueById);
+      setBrainstorm((b) =>
+        b
+          ? {
+              ...b,
+              transcript: [
+                ...b.transcript,
+                { role: "donna", content: res.reply, mode: "advise", citations },
+              ],
+            }
+          : b,
+      );
+    } catch (e) {
+      setBrainstormError(donnaErrorMessage(e));
+    } finally {
+      setBrainstormBusy(false);
+    }
+  }
+
+  // "Close & save summary" (DD-73): distil the transcript into ONE stored summary on the issue,
+  // then DISCARD the local transcript (ephemeral — it must not survive). A returned summary
+  // confirms the save + refreshes the issue's history; a 204 shows a quiet "nothing to save".
+  async function closeBrainstormOverlay() {
+    if (!brainstorm || brainstormClosing) return;
+    const { issueId, transcript } = brainstorm;
+    setBrainstormClosing(true);
+    setBrainstormError(null);
+    try {
+      const summary = await closeBrainstorm(id, {
+        issue_id: issueId,
+        turns: transcriptToTurns(transcript),
+      });
+      setBrainstorm(null);
+      setBrainstormInput("");
+      if (summary) {
+        setBrainstormNotice({ kind: "saved", summary });
+        void refreshBrainstormSummaries(issueId);
+      } else {
+        setBrainstormNotice({ kind: "empty" });
+      }
+    } catch (e) {
+      setBrainstormError(donnaErrorMessage(e));
+    } finally {
+      setBrainstormClosing(false);
     }
   }
 
@@ -2489,6 +2594,55 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
     );
   };
 
+  // Brainstorm history (DD-77): the preserved reasoning from past brainstorm passes on this
+  // issue — question explored / where it landed / fallbacks weighed, newest first. This is
+  // where the operator finds the distilled thinking after the raw transcript is discarded.
+  const renderBrainstormHistory = (issueId: string) => {
+    const summaries = brainstormSummaries[issueId] ?? [];
+    if (summaries.length === 0) return null;
+    return (
+      <section className={styles.bsHistory} aria-label="Brainstorm history">
+        <div className={styles.bsHistoryHead}>
+          <span className={styles.bsHistoryMark} aria-hidden>
+            ✦
+          </span>
+          Brainstorm history
+          <span className={styles.bsHistoryCount}>{summaries.length}</span>
+        </div>
+        {summaries.map((s) => (
+          <article key={s.id} className={styles.bsSummary}>
+            {s.question && (
+              <div className={styles.bsField}>
+                <span className={styles.bsFieldLabel}>Explored</span>
+                <p className={styles.bsFieldText}>{s.question}</p>
+              </div>
+            )}
+            {s.conclusion && (
+              <div className={styles.bsField}>
+                <span className={styles.bsFieldLabel}>Where it landed</span>
+                <p className={styles.bsFieldText}>{s.conclusion}</p>
+              </div>
+            )}
+            {s.fallbacks && (
+              <div className={styles.bsField}>
+                <span className={styles.bsFieldLabel}>Fallbacks considered</span>
+                <p className={styles.bsFieldText}>{s.fallbacks}</p>
+              </div>
+            )}
+            <time className={styles.bsSummaryWhen} dateTime={s.created_at}>
+              {new Date(s.created_at).toLocaleString(undefined, {
+                month: "short",
+                day: "numeric",
+                hour: "numeric",
+                minute: "2-digit",
+              })}
+            </time>
+          </article>
+        ))}
+      </section>
+    );
+  };
+
   // F11 recommendation card — the live resolution layer (DD-68). Donna's grounded,
   // cited draft for THIS issue: a rationale, a recommended landing and/or counter-
   // language, an honest market-gap flag, and the operator's confirm/edit/refresh
@@ -2901,6 +3055,34 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
 
           {/* F11 resolution layer — Donna's live recommendation for this issue. */}
           {renderRecCard(i.id)}
+
+          {/* DD-73: a transient note after closing a brainstorm — what was saved, or that
+              nothing substantive came of it. Dismissible; auto-clears on the next open. */}
+          {brainstormNotice && brainstorm === null && (
+            <div
+              className={
+                brainstormNotice.kind === "saved" ? styles.bsNoticeSaved : styles.bsNoticeEmpty
+              }
+              role="status"
+            >
+              <span className={styles.bsNoticeText}>
+                {brainstormNotice.kind === "saved"
+                  ? "Saved to this issue's brainstorm history below."
+                  : "Nothing substantive to save — the brainstorm was discarded."}
+              </span>
+              <button
+                type="button"
+                className={styles.bsNoticeClose}
+                aria-label="Dismiss"
+                onClick={() => setBrainstormNotice(null)}
+              >
+                ×
+              </button>
+            </div>
+          )}
+
+          {/* DD-77: this issue's preserved brainstorm reasoning, newest first. */}
+          {renderBrainstormHistory(i.id)}
         </div>
       </div>
     );
@@ -3961,6 +4143,155 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
           ) : (
             <span className={styles.termPopoverEmpty}>Defined term — no definition captured</span>
           )}
+        </div>
+      )}
+
+      {/* F10b / DD-73 / DD-77 — Brainstorm overlay. Ephemeral by construction: the transcript
+          lives only in `brainstorm` state, never persisted. The scrim dims (but doesn't hide)
+          the document tree so citation chips still jump+flash behind it; closing only happens
+          on an explicit action, never a scrim click, so the exploration can't be lost by
+          accident. Reuses the Donna-chat bubble/citation/composer language. */}
+      {brainstorm && (
+        <div className={styles.bsScrim}>
+          <section
+            className={styles.bsPanel}
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Brainstorm issue #${issueNumberById.get(brainstorm.issueId) ?? "—"} with Donna`}
+          >
+            <header className={styles.bsHead}>
+              <div className={styles.bsHeadTitle}>
+                <span className={styles.bsHeadMark} aria-hidden>
+                  ✦
+                </span>
+                <span>
+                  Brainstorm
+                  <span className={styles.bsHeadIssue}>
+                    Issue #{issueNumberById.get(brainstorm.issueId) ?? "—"}
+                  </span>
+                </span>
+              </div>
+              <button
+                type="button"
+                className={styles.bsHeadClose}
+                aria-label="Close and save summary"
+                title="Close & save summary"
+                disabled={brainstormClosing}
+                onClick={() => void closeBrainstormOverlay()}
+              >
+                ×
+              </button>
+            </header>
+
+            <div className={styles.bsScroll} ref={brainstormScrollRef}>
+              {brainstorm.transcript.map((m, i) =>
+                m.role === "user" ? (
+                  <div key={i} className={[styles.msg, styles.msgUser].join(" ")}>
+                    <div className={styles.bubbleUser}>{m.content}</div>
+                  </div>
+                ) : (
+                  <div key={i} className={[styles.msg, styles.msgDonna].join(" ")}>
+                    <span className={styles.donnaEyebrow}>
+                      Donna
+                      {m.mode === "advise" && <span className={styles.adviseTag}>recommendation</span>}
+                    </span>
+                    <div className={[styles.bubble, donnaBubbleClass(m)].join(" ")}>
+                      {m.citations && m.citations.length > 0 && (
+                        <div className={[styles.cites, styles.citesTop].join(" ")}>
+                          {m.citations.map((c, ci) =>
+                            c.kind === "clause" ? (
+                              <button
+                                key={ci}
+                                type="button"
+                                className={styles.cite}
+                                title="Jump to this clause"
+                                onClick={() => jumpTo(c.nodeId)}
+                              >
+                                <span className={styles.citeArrow} aria-hidden>
+                                  ↳
+                                </span>
+                                {c.label}
+                              </button>
+                            ) : (
+                              <span key={ci} className={[styles.cite, styles.citeIssue].join(" ")}>
+                                {c.label}
+                              </span>
+                            ),
+                          )}
+                        </div>
+                      )}
+                      <div className={styles.bubbleText}>{renderDonnaMarkdown(m.content)}</div>
+                    </div>
+                  </div>
+                ),
+              )}
+              {brainstormBusy && (
+                <div className={[styles.msg, styles.msgDonna].join(" ")}>
+                  <span className={styles.donnaEyebrow}>Donna</span>
+                  <div className={[styles.bubble, styles.bubbleThinking].join(" ")}>
+                    <span className={styles.thinkingDots} aria-hidden>
+                      <i />
+                      <i />
+                      <i />
+                    </span>
+                    <span className={styles.thinkingLabel}>Donna&apos;s thinking it through…</span>
+                  </div>
+                </div>
+              )}
+              {brainstormError && <p className={styles.askError}>{brainstormError}</p>}
+            </div>
+
+            <form
+              className={styles.composer}
+              onSubmit={(e) => {
+                e.preventDefault();
+                void sendBrainstorm(brainstormInput);
+              }}
+            >
+              <input
+                ref={brainstormInputRef}
+                className={styles.composerInput}
+                value={brainstormInput}
+                onChange={(e) => setBrainstormInput(e.target.value)}
+                placeholder="Push back, ask for a sharper line, try another angle…"
+                aria-label="Brainstorm with Donna"
+                disabled={brainstormClosing}
+              />
+              <button
+                type="submit"
+                className={styles.composerSend}
+                aria-label="Send"
+                disabled={!brainstormInput.trim() || brainstormBusy || brainstormClosing}
+              >
+                ↵
+              </button>
+            </form>
+
+            <div className={styles.bsFoot}>
+              {brainstormClosing ? (
+                <div className={styles.bsClosing}>
+                  <div className={styles.progressTrack} role="progressbar" aria-label="Saving summary">
+                    <div className={styles.progressBar} />
+                  </div>
+                  <span className={styles.bsClosingLabel}>Distilling the summary…</span>
+                </div>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className={styles.bsCloseBtn}
+                    onClick={() => void closeBrainstormOverlay()}
+                  >
+                    Close &amp; save summary
+                  </button>
+                  <p className={styles.bsFootNote}>
+                    This conversation is scratch — it isn&apos;t saved. On close, Donna keeps a short
+                    summary on the issue; the back-and-forth is discarded.
+                  </p>
+                </>
+              )}
+            </div>
+          </section>
         </div>
       )}
     </div>

@@ -377,16 +377,43 @@ async def delete_contract(conn: Any, contract_id: str) -> ContractDeletion | Non
     # subquery so they clear before the nodes themselves FK-violate.
     nodes_subq = "(SELECT id FROM nodes WHERE contract_id = $1)"
     async with conn.transaction():
-        # 1. Donna recommendations hang off this contract's issues (FK issue_id) —
-        #    clear before the issues they reference.
+        # 1. Donna recommendations + brainstorm summaries both hang off this contract's
+        #    issues (FK issue_id) — clear before the issues they reference (DD-63/DD-77).
         await _exec_count(
             conn,
             "DELETE FROM donna_recommendations WHERE issue_id IN "
             "(SELECT id FROM issues WHERE contract_id = $1)",
             contract_id,
         )
+        await _exec_count(
+            conn,
+            "DELETE FROM brainstorm_summaries WHERE issue_id IN "
+            "(SELECT id FROM issues WHERE contract_id = $1)",
+            contract_id,
+        )
         # 2. Issues hold FKs into nodes + snapshots, so delete them before either.
+        #    Issues also FK counterparty_revision_session_id, so they MUST precede the
+        #    revision-session wipe below (a session can't drop while an issue references it).
         issues = await _exec_count(conn, "DELETE FROM issues WHERE contract_id = $1", contract_id)
+        # 2b. F03b Mode B revision staging (DD-28/DD-64): hunks → changes → sessions.
+        #     Ordered AFTER issues (which reference sessions) and BEFORE nodes +
+        #     contract_snapshots (changes FK nodes; sessions FK baseline_snapshot_id).
+        await _exec_count(
+            conn,
+            "DELETE FROM counterparty_revision_hunks WHERE change_id IN "
+            "(SELECT id FROM counterparty_revision_changes WHERE session_id IN "
+            "(SELECT id FROM counterparty_revision_sessions WHERE contract_id = $1))",
+            contract_id,
+        )
+        await _exec_count(
+            conn,
+            "DELETE FROM counterparty_revision_changes WHERE session_id IN "
+            "(SELECT id FROM counterparty_revision_sessions WHERE contract_id = $1)",
+            contract_id,
+        )
+        await _exec_count(
+            conn, "DELETE FROM counterparty_revision_sessions WHERE contract_id = $1", contract_id
+        )
         # 3. Donna conversation state (messages FK conversation_id → conversations).
         await _exec_count(
             conn,
@@ -431,9 +458,7 @@ async def delete_contract(conn: Any, contract_id: str) -> ContractDeletion | Non
         )
         # 7. Now the nodes, then the contract's own snapshots/pointers, then the row.
         nodes = await _exec_count(conn, "DELETE FROM nodes WHERE contract_id = $1", contract_id)
-        await _exec_count(
-            conn, "DELETE FROM snapshot_pointers WHERE contract_id = $1", contract_id
-        )
+        await _exec_count(conn, "DELETE FROM snapshot_pointers WHERE contract_id = $1", contract_id)
         await _exec_count(
             conn, "DELETE FROM contract_snapshots WHERE contract_id = $1", contract_id
         )

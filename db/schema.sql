@@ -238,8 +238,13 @@ CREATE TABLE counterparty_revision_changes (
     id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id           UUID NOT NULL REFERENCES counterparty_revision_sessions(id),
     node_id              UUID REFERENCES nodes(id),
-    proposed_parent_id   UUID REFERENCES nodes(id),    -- for new nodes: insert point
+    proposed_parent_id   UUID REFERENCES nodes(id),    -- for new nodes: insert point;
+                                                       -- for ABSTAIN rows: the provisional
+                                                       -- best-baseline candidate (F03b/DD-64)
     proposed_order_index INTEGER,                      -- for new nodes: sibling position
+    -- F03b/DD-64: the matcher's composite confidence — set on EDITED matches and on
+    -- ABSTAIN rows (the low-confidence pair the operator must confirm), NULL otherwise.
+    match_confidence     DOUBLE PRECISION,
     hunk_count           INTEGER NOT NULL DEFAULT 0,
     hunks_decided        INTEGER NOT NULL DEFAULT 0,
     status               TEXT NOT NULL DEFAULT 'pending'
@@ -347,6 +352,28 @@ CREATE TABLE donna_recommendations (
 );
 
 -- ============================================================================
+-- Brainstorm summaries (F10b, DD-73; storage shape per DD-77) — the per-issue
+-- distilled summary of an EPHEMERAL brainstorm. Brainstorm's raw back-and-forth is
+-- never persisted (reaffirms DD-42); on close Donna distils ONE compact, operator-
+-- facing summary (question explored / position concluded / fallbacks considered) and
+-- stores it here. A LINKED TABLE (not an issues column): an issue can be brainstormed
+-- repeatedly, so each pass appends a row — the rows are the issue's brainstorm history.
+-- Distinct from negotiation_patterns (DD-76, cross-deal learning); this is concrete,
+-- this-issue, operator-facing continuity. The summary is NOT a grounding source —
+-- Donna still grounds only on the committed ledger + clause text (DD-42/DD-73 §5).
+-- ============================================================================
+
+CREATE TABLE brainstorm_summaries (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    issue_id   UUID NOT NULL REFERENCES issues(id),
+    question   TEXT,                                  -- what the brainstorm set out to resolve
+    conclusion TEXT,                                  -- the position / landing concluded
+    fallbacks  TEXT,                                  -- key fallbacks considered + why passed over
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX brainstorm_summaries_issue_idx ON brainstorm_summaries (issue_id);
+
+-- ============================================================================
 -- Negotiation patterns (F30, DD-76; amends DD-55/DD-73) — compact, operator-GLOBAL
 -- insights distilled on issue-close from the COMMITTED issue ledger (never the raw
 -- brainstorm transcript). NO contract_id — patterns transcend a single contract.
@@ -425,4 +452,5 @@ INSERT INTO schema_migrations (version) VALUES
     ('0003_donna_recommendations'),
     ('0004_donna_message_meta'),
     ('0005_contract_last_export_at'),
-    ('0006_negotiation_patterns');
+    ('0006_negotiation_patterns'),
+    ('0007_brainstorm_summaries');

@@ -1,0 +1,112 @@
+{
+  "_doc": "Fully synthetic, privacy-safe (no real party/firm names, contract text, or values). Each case is a CLOSED negotiation issue (committed ledger); the rubric checks the MEDIUM-tier extraction quality: the right durable pattern kind(s) are extracted, an issue with no transferable principle yields an EMPTY list (honest, DD-76), and the service-derived subject_ref keys correctly per subject_type. client_id / contract_type_id are the contract context the SERVICE uses to derive subject_ref — the model never emits a ref. Generic terms only.",
+  "nodes": [
+    {
+      "id": "node-liability",
+      "heading": "Limitation of Liability",
+      "body": "Each party's aggregate liability under this Agreement is limited to the amount agreed by the parties, subject to the agreed carve-outs."
+    },
+    {
+      "id": "node-payment",
+      "heading": "Payment Terms",
+      "body": "The Customer shall pay the fees within the period agreed by the parties from the date of each valid invoice."
+    },
+    {
+      "id": "node-mfc",
+      "heading": "Most-Favoured-Customer",
+      "body": "The Provider shall not offer materially better commercial terms to a comparable customer without extending equivalent terms, on the basis agreed by the parties."
+    },
+    {
+      "id": "node-ip",
+      "heading": "Intellectual Property Ownership",
+      "body": "Ownership of intellectual property created under this Agreement is allocated between the parties as agreed, subject to the agreed licences and field-of-use limits."
+    },
+    {
+      "id": "node-notice",
+      "heading": "Notices",
+      "body": "Notices under this Agreement are given in the manner and to the recipients agreed by the parties."
+    }
+  ],
+  "cases": [
+    {
+      "name": "operator-style-holds-cap-trades-payment-timing",
+      "client_id": "client-A",
+      "contract_type_id": "ctype-services",
+      "issue": {
+        "id": "issue-cap-vs-timing",
+        "title": "Liability cap level versus payment timing",
+        "status": "closed",
+        "initiator": "counterparty",
+        "node_id": "node-liability",
+        "our_position": "Held firm on a cap tied to fees paid; refused to lift the cap.",
+        "their_position": "Wanted a higher cap and faster payment terms.",
+        "options_on_table": "Closed: we held the fees-paid cap and, to get there, conceded shorter payment terms. We consistently protect the cap and treat payment timing as the tradeable lever."
+      },
+      "matched_node_id": "node-liability",
+      "expect": {
+        "expect_patterns": true,
+        "subject_types": ["operator_style"]
+      }
+    },
+    {
+      "name": "deal-type-norm-mfc-expected-in-licences",
+      "client_id": "client-B",
+      "contract_type_id": "ctype-licence",
+      "issue": {
+        "id": "issue-mfc-norm",
+        "title": "Most-favoured-customer assurance on the licence",
+        "status": "closed",
+        "initiator": "counterparty",
+        "node_id": "node-mfc",
+        "our_position": "Agreed to a scoped most-favoured-customer assurance to keep the deal moving.",
+        "their_position": "Treated an MFC assurance as a baseline expectation for this kind of licence.",
+        "options_on_table": "Closed: we granted a scoped MFC assurance. In licence agreements of this type, counterparties routinely expect an MFC clause and declining it stalls the deal."
+      },
+      "matched_node_id": "node-mfc",
+      "expect": {
+        "expect_patterns": true,
+        "subject_types": ["deal_type_norm"]
+      }
+    },
+    {
+      "name": "counterparty-behavior-aggressive-on-ip-then-concedes",
+      "client_id": "client-C",
+      "contract_type_id": "ctype-licence",
+      "issue": {
+        "id": "issue-ip-ownership",
+        "title": "Ownership of jointly developed IP",
+        "status": "closed",
+        "initiator": "counterparty",
+        "node_id": "node-ip",
+        "our_position": "Wanted to retain ownership and grant a field-of-use licence.",
+        "their_position": "Opened demanding full assignment of all jointly developed IP, then softened.",
+        "options_on_table": "Closed: this counterparty opened aggressively demanding full IP assignment but conceded once offered a field-of-use licence covering their territory. They consistently trade the ownership demand for a usable licence."
+      },
+      "matched_node_id": "node-ip",
+      "expect": {
+        "expect_patterns": true,
+        "subject_types": ["counterparty_behavior"]
+      }
+    },
+    {
+      "name": "thin-one-off-no-transferable-pattern",
+      "client_id": "client-D",
+      "contract_type_id": "ctype-services",
+      "issue": {
+        "id": "issue-notice-address",
+        "title": "Correcting the notice recipient address",
+        "status": "closed",
+        "initiator": "operator",
+        "node_id": "node-notice",
+        "our_position": "Asked to update the notice recipient to the current operations contact.",
+        "their_position": "Agreed; it was an administrative correction.",
+        "options_on_table": "Closed: both sides agreed to update the notice recipient. A one-off administrative fix with no transferable negotiation principle."
+      },
+      "matched_node_id": "node-notice",
+      "expect": {
+        "expect_patterns": false,
+        "subject_types": []
+      }
+    }
+  ]
+}

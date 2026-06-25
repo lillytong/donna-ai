@@ -50,3 +50,4 @@ sample-contract.docx
 node_modules/
 .next/
 frontend/.env*.local
+.claude/settings.json

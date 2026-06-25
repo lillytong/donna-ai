@@ -1,0 +1,158 @@
+{
+  "_doc": "Fully synthetic, privacy-safe (no real party/firm names, contract text, or values). Each case is a brainstorm transcript closed on an issue; the rubric checks whether the MEDIUM-tier close-distillation captures the question explored, the position landed, and the fallbacks weighed (or honestly distils to None on a dismissed brainstorm). Generic terms only.",
+  "nodes": [
+    {
+      "id": "node-liability",
+      "heading": "Limitation of Liability",
+      "body": "Each party's aggregate liability under this Agreement is limited as set out in this clause. The parties shall agree the cap and any carve-outs during negotiation."
+    },
+    {
+      "id": "node-licence-grant",
+      "heading": "Licence Grant",
+      "body": "The Provider grants the Customer a licence to use the Platform on the terms set out below. The scope, exclusivity and field of use are to be agreed."
+    },
+    {
+      "id": "node-governing-law",
+      "heading": "Governing Law and Jurisdiction",
+      "body": "This Agreement is governed by the law agreed by the parties, and the parties submit to the agreed forum for disputes."
+    }
+  ],
+  "cases": [
+    {
+      "name": "substantive-liability-cap-lands-with-fallbacks",
+      "issue": {
+        "id": "issue-liability-cap",
+        "title": "Liability cap level and carve-outs",
+        "status": "open",
+        "initiator": "counterparty",
+        "node_id": "node-liability",
+        "our_position": "Prefer a cap tied to fees paid, with carve-outs for confidentiality and IP misuse.",
+        "their_position": "Pushing for a higher multiple of fees and a shorter carve-out list.",
+        "options_on_table": "Cap at fees paid in the trailing year; a super-cap multiple; or uncapped."
+      },
+      "matched_node_id": "node-liability",
+      "transcript": [
+        {
+          "question": "Where should we try to land on the liability cap for this one?",
+          "answer": "There are roughly three shapes worth weighing: an uncapped position, a multiple-of-fees super-cap, and a cap tied to the fees paid in the trailing year. Which risk matters most to you here?"
+        },
+        {
+          "question": "Uncapped is a non-starter for us. I worry the super-cap multiple looks greedy if we open with it.",
+          "answer": "Agreed. Uncapped is hard for us to live with given the exposure, and opening on a super-cap multiple reads as aggressive and tends to invite an equally aggressive counter. A cap pegged to the trailing-year fees is the more defensible anchor on the reasonableness spectrum."
+        },
+        {
+          "question": "Okay. And we'd still want confidentiality and IP misuse outside the cap.",
+          "answer": "Right. The fair landing is a cap at the fees paid in the trailing year, with carve-outs for confidentiality breaches and IP misuse sitting outside the cap. That keeps the headline number reasonable while protecting the two exposures we can't afford to cap."
+        }
+      ],
+      "expect": {
+        "produces_summary": true,
+        "question_terms": ["liabilit", "cap"],
+        "conclusion_terms": ["cap", "fees", "trailing"],
+        "require_fallback": true,
+        "fallbacks_terms": ["uncapped", "super-cap", "multiple", "aggressive"]
+      }
+    },
+    {
+      "name": "explores-and-rejects-exclusivity",
+      "issue": {
+        "id": "issue-exclusivity",
+        "title": "Whether to grant exclusivity on the licence",
+        "status": "open",
+        "initiator": "counterparty",
+        "node_id": "node-licence-grant",
+        "our_position": "Reluctant to grant exclusivity; open to a narrower commitment.",
+        "their_position": "Asking for an exclusive licence in their territory.",
+        "options_on_table": "Full exclusivity; a field-of-use limited exclusivity; or non-exclusive with a most-favoured-customer assurance."
+      },
+      "matched_node_id": "node-licence-grant",
+      "transcript": [
+        {
+          "question": "They want exclusivity on the licence. Should we give it?",
+          "answer": "Worth pressure-testing before conceding. Full exclusivity locks us out of every other counterparty in their territory for the term, which is a heavy structural commitment. What's driving their ask?"
+        },
+        {
+          "question": "They say they need it to justify their investment. But exclusivity would block us from three other prospects we're already talking to.",
+          "answer": "Then full exclusivity is the option to pass over: the opportunity cost of blocking those prospects outweighs the deal. A field-of-use limited exclusivity was also on the table, but it still constrains us more than the upside warrants here."
+        },
+        {
+          "question": "So what do we offer instead?",
+          "answer": "Land on a non-exclusive licence paired with a most-favoured-customer assurance, so they get comfort they won't be undercut without us giving up the territory. Exclusivity is declined; the MFC assurance is what we offer in its place."
+        }
+      ],
+      "expect": {
+        "produces_summary": true,
+        "question_terms": ["exclusiv"],
+        "conclusion_terms": ["non-exclusive", "most-favoured", "mfc", "decline"],
+        "require_fallback": true,
+        "fallbacks_terms": ["exclusiv", "field-of-use", "opportunity"]
+      }
+    },
+    {
+      "name": "governing-law-lands-with-fallback",
+      "issue": {
+        "id": "issue-governing-law",
+        "title": "Which governing law and forum to push for",
+        "status": "open",
+        "initiator": "operator",
+        "node_id": "node-governing-law",
+        "our_position": "Prefer our home jurisdiction's law and courts.",
+        "their_position": "Would prefer their own home forum.",
+        "options_on_table": "Our home jurisdiction; their home jurisdiction; or a neutral third-country seat with arbitration."
+      },
+      "matched_node_id": "node-governing-law",
+      "transcript": [
+        {
+          "question": "What should we push for on governing law and forum?",
+          "answer": "Three realistic shapes: our home jurisdiction, theirs, or a neutral third-country seat under arbitration. Which matters more to you, familiarity or perceived neutrality?"
+        },
+        {
+          "question": "A neutral seat sounds fair but I'm wary of the cost and the unfamiliar procedure.",
+          "answer": "That's the trade. A neutral third-country arbitration seat reads as even-handed, but it adds cost and procedural unfamiliarity that tend to fall on us disproportionately as the smaller party. It's a reasonable fallback, not the opening position."
+        },
+        {
+          "question": "Then let's open on our home jurisdiction.",
+          "answer": "Agreed: open on our home jurisdiction's law and courts as the position, holding the neutral third-country arbitration seat in reserve as the fallback if they refuse to concede the forum."
+        }
+      ],
+      "expect": {
+        "produces_summary": true,
+        "question_terms": ["governing law", "forum", "jurisdiction"],
+        "conclusion_terms": ["home", "jurisdiction"],
+        "require_fallback": true,
+        "fallbacks_terms": ["neutral", "arbitration", "cost"]
+      }
+    },
+    {
+      "name": "dismissed-no-substance-distils-to-none",
+      "issue": {
+        "id": "issue-empty",
+        "title": "Renewal term length",
+        "status": "open",
+        "initiator": "operator",
+        "node_id": null,
+        "our_position": null,
+        "their_position": null,
+        "options_on_table": null
+      },
+      "matched_node_id": null,
+      "transcript": [
+        {
+          "question": "Donna, are you there?",
+          "answer": "Yes, I'm here. What would you like to think through on the renewal term?"
+        },
+        {
+          "question": "Actually never mind, wrong issue. I'll come back to this later.",
+          "answer": "No problem. Nothing captured here; reopen this whenever you're ready to work through it."
+        }
+      ],
+      "expect": {
+        "produces_summary": false,
+        "question_terms": [],
+        "conclusion_terms": [],
+        "require_fallback": false,
+        "fallbacks_terms": []
+      }
+    }
+  ]
+}

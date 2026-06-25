@@ -110,20 +110,3 @@ class DonnaThreadResponse(BaseModel):
 
 class DonnaClearResponse(BaseModel):
     cleared: bool
-
-
-class DonnaSeedBrainstormRequest(BaseModel):
-    """Prime the Brainstorm opening turn (F10b) for an issue. The server composes the
-    opening from the issue's CURRENT recommendation draft — the operator never authors an
-    assistant turn (the content is server-controlled, not client-supplied)."""
-
-    issue_id: str
-
-
-class DonnaSeedBrainstormResponse(BaseModel):
-    """The server-composed Brainstorm opening turn, persisted as one assistant message so a
-    reloaded thread shows it. `seeded` is False (and `message` None) when the issue has no
-    recommendation draft yet — nothing to restate (the route is a no-op)."""
-
-    seeded: bool
-    message: DonnaMessage | None = None
