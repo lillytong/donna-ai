@@ -11,6 +11,8 @@ contracts are imported as **structured data**, issues are tracked **per clause**
 an AI assistant (**Donna**) brainstorms and explains **grounded in the actual
 text**, and clean redlines are exported back to Word on demand.
 
+![The donna.ai negotiation cockpit's issues list: every open issue tracked per clause, tagged by who raised it and moved through its status lifecycle, alongside the structured clause tree.](docs/assets/cockpit-issueslist.png)
+
 ![The donna.ai negotiation cockpit: the structured clause tree on the left, and Donna answering grounded questions on the right — listing the open issues and summarising our recorded position on a clause, each cited to the source clause.](docs/assets/cockpit-donna.png)
 
 <sub>The negotiation cockpit on a sample joint-venture agreement. Donna answers only from the contract and the issue ledger, with clickable clause citations — she reads and explains, never gives legal advice.</sub>
