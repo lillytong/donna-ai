@@ -12,8 +12,8 @@ this file records the **project-specific decisions and deviations** only.
 
 ## Tracking built features (the convention — so build state is never lost to chat)
 
-- **SPEC §5 feature registry `Status` column is the canonical at-a-glance tracker** of what's built. **`DEV_TODO.md` → Completed** is the detailed build log.
-- **Every finished build does both:** flip the feature's §5 `Status` (`planned` → `backend done` / `built`) **and** add a `DEV_TODO` Completed line (what + gate result). A build isn't done until both are recorded. This is how a fresh engineering session knows where to pick up — it reads §5 + `DEV_TODO` in its pre-build gate.
+- **SPEC §5 feature registry `Status` is the canonical record of what's built;** git history + ADRs are the detailed record. **`DEV_TODO.md` holds only open work — no Completed / build-log section.**
+- **Every finished build:** flip the feature's §5 `Status` (`planned` → `backend done` / `built`) and commit. Promote anything still load-bearing (a gotcha, an open follow-up) to its durable home (§5, an ADR, `CLAUDE.md`, or a new `## Open` item), then **delete the item from `DEV_TODO` — never log it to a Completed section.** A build is done when §5 is flipped and the item is cleared from `## Open`. A fresh session picks up from §5 `Status` + `## Open` + git — not a Completed log.
 - **New feature gaps found mid-build are never decided ad hoc.** Engineering gaps → an ADR in `DESIGN_DECISIONS.md`. Feature/product gaps → queued to `PM_TODO.md`; **only product writes features into the §5 registry** (after vetting), keeping it the single source of feature truth.
 
 ## Stack deviations from the default
