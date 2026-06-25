@@ -907,3 +907,179 @@ export function donnaErrorMessage(e: unknown): string {
   if (e instanceof Error && e.message) return e.message;
   return "Donna couldn't answer just now. Try again.";
 }
+
+// --- Mode B revision import + review (F03b/F03c) ----------------------------
+// Mirrors backend/models/revision_import.py + revision_review.py. F03b ingests a
+// clean counterparty/legal .docx revision against the last-sent baseline and stages
+// the matcher's buckets; F03c is the two-phase review (DD-78): a structural-
+// foundation pass (abstain match-confirm) before a document-ordered content stream.
+
+export type RevisionSource = "counterparty" | "legal";
+export type ParsePath = "tracked_changes" | "clean_diff";
+export type RevisionHunkType = "insertion" | "deletion" | "replacement";
+export type Significance = "trivial" | "substantive";
+export type ChangeStatus = "pending" | "partial" | "complete";
+// Derived per-change classification (DD-78): an edit, a counterparty-added node, a
+// counterparty-deleted node, or an unsettled low-confidence match (Phase-1 only).
+export type ChangeKind = "edited" | "new" | "deleted" | "abstain";
+export type StoredHunkVerdict = "pending" | "accepted" | "rejected" | "modified";
+// Operator-facing action vocabularies (mapped onto StoredHunkVerdict server-side).
+export type HunkDecisionAction = "accept" | "counter" | "edit" | "keep";
+export type NodeDecisionAction = "accept" | "reject" | "edit";
+export type MatchConfirmAction = "confirm" | "new" | "rematch";
+
+// The receipt returned on a successful clean-diff import (F03b). `version` is the
+// as-received snapshot's lineage v-number; the bucket counts mirror the matcher.
+export interface RevisionImportResponse {
+  session_id: string;
+  contract_id: string;
+  source: string;
+  parse_path: ParsePath;
+  baseline_snapshot_id: string;
+  as_received_snapshot_id: string;
+  received_pointer_party: string;
+  version: number;
+  status: string;
+  changes_count: number;
+  hunk_count: number;
+  edited_matches: number;
+  unchanged_matches: number;
+  new: number;
+  deleted: number;
+  abstains: number;
+}
+
+export interface StoredRevisionSession {
+  id: string;
+  contract_id: string;
+  baseline_snapshot_id: string;
+  source: string;
+  source_filename: string | null;
+  parse_path: ParsePath;
+  status: string;
+  changes_count: number;
+  changes_reviewed_count: number;
+  imported_at: string;
+}
+
+// One decision unit. For an edited change each hunk is a text edit (DD-27 four
+// actions); for new/deleted a single whole-node hunk carries the added/removed body.
+// `donna_*` are her staged read + exact counter-language; `final_text` is the
+// resolved language once decided (edit/counter).
+export interface ReviewHunk {
+  id: string;
+  change_id: string;
+  hunk_type: RevisionHunkType;
+  significance: Significance;
+  position_in_body: number | null;
+  original_text: string | null;
+  proposed_text: string | null;
+  donna_verdict: string | null;
+  donna_counter_text: string | null;
+  verdict: StoredHunkVerdict;
+  final_text: string | null;
+}
+
+// One navigation unit + its hunks and derived `change_kind`. For an abstain,
+// `proposed_parent_id` carries the provisional baseline candidate and
+// `match_confidence` its score; for a new node `proposed_order_index` its position.
+export interface ReviewChange {
+  id: string;
+  session_id: string;
+  change_kind: ChangeKind;
+  node_id: string | null;
+  proposed_parent_id: string | null;
+  proposed_order_index: number | null;
+  match_confidence: number | null;
+  hunk_count: number;
+  hunks_decided: number;
+  status: ChangeStatus;
+  hunks: ReviewHunk[];
+}
+
+// A residual 6a tree-shape anomaly. F03b stages none yet → always empty.
+export interface TreeAnomaly {
+  node_id: string;
+  reason: string;
+}
+
+export interface ReviewPhase1 {
+  abstains: ReviewChange[];
+  tree_anomalies: TreeAnomaly[];
+}
+
+export interface ReviewPayload {
+  session: StoredRevisionSession;
+  phase1: ReviewPhase1;
+  phase2: ReviewChange[];
+}
+
+export interface ConfirmMatchRequest {
+  action: MatchConfirmAction;
+  baseline_node_id?: string | null;
+}
+export interface HunkDecideRequest {
+  verdict: HunkDecisionAction;
+  final_text?: string | null;
+}
+export interface NodeDecideRequest {
+  verdict: NodeDecisionAction;
+  final_text?: string | null;
+}
+
+// Receipt for apply: what landed where (F08 paths) + which rejections seeded issues.
+export interface ApplyResult {
+  session_id: string;
+  status: string;
+  edits_applied: number;
+  nodes_inserted: number;
+  nodes_deleted: number;
+  issues_created: number;
+  issue_ids: string[];
+}
+
+// F03b entry: the clean revision .docx is the raw request body (same upload
+// convention as previewDocx); `source` + `filename` ride the query string. Surfaces
+// the typed backend errors via ApiError — 422 (tracked changes, Path A not built),
+// 409 (no baseline / a session already open) — so the cockpit can branch on status.
+export async function importRevision(
+  contractId: string,
+  source: RevisionSource,
+  file: File,
+): Promise<RevisionImportResponse> {
+  const qs = new URLSearchParams({ source, filename: file.name });
+  const res = await fetch(`${API_BASE}/contracts/${contractId}/revisions/import?${qs}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/octet-stream" },
+    body: await file.arrayBuffer(),
+  });
+  if (!res.ok) throw await errorFrom(res);
+  return res.json();
+}
+
+export const listRevisionSessions = (contractId: string): Promise<StoredRevisionSession[]> =>
+  getJson(`/contracts/${contractId}/revisions/sessions`);
+
+export const getRevisionReview = (sessionId: string): Promise<ReviewPayload> =>
+  getJson(`/revisions/sessions/${sessionId}`);
+
+// 6b abstain resolution. `rematch` carries the operator-chosen `baseline_node_id`;
+// returns the reclassified change (resolving one abstain can churn the stream, so the
+// caller re-fetches the payload).
+export const confirmMatch = (
+  changeId: string,
+  body: ConfirmMatchRequest,
+): Promise<ReviewChange> => postJson(`/revisions/changes/${changeId}/confirm-match`, body);
+
+// DD-27 four-action hunk verdict. `counter` uses the staged donna_counter_text (422
+// if none); `edit` requires `final_text`. Returns the rolled-up change.
+export const decideHunk = (hunkId: string, body: HunkDecideRequest): Promise<ReviewChange> =>
+  postJson(`/revisions/hunks/${hunkId}/decide`, body);
+
+// Whole-node decision for a new/deleted change. `edit` requires `final_text`.
+export const decideNode = (changeId: string, body: NodeDecideRequest): Promise<ReviewChange> =>
+  postJson(`/revisions/changes/${changeId}/decide-node`, body);
+
+// Apply every decision to the working copy (409 if any change is still undecided).
+export const applyRevisionSession = (sessionId: string): Promise<ApplyResult> =>
+  postJson(`/revisions/sessions/${sessionId}/apply`, {});

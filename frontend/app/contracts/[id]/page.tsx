@@ -3,6 +3,7 @@
 import { Fragment, use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import styles from "../cockpit.module.css";
 import { deriveNumbers } from "../../lib/numbering";
 import {
@@ -28,6 +29,7 @@ import {
   getLineage,
   getRecommendation,
   getSnapshotTree,
+  importRevision,
   listIssues,
   markSent,
   searchClause,
@@ -40,6 +42,7 @@ import {
   type LineageView,
   type LineageTimelineEntry,
   type MarkSentRecipient,
+  type RevisionSource,
   type Initiator,
   type IssueStatus,
   type NodeTreeItem,
@@ -700,6 +703,19 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
     null,
   );
   const markRef = useRef<HTMLDivElement | null>(null);
+
+  // Import revision (F03b, Mode B entry): an upload + source picker beside Mark as
+  // sent. Picking a source arms the hidden file input; a chosen .docx is imported
+  // against the last-sent baseline and routes into the F03c review surface.
+  // `importSource` is the armed source while the file dialog is open; `importBusy`
+  // drives the inline progress; `importError` surfaces the typed 422/409 messages.
+  const router = useRouter();
+  const [importOpen, setImportOpen] = useState(false);
+  const [importSource, setImportSource] = useState<RevisionSource | null>(null);
+  const [importBusy, setImportBusy] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const importRef = useRef<HTMLDivElement | null>(null);
+  const revFileRef = useRef<HTMLInputElement | null>(null);
 
   // F27 lifecycle badge + lineage drawer. `lineage` is the full version/snapshot
   // view (badge + timeline + working copy + reserved slots), loaded on mount and
@@ -1784,6 +1800,45 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
     await runCleanCopy();
   }
 
+  // Import revision (F03b). Picking a source arms the file input and opens the
+  // dialog; the menu stays open so a failure can show inline.
+  function closeImport() {
+    setImportOpen(false);
+    setImportError(null);
+  }
+  function armImport(source: RevisionSource) {
+    if (importBusy) return;
+    setImportError(null);
+    setImportSource(source);
+    revFileRef.current?.click();
+  }
+  // On a chosen .docx: import against the last-sent baseline, then route into the
+  // F03c review surface for the new session. The typed backend errors get clean,
+  // operator-facing lines (422 tracked-changes, 409 no-baseline / open session).
+  async function onRevisionFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-picking the same file after an error
+    if (!file || !importSource) return;
+    setImportBusy(true);
+    setImportError(null);
+    try {
+      const res = await importRevision(id, importSource, file);
+      router.push(`/contracts/${id}/revisions/${res.session_id}`);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 422) {
+        setImportError(
+          "This file has tracked changes, which isn't supported yet. Accept all changes in Word, then upload the clean copy.",
+        );
+      } else if (err instanceof ApiError && err.status === 409) {
+        setImportError(err.message);
+      } else {
+        setImportError(err instanceof Error ? err.message : "Couldn't import this revision.");
+      }
+    } finally {
+      setImportBusy(false);
+    }
+  }
+
   // F27: open a past version's snapshot read-only in the document panel. Closes the
   // drawer, shows the snapshot rows (built the same way as the live tree) behind a
   // banner, and clears any in-flight selection/edit so nothing dangles from the
@@ -1869,6 +1924,26 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
       document.removeEventListener("keydown", onKey, true);
     };
   }, [markOpen]);
+
+  // Close the Import-revision menu on an outside click or Escape (mirrors Mark).
+  useEffect(() => {
+    if (!importOpen) return;
+    function onDown(e: MouseEvent) {
+      if (importRef.current && !importRef.current.contains(e.target as Node)) closeImport();
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        closeImport();
+      }
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey, true);
+    };
+  }, [importOpen]);
 
   const selectedRow = selectedId ? rowById.get(selectedId) ?? null : null;
   // Right-pane "Selected clause" card state. Edit shows only for a node with real
@@ -3363,6 +3438,60 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
                   </span>
                 </button>
                 {exportError && <p className={styles.exportError}>{exportError}</p>}
+              </div>
+            )}
+          </div>
+
+          {/* Import revision (F03b, Mode B): upload a counterparty/legal revision →
+              F03c review. Hidden input shared by both source choices. */}
+          <input
+            ref={revFileRef}
+            type="file"
+            accept=".docx"
+            style={{ display: "none" }}
+            onChange={onRevisionFile}
+            aria-hidden
+          />
+          <div className={styles.markWrap} ref={importRef}>
+            <button
+              type="button"
+              className={[styles.exportBtn, importOpen ? styles.exportBtnOn : ""].join(" ")}
+              aria-haspopup="menu"
+              aria-expanded={importOpen}
+              disabled={importBusy}
+              onClick={() => (importOpen ? closeImport() : setImportOpen(true))}
+            >
+              {importBusy ? "Importing…" : "Import revision"}{" "}
+              <span className={styles.exportCaret} aria-hidden>
+                ▾
+              </span>
+            </button>
+            {importOpen && (
+              <div className={styles.exportMenu} role="menu">
+                <div className={styles.exportSubHead}>Whose revision is this?</div>
+                {(["counterparty", "legal"] as RevisionSource[]).map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    role="menuitem"
+                    className={[styles.menuItem, styles.exportItem].join(" ")}
+                    disabled={importBusy}
+                    onClick={() => armImport(s)}
+                  >
+                    <span className={styles.exportItemLabel}>
+                      {s === "counterparty" ? "From counterparty" : "From legal"}
+                    </span>
+                    <span className={styles.exportItemMeta}>
+                      {importBusy && importSource === s ? "Importing…" : ".docx"}
+                    </span>
+                  </button>
+                ))}
+                {importBusy && (
+                  <div className={styles.progressTrack} style={{ width: "auto", margin: "6px 8px" }}>
+                    <div className={styles.progressBar} />
+                  </div>
+                )}
+                {importError && <p className={styles.exportError}>{importError}</p>}
               </div>
             )}
           </div>
