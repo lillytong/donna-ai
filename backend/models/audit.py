@@ -27,6 +27,8 @@ EVENT_SNAPSHOT_CUT = "snapshot_cut"  # F14 point-in-time capture (e.g. send to c
 EVENT_MARK_SENT = "mark_sent"  # DD-71 boundary event: snapshot cut + shared pointer(s) advanced
 EVENT_RECOMMENDATION_CONFIRMED = "recommendation_confirmed"  # F11 draft -> issues.* (DD-68)
 EVENT_REVISION_IMPORTED = "revision_imported"  # F03b Mode B counterparty/legal revision import
+EVENT_REVISION_MATCH_CONFIRMED = "revision_match_confirmed"  # F03c 6b abstain resolution
+EVENT_REVISION_SESSION_APPLIED = "revision_session_applied"  # F03c apply → working copy + issues
 
 
 class AuditEvent(BaseModel):

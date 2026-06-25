@@ -25,6 +25,7 @@ from backend.api import (
     nodes,
     redline,
     revision_import,
+    revision_review,
     settings,
 )
 from backend.db import close_pool, open_pool
@@ -90,3 +91,4 @@ app.include_router(cross_references.router)
 app.include_router(mark_sent.router)
 app.include_router(lineage.router)
 app.include_router(revision_import.router)
+app.include_router(revision_review.router)
