@@ -2999,7 +2999,7 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
             ) : (
               <>
                 <h2 className={styles.resolveTitle}>
-                  <span className={styles.issueNum}>#{issueNumberById.get(i.id) ?? "—"}</span> {i.title}
+                  <span className={styles.resolveTitleNum}>Issue #{issueNumberById.get(i.id) ?? "—"}</span> {i.title}
                 </h2>
                 {i.our_position && (
                   <div className={styles.detailField}>

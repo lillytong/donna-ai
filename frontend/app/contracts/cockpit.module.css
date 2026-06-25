@@ -2751,6 +2751,14 @@
   letter-spacing: -0.01em;
   color: #1f2328;
 }
+/* "Issue #N" prefix in the single-issue header — inherits .resolveTitle's 16px so it
+   matches the title size, slightly bolder to read as a label. Distinct from .issueNum
+   (the 11px list-row badge), which it must not affect. */
+.resolveTitleNum {
+  font-variant-numeric: tabular-nums;
+  font-weight: 750;
+  margin-right: 3px;
+}
 
 /* status row */
 .resolveStatus {
