@@ -160,15 +160,36 @@ def test_text_with_native_enumerator_gets_no_auto_numbering() -> None:
     assert _num_pr(clean) is not None
 
 
-def test_heading_renders_bold_and_all_caps_from_house_style() -> None:
-    """Section headings are bold + all-caps display even with an empty style_config
-    (house style, not config-driven — DD-37)."""
-    nodes = [_node("a", None, 100, heading="Definitions")]
+def test_heading_is_bold_but_caps_keys_on_source_not_bold() -> None:
+    """A heading is bold (house style) but the uppercase transform is NOT inferred
+    from bold — it keys on the source caps property only (DD-37, issue #2). With an
+    empty style_config a bold mixed-case heading stays mixed-case (no w:caps); a
+    genuinely-uppercase source heading still renders uppercase via its own text."""
+    nodes = [
+        _node("a", None, 100, heading="Fees"),
+        _node("b", None, 200, heading="CONFIDENTIALITY"),
+    ]
     data = render_contract_docx(nodes, {})
+    doc = Document(io.BytesIO(data))
+    mixed = _runs(doc.paragraphs[0])[0]
+    upper = _runs(doc.paragraphs[1])[0]
+    assert mixed.font.bold is True
+    assert mixed.font.all_caps is not True
+    assert mixed.text == "Fees"
+    assert upper.text == "CONFIDENTIALITY"
+
+
+def test_heading_caps_transform_applies_when_source_level_carries_caps() -> None:
+    """The DD-37 uppercase transform still fires when the source caps property is
+    present: a level with caps:true uppercases the heading at render while the stored
+    text stays mixed-case (content integrity §2.1)."""
+    nodes = [_node("a", None, 100, heading="Definitions")]
+    data = render_contract_docx(nodes, {"levels": {"0": {"caps": True}}})
     doc = Document(io.BytesIO(data))
     run = _runs(doc.paragraphs[0])[0]
     assert run.font.bold is True
     assert run.font.all_caps is True
+    assert run.text == "Definitions"
 
 
 def test_appendix_title_is_centered_page_break_and_bold() -> None:

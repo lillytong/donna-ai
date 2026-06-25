@@ -25,9 +25,13 @@ Content-integrity boundaries this renderer must hold:
     while Word renders the house style (DD-37 / §2.1).
 
 House style (DD-37) is applied as render rules, not read from config, because a
-contract's `style_config` is commonly `{}`: section headings render bold + caps,
+contract's `style_config` is commonly `{}`: section headings render bold,
 appendix titles start a new centred page, defined terms and all-caps spans bold
-inline. A populated `style_config` can still raise per-level font sizes on top.
+inline. The uppercase transform is NOT a house rule — `caps` keys on the source
+caps property (`style.level(ilvl).caps`) only, never on bold (issue #2): a bold
+mixed-case heading stays mixed-case; a source-uppercase heading renders uppercase
+(its stored text is already uppercase, or its level carries `caps: true`). A
+populated `style_config` can still raise per-level font sizes on top.
 """
 
 from __future__ import annotations
@@ -324,20 +328,25 @@ def render_contract_docx(nodes: list[StoredNode], style_config: dict[str, Any]) 
         if node.role == "appendix_title":
             _page_break_before(paragraph)
             paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            _run(paragraph, text, style.font, style.body_font_size_pt, bold=True, caps=True)
+            caps = style.level(min(depth, len(_MIXED_FMT) - 1)).caps
+            _run(paragraph, text, style.font, style.body_font_size_pt, bold=True, caps=caps)
             continue
 
         is_clause = node.role == "clause" and number is not None
         auto_number = is_clause and not _carries_enumerator(text, number or "")
 
-        # Section / appendix heading: bold + all-caps display.
+        # Section / appendix heading: bold (house style) + an uppercase transform
+        # ONLY when the source caps property says so (DD-37, issue #2) — never
+        # inferred from bold. A bold mixed-case heading ("6.1.1 Fees") stays
+        # mixed-case; a genuinely-uppercase source heading renders uppercase.
         if is_heading:
             ilvl = _ilvl_of(number) if number is not None else min(depth, len(_MIXED_FMT) - 1)
-            size = style.level(ilvl).font_size_pt or style.body_font_size_pt
+            level = style.level(ilvl)
+            size = level.font_size_pt or style.body_font_size_pt
             if auto_number:
                 _apply_numbering(paragraph, ilvl)
             _apply_indent(paragraph, style.indent_per_level_pt, ilvl)
-            _run(paragraph, text, style.font, size, bold=True, caps=True)
+            _run(paragraph, text, style.font, size, bold=True, caps=level.caps)
             continue
 
         # Body paragraph: number only a clause whose text doesn't already carry one;
