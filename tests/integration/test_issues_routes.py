@@ -61,6 +61,43 @@ def _stored_issue(issue_id: str, **kw: Any) -> StoredIssue:
     return StoredIssue(**base)
 
 
+def _setup_status_route(monkeypatch: Any, *, resulting_status: str) -> list[str]:
+    """Wire the status route with the DB boundary mocked + a recorder for the F30
+    distillation hook (DD-76). Returns the list the hook records into."""
+    called: list[str] = []
+
+    async def fake_update(_conn: Any, issue_id: str, _payload: Any) -> str:
+        return issue_id
+
+    async def fake_get(_conn: Any, issue_id: str) -> StoredIssue:
+        return _stored_issue(issue_id, status=resulting_status, resolved_at=_NOW)
+
+    def fake_distill(issue_id: str) -> None:  # the background task — sync recorder
+        called.append(issue_id)
+
+    monkeypatch.setattr(issues_api, "acquire", _fake_acquire)
+    monkeypatch.setattr(issues_api, "record_event", _noop_record)
+    monkeypatch.setattr(issues_api.issue_repo, "update_issue_status", fake_update)
+    monkeypatch.setattr(issues_api.issue_repo, "get_issue", fake_get)
+    monkeypatch.setattr(issues_api, "distill_on_issue_close", fake_distill)
+    return called
+
+
+def test_closing_an_issue_schedules_distillation(monkeypatch: Any) -> None:
+    """F30/DD-76: closing an issue fires the (failure-isolated, post-response) distillation."""
+    called = _setup_status_route(monkeypatch, resulting_status="closed")
+    resp = client.patch("/issues/issue-7/status", json={"status": "closed"})
+    assert resp.status_code == 200
+    assert called == ["issue-7"]  # background task ran with the closed issue's id
+
+
+def test_reopening_an_issue_does_not_distil(monkeypatch: Any) -> None:
+    called = _setup_status_route(monkeypatch, resulting_status="open")
+    resp = client.patch("/issues/issue-7/status", json={"status": "open"})
+    assert resp.status_code == 200
+    assert called == []  # only a real close distils
+
+
 def test_create_issue_returns_stored(monkeypatch: Any) -> None:
     captured: dict[str, Any] = {}
 

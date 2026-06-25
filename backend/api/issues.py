@@ -8,7 +8,7 @@ chain is enforced by the schema; a bad parent id surfaces as a DB error.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from backend.config.settings import get_settings
 from backend.db import acquire
@@ -26,6 +26,7 @@ from backend.models.issues import (
 )
 from backend.services import issue_repo
 from backend.services.audit_repo import record_event
+from backend.services.donna.distillation import distill_on_issue_close
 
 router = APIRouter()
 
@@ -87,7 +88,9 @@ async def edit_issue(issue_id: str, payload: IssueEditRequest) -> StoredIssue:
 
 
 @router.patch("/issues/{issue_id}/status", response_model=StoredIssue)
-async def update_issue_status(issue_id: str, payload: IssueStatusUpdate) -> StoredIssue:
+async def update_issue_status(
+    issue_id: str, payload: IssueStatusUpdate, background: BackgroundTasks
+) -> StoredIssue:
     async with acquire() as conn:
         updated_id = await issue_repo.update_issue_status(conn, issue_id, payload)
         if updated_id is None:
@@ -104,4 +107,9 @@ async def update_issue_status(issue_id: str, payload: IssueStatusUpdate) -> Stor
             ),
         )
     assert stored is not None  # just updated
+    # F30 (DD-76): on issue-close, distil negotiation patterns from the committed ledger —
+    # AFTER the response, in its own connection, failure-isolated (a distillation error can
+    # never fail or roll back the close). Only fires on a real close, not a reopen.
+    if stored.status == "closed":
+        background.add_task(distill_on_issue_close, issue_id)
     return stored
