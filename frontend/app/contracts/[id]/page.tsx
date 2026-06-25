@@ -3461,7 +3461,7 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
               disabled={importBusy}
               onClick={() => (importOpen ? closeImport() : setImportOpen(true))}
             >
-              {importBusy ? "Importing…" : "Import revision"}{" "}
+              {importBusy ? "Importing…" : "Import new version"}{" "}
               <span className={styles.exportCaret} aria-hidden>
                 ▾
               </span>
