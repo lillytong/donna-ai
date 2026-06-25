@@ -123,6 +123,48 @@ def test_post_creates_node_with_parent_and_order_index(monkeypatch: Any) -> None
     assert body["order_index"] == 150  # midpoint(100, 200)
 
 
+def test_post_before_first_child_prepends(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    parent = _node_record(id="p1")
+    before = _node_record(id="a", order_index=100, parent_id="p1")
+    conn = _FakeConn(
+        nodes={"p1": parent, "a": before},
+        siblings=[{"id": "a", "order_index": 100}, {"id": "b", "order_index": 200}],
+    )
+    _install(monkeypatch, conn, captured)
+
+    resp = client.post(
+        "/contracts/c1/nodes",
+        json={"parent_id": "p1", "before_node_id": "a", "text": "Top."},
+    )
+
+    assert resp.status_code == 201
+    assert resp.json()["order_index"] == 50  # no prev: before(100) // 2
+
+
+def test_post_both_anchors_returns_422(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    after = _node_record(id="a", order_index=100, parent_id=None)
+    before = _node_record(id="b", order_index=200, parent_id=None)
+    conn = _FakeConn(nodes={"a": after, "b": before}, siblings=[])
+    _install(monkeypatch, conn, captured)
+
+    resp = client.post(
+        "/contracts/c1/nodes",
+        json={"after_node_id": "a", "before_node_id": "b", "text": "x"},
+    )
+    assert resp.status_code == 422
+
+
+def test_post_unknown_before_node_returns_404(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    conn = _FakeConn(nodes={}, siblings=[])
+    _install(monkeypatch, conn, captured)
+
+    resp = client.post("/contracts/c1/nodes", json={"before_node_id": "missing", "text": "x"})
+    assert resp.status_code == 404
+
+
 def test_post_writes_insertion_version_row(monkeypatch: Any) -> None:
     captured: dict[str, Any] = {}
     conn = _FakeConn(siblings=[])

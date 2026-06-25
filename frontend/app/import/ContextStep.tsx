@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import styles from "./review.module.css";
+import ImportTopBar from "./ImportTopBar";
 import {
   createClient,
   createContract,
@@ -10,6 +11,7 @@ import {
   listClients,
   listContractTypes,
   listDeals,
+  type DealPosition,
   type Origin,
   type StoredClient,
   type StoredContractType,
@@ -33,6 +35,20 @@ const ORIGIN_OPTIONS: { value: Origin; label: string }[] = [
   { value: "counterparty", label: "Counterparty" },
 ];
 
+// Which side of the deal the operator is on (deals.position, DD-50) — governs what
+// Donna flags as unfavorable. Required only when creating a NEW deal; an existing
+// deal already carries its position. Values mirror the schema CHECK exactly.
+const POSITION_OPTIONS: { value: DealPosition; label: string }[] = [
+  { value: "customer", label: "Customer" },
+  { value: "vendor", label: "Vendor" },
+  { value: "buyer", label: "Buyer" },
+  { value: "seller", label: "Seller" },
+  { value: "licensor", label: "Licensor" },
+  { value: "licensee", label: "Licensee" },
+  { value: "receiving_party", label: "Receiving party" },
+  { value: "disclosing_party", label: "Disclosing party" },
+];
+
 // Step 1 — Context (§9). Tells donna.ai where to store the contract before any
 // parsing: select-or-create client, select-or-create deal (scoped to the client),
 // contract name, contract type. On submit it resolves the FK chain
@@ -46,6 +62,7 @@ export default function ContextStep({ onReady }: { onReady: (ctx: ContractContex
   const [newClientName, setNewClientName] = useState("");
   const [dealId, setDealId] = useState("");
   const [newDealName, setNewDealName] = useState("");
+  const [newDealPosition, setNewDealPosition] = useState<DealPosition | "">("");
   const [contractName, setContractName] = useState("");
   const [typeId, setTypeId] = useState("");
   const [newTypeName, setNewTypeName] = useState("");
@@ -74,10 +91,12 @@ export default function ContextStep({ onReady }: { onReady: (ctx: ContractContex
   function resetDeal() {
     setDealId("");
     setNewDealName("");
+    setNewDealPosition("");
   }
 
   const clientReady = creatingClient ? newClientName.trim() !== "" : clientId !== "";
-  const dealReady = creatingDeal ? newDealName.trim() !== "" : dealId !== "";
+  // A new deal must also declare its position (DD-50); an existing deal already has one.
+  const dealReady = creatingDeal ? newDealName.trim() !== "" && newDealPosition !== "" : dealId !== "";
   const typeReady = typeId === NEW ? newTypeName.trim() !== "" : typeId !== "";
   const ready =
     clientReady && dealReady && contractName.trim() !== "" && typeReady && origin !== "" && !submitting;
@@ -93,7 +112,11 @@ export default function ContextStep({ onReady }: { onReady: (ctx: ContractContex
         : clients.find((c) => c.id === clientId)!;
 
       const deal = creatingDeal
-        ? await createDeal({ client_id: client.id, name: newDealName.trim() })
+        ? await createDeal({
+            client_id: client.id,
+            name: newDealName.trim(),
+            position: newDealPosition || null,
+          })
         : deals.find((d) => d.id === dealId)!;
 
       const type =
@@ -123,18 +146,7 @@ export default function ContextStep({ onReady }: { onReady: (ctx: ContractContex
 
   return (
     <div className={styles.screen}>
-      <header className={styles.topbar}>
-        <div className={styles.brand}>
-          donna<span className={styles.dot}>.</span>ai
-        </div>
-        <ol className={styles.steps}>
-          <li className={styles.stepActive}>Context</li>
-          <li>Parse</li>
-          <li>Review</li>
-          <li>Commit</li>
-        </ol>
-        <div className={styles.right} />
-      </header>
+      <ImportTopBar active="context" />
 
       <div className={styles.ctxWrap}>
         <form className={styles.ctxCard} onSubmit={onSubmit}>
@@ -220,6 +232,27 @@ export default function ContextStep({ onReady }: { onReady: (ctx: ContractContex
                   </>
                 )}
               </div>
+
+              {creatingDeal && (
+                <div className={styles.field}>
+                  <label className={styles.fieldLabel} htmlFor="deal-position">
+                    Our position in this deal
+                  </label>
+                  <select
+                    id="deal-position"
+                    className={styles.control}
+                    value={newDealPosition}
+                    onChange={(e) => setNewDealPosition(e.target.value as DealPosition | "")}
+                  >
+                    <option value="">Select a position…</option>
+                    {POSITION_OPTIONS.map((p) => (
+                      <option key={p.value} value={p.value}>
+                        {p.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               <div className={styles.field}>
                 <label className={styles.fieldLabel} htmlFor="name">

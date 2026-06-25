@@ -11,16 +11,25 @@ contracts are imported as **structured data**, issues are tracked **per clause**
 an AI assistant (**Donna**) brainstorms and explains **grounded in the actual
 text**, and clean redlines are exported back to Word on demand.
 
+![The donna.ai negotiation cockpit: the structured clause tree on the left, and Donna answering grounded questions on the right — listing the open issues and summarising our recorded position on a clause, each cited to the source clause.](docs/assets/cockpit-donna.png)
+
+<sub>The negotiation cockpit on a sample joint-venture agreement. Donna answers only from the contract and the issue ledger, with clickable clause citations — she reads and explains, never gives legal advice.</sub>
+
 > Status: working local build. Architecture and data model are locked (`SPEC.md`,
 > `DESIGN_DECISIONS.md`). What runs today: the **import spine** (parse → classify
 > roles → review-and-correct → commit) with its review UI, a **home** screen of
-> recent contracts, a **negotiation cockpit** for navigating clauses and tracking
-> issues, and **Settings** for clients, deals, and contract types. Donna's grounded
-> AI surfaces (Q&A, issue recommendations) and `.docx` redline export are next.
+> recent contracts, a **negotiation cockpit** for navigating and **directly editing**
+> clauses (edit / insert / delete / drag-rearrange), tracking issues, and
+> **hover-to-define** defined terms, **`.docx` export** (clean copy, tracked-changes
+> redline, issue-list — verified round-trip content fidelity), and **Settings** for
+> clients, deals, and contract types, and **Donna** — grounded **single-contract Q&A**
+> in the cockpit, answering only from the contract with clickable clause citations,
+> read-and-explain (never legal advice). Donna's advanced surfaces (issue
+> recommendations, proactive flagging) are next.
 
 ## What it does
 
-You move through donna.ai in four beats:
+You move through donna.ai in five beats:
 
 - **Import** a `.docx`. It's parsed into a structured clause tree — front-matter,
   operative clauses, and appendices, each detected and numbered — then you review
@@ -28,12 +37,20 @@ You move through donna.ai in four beats:
   source of truth.
 - **Pick up where you left off** on the **home** screen: recent contracts as resume
   cards, each with a status badge, open-issue count, and last activity.
-- **Negotiate in the cockpit.** Open a contract, jump to any clause by number, and
-  raise issues against it — tagged by who raised them (us or the counterparty),
-  moved through a status lifecycle, and discussed in per-issue comment threads.
-- **(Coming)** Ask **Donna** for clause-grounded, cited answers, and **export** a
-  counterparty-ready redline (`.docx` tracked changes) with verified round-trip
-  content fidelity.
+- **Negotiate in the cockpit.** Open a contract, jump to any clause by number or
+  keyword, **edit / insert / delete / drag-rearrange** clauses directly, and raise
+  issues against them — tagged by who raised them (us or the counterparty), moved
+  through a status lifecycle, and discussed in per-issue comment threads. Hover a
+  defined term to see its definition.
+- **Export to Word.** From the cockpit's Export menu: a clean `.docx`, a
+  counterparty-ready **redline** (tracked changes vs the last version you sent), or
+  an **issue-list** briefing — all regenerated from the database through the
+  contract's style config, with verified round-trip content fidelity.
+- **Ask Donna.** Open the cockpit's Donna tab and ask grounded questions about the
+  contract — "what's still open?", "what does clause 12 say?" — and get cited answers
+  that jump to the clause. Read-and-explain only: she explains the contract, never
+  gives legal advice. *(Advanced surfaces — position recommendations, proactive
+  flagging — are next.)*
 
 ## Architecture
 
@@ -52,7 +69,7 @@ FastAPI (thin routes over service logic) → Postgres + pgvector.
                                                     │  HTTP (JSON)
   ┌────────────────────────────────────────────────▼─────────────────────────────────────────────────┐
   │  FastAPI (async)   backend/api/ thin routes  ──►  backend/services/ logic  ──►  raw SQL (asyncpg)  │
-  │                    imports · issues · audit · settings · health                                    │
+  │              imports · issues · nodes · audit · settings · export · defined-terms · health          │
   │                                                                                                    │
   │   IMPORT engine   import_/  parse (python-docx + OOXML) → node tree → classify roles               │
   │                   → detect refs/terms → review → commit                                          │
@@ -60,9 +77,10 @@ FastAPI (thin routes over service logic) → Postgres + pgvector.
   │   ISSUE + AUDIT   issue_repo / audit_repo   raise issue (who-raised) → status lifecycle            │
   │                   → comment threads;  every mutation appended to the audit log                     │
   │                                                                                                    │
-  │   services/donna/  (Phase 2)  grounded Q&A · issue recs · revision review  ──►  Claude (Anthropic) │
+  │   services/donna/  grounded Q&A BUILT (F10) · issue recs · revision review (Phase 2) ──► Claude     │
   │                                                                                                    │
-  │   EXPORT  (Phase 3)  ◄── snapshot → regenerate .docx via style_config → tracked changes            │
+  │   EDIT/EXPORT   direct clause edit (version + audit) · snapshot → regenerate .docx (style_config)   │
+  │                 → clean copy · tracked-changes redline · issue-list · defined-term extraction       │
   └────────────────────────────────────────────────┬─────────────────────────────────────────────────┘
                                                     │  backend/db.py · python -m backend.migrate
   ┌────────────────────────────────────────────────▼─────────────────────────────────────────────────┐
@@ -130,7 +148,7 @@ volume is gitignored and per-machine.
 | `DESIGN_DECISIONS.md` | ADR log (DD-NN), indexed in SPEC §8 |
 | `CLAUDE.md` | Project engineering rules + stack deviations |
 | `db/schema.sql` · `db/seed.sql` | Canonical data model + generic defaults (skeleton only — no data) |
-| `backend/` | FastAPI app — `api/` thin routes · `services/` (import, issues, audit, settings, `donna/`) · `models/` · `prompts/` · `config/` · `db.py` · `migrate.py` |
+| `backend/` | FastAPI app — `api/` thin routes · `services/` (import, issues, audit, settings, nodes/direct-edit, `export/`, defined_terms, clause_search, `donna/`) · `models/` · `prompts/` · `config/` · `db.py` · `migrate.py` |
 | `frontend/` | Next.js UI — `app/` routes (`/` home, `/import`, `/contracts` + `/contracts/[id]` cockpit, `/settings`) and shared `components/SiteNav.tsx` |
 | `db/` | `schema.sql` (canonical) · `seed.sql` (generic defaults) · `migrations/` (applied by `python -m backend.migrate`) |
 | `evals/` | AI output-quality harnesses (separate from `tests/`) |

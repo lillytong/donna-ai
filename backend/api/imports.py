@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
+from typing import Any
 
+import structlog
 from fastapi import APIRouter, HTTPException, Request
 
 from backend.config.settings import get_settings
@@ -25,11 +27,24 @@ from backend.models.imports import (
 )
 from backend.services.audit_repo import record_event
 from backend.services.contract_repo import fetch_nodes, insert_nodes
+from backend.services.defined_terms import extract_and_store
 from backend.services.import_.pipeline import import_docx, preview_docx
+
+log = structlog.get_logger()
 
 router = APIRouter()
 
 _DOCX_MAGIC = b"PK\x03\x04"  # .docx is a ZIP container
+
+
+async def _extract_defined_terms_safely(conn: Any, contract_id: str) -> None:
+    """Auto-populate F16 defined terms after an import commit. Isolated on purpose:
+    runs AFTER the import transaction has committed and swallows any error (logged),
+    so an extraction failure can never roll back or lose the just-committed contract."""
+    try:
+        await extract_and_store(conn, contract_id)
+    except Exception:
+        log.warning("defined_terms_extraction_failed", contract_id=contract_id, exc_info=True)
 
 
 def _write_temp(data: bytes) -> str:
@@ -66,18 +81,20 @@ async def preview_import(request: Request) -> PreviewResponse:
 
 @router.post("/contracts/{contract_id}/commit", response_model=ImportResult)
 async def commit_contract(contract_id: str, body: CommitRequest) -> ImportResult:
-    async with acquire() as conn, conn.transaction():
-        await insert_nodes(conn, contract_id, body.nodes)
-        await record_event(
-            conn,
-            AuditEvent(
-                event_type=EVENT_COMMITTED,
-                entity_type="contract",
-                entity_id=contract_id,
-                actor=get_settings().operator_actor,
-                payload={"node_count": len(body.nodes)},
-            ),
-        )
+    async with acquire() as conn:
+        async with conn.transaction():
+            await insert_nodes(conn, contract_id, body.nodes)
+            await record_event(
+                conn,
+                AuditEvent(
+                    event_type=EVENT_COMMITTED,
+                    entity_type="contract",
+                    entity_id=contract_id,
+                    actor=get_settings().operator_actor,
+                    payload={"node_count": len(body.nodes)},
+                ),
+            )
+        await _extract_defined_terms_safely(conn, contract_id)
     return ImportResult(
         contract_id=contract_id,
         node_count=len(body.nodes),

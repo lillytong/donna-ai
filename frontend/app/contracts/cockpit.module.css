@@ -167,6 +167,44 @@
 .jumpHintError {
   color: #c8102e;
 }
+/* result-kind badge in the jump hint: a semantic (by-meaning) hit reads amber —
+   the cockpit's "non-literal" family — vs a blue "Exact" literal hit, so the
+   operator always knows which kind of match landed. */
+.jumpHintBadge {
+  flex-shrink: 0;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #8a5a00;
+  background: #fff1d6;
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+.jumpHintBadgeExact {
+  color: #1d4ed8;
+  background: #eef4ff;
+}
+/* indeterminate ring so the semantic wait shows motion, never a frozen word */
+.jumpHintSpinner {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #f0dcc0;
+  border-top-color: #8a5a00;
+  animation: jumpHintSpin 0.7s linear infinite;
+}
+@keyframes jumpHintSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .jumpHintSpinner {
+    animation-duration: 1.6s;
+  }
+}
 
 /* in-bar keyword results: "N results" + ‹ › stepper, sits left of the / kbd */
 .jumpResults {
@@ -265,10 +303,58 @@
   text-transform: none;
   letter-spacing: 0;
 }
+/* tree-panel head tools (right cluster): the Rearrange toggle + Collapse all */
+.headTools {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* Rearrange ⇄ Done toggle — quiet by default, the cockpit ink fill when armed so
+   "restructure mode" reads at a glance (mirrors the segmented Us/Counterparty look). */
+.rearrangeBtn {
+  flex: none;
+  white-space: nowrap;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #374151;
+  background: #fff;
+  border: 1px solid #d4d9e0;
+  border-radius: 6px;
+  padding: 3px 9px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.rearrangeBtn:hover {
+  border-color: #2563eb;
+  color: #2563eb;
+}
+.rearrangeBtn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
+}
+.rearrangeOn {
+  color: #fff;
+  background: #1f2328;
+  border-color: #1f2328;
+}
+.rearrangeOn:hover {
+  color: #fff;
+  border-color: #1f2328;
+  background: #2b3036;
+}
+@media (prefers-reduced-motion: reduce) {
+  .rearrangeBtn {
+    transition: none;
+  }
+}
+
 /* collapse/expand-all toggle in the tree panel head (mirrors review.module.css
    .collapseAll) — spans the whole tree across all regions */
 .collapseAll {
-  margin-left: auto;
   flex: none;
   white-space: nowrap;
   font: inherit;
@@ -361,6 +447,49 @@
   font-weight: 650;
   color: #1f2328;
 }
+/* F05 hover-to-define: a known defined term inside clause text. Subtle dotted
+   underline so the dense tree isn't disrupted; the help cursor signals the
+   hover affordance. The popover (.termPopover) is rendered at the screen root
+   and fixed-positioned, so it escapes the row's single-line text clip. */
+.definedTerm {
+  border-bottom: 1px dotted #aab0b9;
+  cursor: help;
+}
+.definedTerm:hover {
+  border-bottom-color: #2563eb;
+  background: #eef4ff;
+}
+/* definition card — mirrors the jump-hint surface (white card, 8/24 shadow);
+   pointer-events:none so it never intercepts a click on the tree underneath. */
+.termPopover {
+  position: fixed;
+  max-width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 11px;
+  background: #fff;
+  border: 1px solid #e3e6ea;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(31, 35, 40, 0.12);
+  z-index: 20;
+  pointer-events: none;
+}
+.termPopoverTerm {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #1f2328;
+}
+.termPopoverDef {
+  font-size: 12px;
+  line-height: 1.45;
+  color: #374151;
+}
+.termPopoverEmpty {
+  font-size: 12px;
+  font-style: italic;
+  color: #9aa1ab;
+}
 /* DD-54 region headers (mirror review.module.css .regionHead / .regionTwirl /
    .regionHint) — CLICKABLE section labels; collapsing a region hides its rows
    and leaves only this header. A ▸/▾ twirl shows the collapsed state. */
@@ -408,6 +537,267 @@
   letter-spacing: 0.04em;
   color: #aab0b9;
 }
+/* ---- F08 / F08b: per-row actions (⋮ menu) + inline editor ----
+   The clause tree is dense, so the affordance stays QUIET: the ⋮ button is
+   invisible until the row is hovered, selected, focused, or its menu is open. */
+.actionsWrap {
+  position: relative;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-self: center;
+  margin-left: 2px;
+}
+.actions {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: #9aa1ab;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.45;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.row:hover .actions,
+.selected .actions,
+.actionsActive {
+  opacity: 1;
+}
+.actions:hover {
+  color: #2563eb;
+  background: #e6efff;
+}
+.actions:focus-visible {
+  opacity: 1;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
+}
+@media (prefers-reduced-motion: reduce) {
+  .actions {
+    transition: none;
+  }
+}
+/* popover menu (mirrors the jump-hint surface: white card, 8/24 shadow) */
+.menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 192px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: #fff;
+  border: 1px solid #e3e6ea;
+  border-radius: 9px;
+  box-shadow: 0 8px 24px rgba(31, 35, 40, 0.12);
+  z-index: 8;
+}
+.menuItem {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  color: #1f2328;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+.menuItem:hover {
+  background: #f1f4f8;
+  color: #1d4ed8;
+}
+.menuItem:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.35);
+}
+.menuItem:disabled {
+  color: #c4c8cf;
+  cursor: not-allowed;
+}
+.menuItem:disabled:hover {
+  background: none;
+  color: #c4c8cf;
+}
+.menuSep {
+  height: 1px;
+  margin: 3px 2px;
+  background: #eceef1;
+}
+/* destructive menu item — red text, red wash on hover (DD-50 blast-radius cue) */
+.menuItemDanger {
+  color: #c8102e;
+}
+.menuItemDanger:hover {
+  background: #fdecef;
+  color: #a60d26;
+}
+
+/* F08c inline delete confirm — replaces the menu items in place; quiet card, a
+   destructive primary + a calm cancel, matching the editor bar's button rhythm. */
+.confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 8px 6px;
+}
+.confirmText {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: #1f2328;
+}
+.confirmBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.confirmDelete {
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #fff;
+  background: #c8102e;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+.confirmDelete:hover {
+  background: #a60d26;
+}
+.confirmDelete:disabled {
+  background: #e6a3ad;
+  cursor: not-allowed;
+}
+.confirmCancel {
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #6b7280;
+  background: none;
+  border: 1px solid #d4d9e0;
+  border-radius: 6px;
+  padding: 5px 11px;
+  cursor: pointer;
+}
+.confirmCancel:hover {
+  border-color: #b3bac4;
+  color: #1f2328;
+}
+.confirmDelete:focus-visible,
+.confirmCancel:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
+}
+.confirmError {
+  margin: 0;
+  font-size: 12px;
+  color: #c8102e;
+}
+
+/* shared inline editor (edit-in-place + new-node), styled from cockpit tokens */
+.editor {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.editorArea {
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.4;
+  color: #1f2328;
+  background: #fff;
+  border: 1px solid #2563eb;
+  border-radius: 8px;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+  padding: 8px 10px;
+  width: 100%;
+  min-height: 52px;
+  resize: vertical;
+}
+.editorArea:focus {
+  outline: none;
+}
+.editorBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.editorSave {
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #fff;
+  background: #1f2328;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+.editorSave:disabled {
+  background: #c4c8cf;
+  cursor: not-allowed;
+}
+.editorCancel {
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #6b7280;
+  background: none;
+  border: 1px solid #d4d9e0;
+  border-radius: 6px;
+  padding: 5px 11px;
+  cursor: pointer;
+}
+.editorCancel:hover {
+  border-color: #b3bac4;
+  color: #1f2328;
+}
+.editorCancel:focus-visible,
+.editorSave:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
+}
+.editorBusy {
+  font-size: 12px;
+  color: #8a929c;
+}
+.editorError {
+  font-size: 12px;
+  color: #c8102e;
+}
+/* a standalone insert editor row, slotted into the tree at the target position */
+.insertRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 18px 8px 0;
+  border-left: 3px solid #2563eb;
+  background: #f6faff;
+}
+.insertLabel {
+  flex-shrink: 0;
+  min-width: 52px;
+  padding-top: 7px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #1d4ed8;
+}
+
 /* count of issues already anchored to this clause */
 .rowIssues {
   flex-shrink: 0;
@@ -443,6 +833,110 @@
 @media (prefers-reduced-motion: reduce) {
   .flash {
     animation: none;
+  }
+}
+
+/* ---- Rearrange (drag-and-drop) mode ----
+   Lazily mounted in place of the read tree. Rows reuse the read-tree skin (.num /
+   .text / .selected / .flash) so nothing jumps when entering the mode; the only new
+   chrome is the drag handle, a header banner, and the dragging row's drop cue. */
+.rearrange {
+  display: flex;
+  flex-direction: column;
+}
+.rearrangeBanner {
+  margin: 2px 18px 8px;
+  padding: 7px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #1d4ed8;
+  background: #f0f5ff;
+  border: 1px solid #d8e3f7;
+  border-radius: 8px;
+}
+.rearrangeError {
+  margin: 0 18px 8px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  color: #c8102e;
+  background: #fdecef;
+  border: 1px solid #f4cdd5;
+  border-radius: 8px;
+}
+.rearrangeEmpty,
+.rearrangeLoading {
+  margin: 12px 18px;
+  font-size: 12.5px;
+  color: #9aa1ab;
+}
+.rearrangeLoading {
+  font-style: italic;
+}
+/* a draggable clause row — same rhythm as .row, padding-left set inline per depth */
+.dragRow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 18px 7px 0;
+  font-size: 13.5px;
+  line-height: 1.35;
+  border-left: 3px solid transparent;
+  background: #fbfcfd;
+  cursor: pointer;
+  touch-action: none;
+}
+.dragRow:hover {
+  background: #f1f4f8;
+}
+.dragHandle {
+  flex-shrink: 0;
+  align-self: center;
+  width: 22px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: #aab0b9;
+  font-size: 14px;
+  line-height: 1;
+  cursor: grab;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.dragHandle:hover {
+  color: #2563eb;
+  background: #e6efff;
+}
+.dragHandle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
+}
+.dragHandle:active {
+  cursor: grabbing;
+}
+/* the row being dragged = the live drop indicator: a dashed blue outline at the
+   PROJECTED depth (its padding-left tracks the projected nesting), so the operator
+   sees both the target position and the new parent before releasing. */
+.dragRowGhost {
+  background: #eef4ff;
+  border: 1px dashed #2563eb;
+  border-left: 3px solid #2563eb;
+  border-radius: 7px;
+}
+.dragDepthCue {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  align-self: center;
+  border-radius: 50%;
+  background: #2563eb;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dragHandle {
+    transition: none;
   }
 }
 
@@ -580,6 +1074,88 @@
   color: #c8102e;
 }
 
+/* ---- selected-clause card (above Raise issue) ----
+   The anchored clause, previewed to 3 lines, with directly-visible edit/delete
+   icons. Editing or confirming-delete swaps the preview for the shared editor /
+   confirm; the icons hide while either is active. Same skin as .raise. */
+.selCard {
+  flex-shrink: 0;
+  margin: 14px 14px 0;
+  padding: 12px 14px;
+  background: #fbfcfd;
+  border: 1px solid #e3e6ea;
+  border-radius: 11px;
+}
+.selHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.selActions {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 2px;
+}
+.selIcon {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: #6b7280;
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.selIcon svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+.selIcon:hover {
+  color: #2563eb;
+  background: #e6efff;
+}
+.selIcon:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
+}
+.selIconDanger:hover {
+  color: #c8102e;
+  background: #fdecef;
+}
+@media (prefers-reduced-motion: reduce) {
+  .selIcon {
+    transition: none;
+  }
+}
+/* 3-line clamp with trailing ellipsis — the rest of the clause is in the tree */
+.selPreview {
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #374151;
+  white-space: pre-wrap;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+.selBody {
+  margin-top: 8px;
+}
+.selHint {
+  margin: 0;
+  font-size: 12.5px;
+  font-style: italic;
+  color: #9aa1ab;
+}
+
 /* ---- issues list ---- */
 .issues {
   padding: 4px 14px 40px;
@@ -589,7 +1165,8 @@
 }
 .issuesHead {
   display: flex;
-  align-items: baseline;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
   padding: 14px 0 4px;
   font-size: 11px;
@@ -597,6 +1174,98 @@
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: #8a929c;
+}
+.issuesCount {
+  font-variant-numeric: tabular-nums;
+}
+/* "+ new issue" affordance — the only place free-floating issues are raised (DD-66.3) */
+.newIssueBtn {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #2563eb;
+  background: transparent;
+  border: 1px solid #cdddf6;
+  border-radius: 7px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
+}
+.newIssueBtn:hover {
+  background: #eef4fe;
+  border-color: #2563eb;
+}
+.newIssueBtn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.35);
+}
+
+/* ---- DD-66: Current Clause empty state + the clause's own open-issues list ---- */
+.clauseEmpty {
+  margin: auto 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 24px 16px;
+}
+.clauseEmptyTitle {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: #1f2328;
+}
+.clauseEmptyLead {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #6b7280;
+}
+.clauseIssues {
+  padding: 0 14px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ---- DD-65.4: closed issues collapse out of the working view ---- */
+.closedSection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px solid #eceef1;
+}
+.closedToggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #8a929c;
+  background: transparent;
+  border: none;
+  padding: 2px 0;
+  cursor: pointer;
+}
+.closedToggle:hover {
+  color: #1f2328;
+}
+.closedToggle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.35);
+  border-radius: 5px;
+}
+.closedCaret {
+  font-size: 9px;
 }
 .issueCard {
   padding: 10px 12px;
@@ -624,8 +1293,18 @@
   color: #8a929c;
   background: #eef1f4;
 }
-.who {
+/* quiet created-at stamp, pushed to the right so it groups with the who tag —
+   issues aren't tied to a call, the timestamp is how the operator sees when one
+   was raised. */
+.issueTime {
   margin-left: auto;
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: #9aa1ab;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.who {
   flex-shrink: 0;
   font-size: 10px;
   font-weight: 700;
@@ -673,21 +1352,9 @@
   color: #8a5a00;
   background: #fff1d6;
 }
-.statusAgreed {
+.statusClosed {
   color: #047857;
   background: #d1fae5;
-}
-.statusDeferred {
-  color: #5b6470;
-  background: #eef1f4;
-}
-.statusKicked {
-  color: #71757c;
-  background: #eceef1;
-}
-.statusDismissed {
-  color: #9aa1ab;
-  background: #eceef1;
 }
 
 /* the title + note become a single clickable expander (reset button chrome) */
@@ -727,7 +1394,7 @@
   box-shadow: 0 1px 2px rgba(37, 99, 235, 0.08);
 }
 
-/* ---- F09: expanded detail + comment thread ---- */
+/* ---- F07/DD-67: expanded issue detail + inline description edit ---- */
 .issueDetail {
   margin-top: 10px;
   padding-top: 10px;
@@ -748,24 +1415,52 @@
   align-items: center;
   gap: 10px;
 }
-.statusSelect {
+/* DD-65: binary status set via a segmented toggle. The active segment carries the
+   issue's own semantic tint (amber = live/Open, green = resolved/Closed), so the
+   control reads its state at a glance; inactive segments stay quiet. */
+.statusToggle {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  background: #f1f3f6;
+  border: 1px solid #e2e6ec;
+  border-radius: 9px;
+}
+.statusToggleOption {
   font: inherit;
-  font-size: 13px;
-  color: #1f2328;
-  background: #fff;
-  border: 1px solid #d4d9e0;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: #6b7280;
+  background: transparent;
+  border: none;
   border-radius: 7px;
-  padding: 6px 9px;
+  padding: 5px 16px;
   cursor: pointer;
+  transition:
+    background 120ms ease,
+    color 120ms ease,
+    box-shadow 120ms ease;
 }
-.statusSelect:focus {
+.statusToggleOption:hover:not(:disabled) {
+  color: #1f2328;
+}
+.statusToggleOption:focus-visible {
   outline: none;
-  border-color: #2563eb;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.35);
 }
-.statusSelect:disabled {
-  color: #9aa1ab;
+.statusToggleOption:disabled {
   cursor: not-allowed;
+}
+.statusToggleOpen {
+  color: #8a5a00;
+  background: #fff1d6;
+  box-shadow: 0 1px 2px rgba(138, 90, 0, 0.12);
+}
+.statusToggleClosed {
+  color: #047857;
+  background: #d1fae5;
+  box-shadow: 0 1px 2px rgba(4, 120, 87, 0.12);
 }
 .statusBusy {
   font-size: 11.5px;
@@ -783,87 +1478,43 @@
   color: #6b7280;
 }
 
-.thread {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.threadMuted {
-  margin: 0;
-  font-size: 12.5px;
-  color: #9aa1ab;
-}
+/* used by the Donna tab's thread-load failure line as well */
 .threadError {
   margin: 0;
   font-size: 12.5px;
   color: #c8102e;
 }
-.commentList {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+/* DD-67 inline description edit — stacked fields reusing the .control + .detailField
+   tokens; Save/Cancel reuse the shared inline-editor buttons (.editorSave/.editorCancel). */
+.editForm {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 12px;
 }
-.comment {
-  padding: 7px 10px;
-  background: #f7f8fa;
-  border: 1px solid #eceef1;
-  border-radius: 8px;
-}
-.commentUser {
-  background: #eef4ff;
-  border-color: #d8e3f7;
-}
-.commentMeta {
+.editBar {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
-  margin-bottom: 2px;
 }
-.commentAuthor {
-  font-size: 11px;
-  font-weight: 700;
-  color: #1f2328;
-}
-.commentTime {
-  font-size: 10.5px;
-  color: #9aa1ab;
-  font-variant-numeric: tabular-nums;
-}
-.commentBody {
-  margin: 0;
-  font-size: 12.5px;
-  line-height: 1.4;
-  color: #374151;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.commentForm {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.commentInput {
-  min-height: 44px;
-  resize: vertical;
-}
-.commentSubmit {
-  align-self: flex-end;
+/* subtle text button to enter edit mode — quiet until hovered */
+.editLink {
+  align-self: flex-start;
   font: inherit;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
-  color: #fff;
-  background: #1f2328;
+  color: #2563eb;
+  background: none;
   border: none;
-  border-radius: 7px;
-  padding: 7px 14px;
+  padding: 2px 0;
   cursor: pointer;
 }
-.commentSubmit:disabled {
-  background: #c4c8cf;
-  cursor: not-allowed;
+.editLink:hover {
+  text-decoration: underline;
+}
+.editLink:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
+  border-radius: 4px;
 }
 
 /* ---- shared: loading / empty / error ---- */
@@ -1018,4 +1669,727 @@
 }
 .pickItem:hover .pickArrow {
   color: #2563eb;
+}
+
+/* ---- top-bar Export ▾ menu (SPEC §9) ----
+   A primary per-contract action in the top-right cluster. The button reuses the
+   ink-fill vocabulary (quiet outline → filled when open, like .rearrangeBtn);
+   the popover mirrors the clause ⋮ .menu surface (white card, 8/24 shadow). */
+.exportWrap {
+  position: relative;
+  flex-shrink: 0;
+}
+.exportBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1f2328;
+  background: #fff;
+  border: 1px solid #d4d9e0;
+  border-radius: 7px;
+  padding: 6px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.exportBtn:hover {
+  border-color: #2563eb;
+  color: #2563eb;
+}
+.exportBtn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
+}
+.exportBtnOn {
+  color: #fff;
+  background: #1f2328;
+  border-color: #1f2328;
+}
+.exportBtnOn:hover {
+  color: #fff;
+  border-color: #1f2328;
+  background: #2b3036;
+}
+.exportCaret {
+  font-size: 10px;
+  line-height: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .exportBtn {
+    transition: none;
+  }
+}
+/* popover (mirrors the clause ⋮ .menu surface), anchored to the top-right */
+.exportMenu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 236px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: #fff;
+  border: 1px solid #e3e6ea;
+  border-radius: 9px;
+  box-shadow: 0 8px 24px rgba(31, 35, 40, 0.12);
+  z-index: 8;
+}
+/* an export row: label left, a meta tag (.docx / Exporting…) pushed right. Layered
+   over .menuItem so it picks up the hover/disabled chrome; defined after it so the
+   flex layout wins over .menuItem's display:block. */
+.exportItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.exportItemLabel {
+  flex: 1;
+}
+.exportItemMeta {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: #9aa1ab;
+}
+.menuItem:hover .exportItemMeta {
+  color: #1d4ed8;
+}
+.menuItem:disabled .exportItemMeta {
+  color: #c4c8cf;
+}
+/* disabled Redline + its subtle "sets the baseline" hint (F15 not built yet) */
+.exportRedline {
+  display: flex;
+  flex-direction: column;
+}
+.exportRedlineHint {
+  margin: 0;
+  padding: 0 10px 4px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #aab0b9;
+}
+/* recipient-selector sub-view: a back affordance + heading above the choices */
+.exportSubHead {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px 5px 2px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #8a929c;
+}
+.exportBack {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+  color: #6b7280;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.exportBack:hover {
+  color: #2563eb;
+  background: #f1f4f8;
+}
+.exportBack:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
+}
+.exportError {
+  margin: 3px 4px 1px;
+  padding: 4px 6px;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: #c8102e;
+}
+
+/* ---- F10 Donna tab (SPEC §9) ----
+   The capture rail toggles between Issues and Donna. Donna's surface is a grounded
+   reading assistant: her answers are tied to the document, so each answer bubble
+   carries a left "grounding spine" (the cockpit accent) and every citation renders
+   as a monospace clause token — the same instrument vocabulary as the clause
+   numbers in the tree (.num) and the issue anchors (.issueAnchor). That visual rhyme
+   is the signature: an answer always points back into the spine it was drawn from. */
+
+/* Issues | New Issue | Donna tab switch, living in the rail's panel head
+   (underlined tabs). The three tabs spread across the full head width so each
+   gets breathing room and the switcher reads as a balanced segmented control. */
+.railTabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.railTab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #9aa1ab;
+  background: none;
+  border: none;
+  /* wider tabs, left-aligned (not spread): horizontal padding widens each tab;
+     first tab's left padding is offset so the group's left edge stays flush. */
+  padding: 0 18px 2px;
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+.railTab:first-child {
+  padding-left: 0;
+}
+.railTab:hover {
+  color: #6b7280;
+}
+.railTabActive {
+  color: #1f2328;
+}
+.railTabActive::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -12px;
+  height: 2px;
+  background: #2563eb;
+  border-radius: 2px;
+}
+.railTab:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.35);
+  border-radius: 4px;
+}
+.railTabCount {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: #1d4ed8;
+  background: #eef4ff;
+  border-radius: 9px;
+  padding: 1px 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Donna "Clear view" — a floating pill straddling the composer's top edge, so it
+   reads as a chat control sitting right above where the operator types. A
+   non-destructive view reset: the backend thread + running summary persist
+   (DD-40). The 0-height row keeps the pill off the layout flow; the pill is lifted
+   to overlap the composer's top border. */
+.clearFloat {
+  position: relative;
+  z-index: 2;
+  height: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+.clearFloatBtn {
+  pointer-events: auto;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #6b7280;
+  background: #fff;
+  border: 1px solid #e3e6ea;
+  border-radius: 999px;
+  padding: 7px 16px;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(31, 35, 40, 0.1), 0 0 0 3px #fbfcfd;
+  transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+.clearFloatBtn:hover {
+  color: #1d4ed8;
+  background: #eef4ff;
+  border-color: #dbe6fb;
+}
+.clearFloatBtn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
+}
+.clearFloatIcon {
+  display: inline-flex;
+  width: 13px;
+  height: 13px;
+}
+.clearFloatIcon svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* in chat mode the rail is a fixed frame: the message list scrolls, the composer
+   stays pinned (overrides .rail's own overflow-y:auto) */
+.railChat {
+  overflow: hidden;
+}
+.donnaPanel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: #fbfcfd;
+}
+.donnaScroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 14px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* thread-load + load-error (reuses .progressTrack / .phase / .threadError / .retry) */
+.donnaLoad {
+  margin: auto 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px 8px;
+  text-align: center;
+}
+
+/* empty thread — an invitation, not a blank box */
+.donnaEmpty {
+  margin: auto 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px 4px;
+}
+.donnaEmptyTitle {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: #1f2328;
+}
+.donnaEmptyLead {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #6b7280;
+}
+.exampleChips {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+.exampleChip {
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  color: #1f2328;
+  background: #fff;
+  border: 1px solid #e3e6ea;
+  border-radius: 9px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, color 0.12s ease;
+}
+.exampleChip:hover {
+  border-color: #2563eb;
+  color: #1d4ed8;
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.1);
+}
+.exampleChip:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
+}
+
+/* one chat turn */
+.msg {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-width: 88%;
+}
+.msgUser {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+.msgDonna {
+  align-self: flex-start;
+  align-items: flex-start;
+}
+/* operator's question — quiet right-aligned blue bubble */
+.bubbleUser {
+  font-size: 13px;
+  line-height: 1.45;
+  color: #1f2328;
+  background: #e6efff;
+  border: 1px solid #d8e3f7;
+  border-radius: 12px 12px 4px 12px;
+  padding: 9px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* Donna's "who" eyebrow + an optional scope/not-found marker */
+.donnaEyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: #2563eb;
+}
+.scopeTag {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: #8a5a00;
+  background: #fff1d6;
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+.notFoundTag {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: #71757c;
+  background: #eceef1;
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+/* Donna's answer — white card with the grounding spine on the left */
+.bubble {
+  border: 1px solid #e3e6ea;
+  border-left: 3px solid #2563eb;
+  border-radius: 4px 12px 12px 12px;
+  background: #fff;
+  padding: 10px 13px;
+}
+.bubbleText {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #374151;
+  word-break: break-word;
+}
+/* Donna answer markdown (rendered by renderDonnaMarkdown — paragraphs, lists,
+   bold/italic). The global reset zeroes list padding, so set it back explicitly;
+   keep lists as list-items (no flex) so the markers render. */
+.mdP {
+  margin: 0;
+}
+.mdP + .mdP,
+.mdP + .mdList,
+.mdList + .mdP,
+.mdList + .mdList {
+  margin-top: 8px;
+}
+.mdList {
+  margin: 0;
+  padding-left: 20px;
+}
+.bubbleText ol.mdList {
+  list-style: decimal;
+}
+.bubbleText ul.mdList {
+  list-style: disc;
+}
+.mdList li {
+  margin-top: 3px;
+}
+.mdList li:first-child {
+  margin-top: 0;
+}
+.bubbleText strong {
+  font-weight: 700;
+  color: #1f2328;
+}
+.bubbleText em {
+  font-style: italic;
+}
+/* honest failure — calm neutral, never an error treatment */
+.bubbleNotFound {
+  border-left-color: #c4c8cf;
+  background: #f7f8fa;
+}
+/* deflection — amber (the cockpit's counterparty/back-matter family): scoped, not
+   dodging. A footer routes the operator to the right surface (issue / lawyer). */
+.bubbleDeflected {
+  border-left-color: #b45309;
+  background: #fff8ef;
+}
+.deflectFoot {
+  margin: 8px 0 0;
+  padding-top: 8px;
+  border-top: 1px dashed #f0dcc0;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: #8a5a00;
+}
+
+/* citation chips — monospace clause tokens (rhymes with .num / .issueAnchor). A
+   clause chip is a button that jumps to + flashes its tree row; an issue chip is
+   non-jumping. */
+.cites {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+.cite {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: ui-monospace, "SF Mono", "Menlo", monospace;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #1d4ed8;
+  background: #eef4ff;
+  border: 1px solid #dbe6fb;
+  border-radius: 6px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.cite:hover {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+.cite:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
+}
+.citeArrow {
+  opacity: 0.7;
+}
+.cite:hover .citeArrow {
+  opacity: 1;
+}
+.citeIssue {
+  color: #6b7280;
+  background: #eef1f4;
+  border-color: #e0e3e8;
+  cursor: default;
+}
+.citeIssue:hover {
+  color: #6b7280;
+  background: #eef1f4;
+  border-color: #e0e3e8;
+}
+/* Citations lead the answer: the cited clauses sit ABOVE the prose, separated by
+   a hairline so the bubble reads "sources, then explanation" (the grounding spine
+   made literal). Flips .cites' bottom margin to a top divider. */
+.citesTop {
+  margin-top: 0;
+  margin-bottom: 9px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid #eef1f4;
+}
+
+/* answer-in-flight — pulsing dots + a staged label (never a frozen word) */
+.bubbleThinking {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  border-left-color: #2563eb;
+}
+.thinkingDots {
+  display: inline-flex;
+  gap: 4px;
+}
+.thinkingDots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #2563eb;
+  opacity: 0.3;
+  animation: donnaPulse 1.2s ease-in-out infinite;
+}
+.thinkingDots i:nth-child(2) {
+  animation-delay: 0.18s;
+}
+.thinkingDots i:nth-child(3) {
+  animation-delay: 0.36s;
+}
+@keyframes donnaPulse {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+.thinkingLabel {
+  font-size: 12.5px;
+  color: #6b7280;
+}
+@media (prefers-reduced-motion: reduce) {
+  .thinkingDots i {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+.askError {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: #c8102e;
+}
+
+/* composer — pinned input + send; the guard line keeps the read-and-explain scope
+   visible without implying advice */
+.composer {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px 10px;
+  border-top: 1px solid #e3e6ea;
+  background: #fff;
+}
+.composerInput {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 14px;
+  color: #1f2328;
+  background: #f4f6f9;
+  border: 1px solid #dfe3e9;
+  border-radius: 9px;
+  padding: 10px 12px;
+}
+.composerInput::placeholder {
+  color: #9aa1ab;
+}
+.composerInput:focus {
+  outline: none;
+  background: #fff;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+.composerInput:disabled {
+  background: #f0f1f3;
+  color: #9aa1ab;
+}
+.composerSend {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+  color: #fff;
+  background: #1f2328;
+  border: none;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.composerSend:hover:not(:disabled) {
+  background: #2b3036;
+}
+.composerSend:disabled {
+  background: #c4c8cf;
+  cursor: not-allowed;
+}
+.composerSend:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
+}
+.donnaGuard {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 0 14px 12px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #9aa1ab;
+  background: #fff;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cite,
+  .exampleChip,
+  .railTab,
+  .clearFloatBtn,
+  .composerSend {
+    transition: none;
+  }
+}
+
+/* ---- floating "ask Donna" button (FAB) ----
+   A persistent, quiet-but-inviting affordance fixed at the screen's bottom-right.
+   It carries Donna's identity colour — the accent blue of her answer-bubble
+   grounding spine and the monospace cite chips — so the corner that summons her
+   rhymes with where her answers live. White chat-bubble glyph, soft accent glow,
+   a small lift on hover. Sits clear of the top-right Export menu (opposite corner)
+   and is hidden on the Donna tab, so it never collides with the composer's send. */
+.donnaFab {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 12;
+  width: 52px;
+  height: 52px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: #fff;
+  background: #2563eb;
+  border: none;
+  border-radius: 50%;
+  box-shadow: 0 6px 20px rgba(37, 99, 235, 0.38), 0 1px 2px rgba(31, 35, 40, 0.12);
+  cursor: pointer;
+  transition: background 0.14s ease, box-shadow 0.14s ease, transform 0.14s ease;
+}
+.donnaFab svg {
+  width: 23px;
+  height: 23px;
+  display: block;
+}
+.donnaFab:hover {
+  background: #1d4ed8;
+  box-shadow: 0 10px 26px rgba(37, 99, 235, 0.46), 0 1px 2px rgba(31, 35, 40, 0.14);
+  transform: translateY(-1px);
+}
+.donnaFab:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.4), 0 6px 20px rgba(37, 99, 235, 0.38);
+}
+@media (prefers-reduced-motion: reduce) {
+  .donnaFab {
+    transition: none;
+  }
+  .donnaFab:hover {
+    transform: none;
+  }
 }

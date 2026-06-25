@@ -1,0 +1,148 @@
+{
+  "_comment": "Fully SYNTHETIC, generic commercial Master Services Agreement. No real client, counterparty, deal, person names, or real contract content. Invented for the F05b conceptual clause-search eval only.",
+  "contract_label": "Generic Master Services Agreement (synthetic)",
+  "candidates": [
+    {
+      "id": "c-def",
+      "role": "clause",
+      "heading": "Definitions and Interpretation",
+      "snippet": "In this Agreement the following capitalized terms have the meanings set out below; references to clauses are to clauses of this Agreement."
+    },
+    {
+      "id": "c-conf",
+      "role": "clause",
+      "heading": "Confidentiality",
+      "snippet": "Each party shall keep secret and not disclose the other party's Confidential Information and shall use it solely to perform this Agreement."
+    },
+    {
+      "id": "c-term",
+      "role": "clause",
+      "heading": "Term",
+      "snippet": "This Agreement commences on the Effective Date and continues for an initial period of three years, renewing automatically for successive one-year terms."
+    },
+    {
+      "id": "c-termination",
+      "role": "clause",
+      "heading": "Termination",
+      "snippet": "Either party may terminate this Agreement on written notice if the other commits a material breach that remains uncured for thirty days."
+    },
+    {
+      "id": "c-gov-law",
+      "role": "clause",
+      "heading": "Governing Law and Dispute Resolution",
+      "snippet": "This Agreement is governed by the laws of the stated jurisdiction and the parties submit to the exclusive jurisdiction of its courts for any dispute."
+    },
+    {
+      "id": "c-indem",
+      "role": "clause",
+      "heading": "Indemnification",
+      "snippet": "Each party shall indemnify and hold harmless the other against third-party claims, losses and expenses arising from its breach or negligence."
+    },
+    {
+      "id": "c-liability",
+      "role": "clause",
+      "heading": "Limitation of Liability",
+      "snippet": "Neither party is liable for indirect or consequential loss, and each party's aggregate liability is capped at the fees paid in the preceding twelve months."
+    },
+    {
+      "id": "c-assign",
+      "role": "clause",
+      "heading": "Assignment",
+      "snippet": "Neither party may assign, transfer or subcontract its rights or obligations under this Agreement without the prior written consent of the other party."
+    },
+    {
+      "id": "c-coc",
+      "role": "clause",
+      "heading": "Change of Control",
+      "snippet": "If a party undergoes a change of control, merger or acquisition, the other party may terminate this Agreement on notice within sixty days."
+    },
+    {
+      "id": "c-payment",
+      "role": "clause",
+      "heading": "Fees and Payment",
+      "snippet": "The Customer shall pay all undisputed invoices within thirty days of receipt; late amounts accrue interest at the stated rate."
+    },
+    {
+      "id": "c-fm",
+      "role": "clause",
+      "heading": "Force Majeure",
+      "snippet": "Neither party is in breach for failure caused by events beyond its reasonable control, including natural disaster, war or governmental action."
+    },
+    {
+      "id": "c-notices",
+      "role": "clause",
+      "heading": "Notices",
+      "snippet": "All formal notices must be in writing and delivered to the addresses set out in this Agreement by hand, courier or recorded post."
+    },
+    {
+      "id": "c-ip",
+      "role": "clause",
+      "heading": "Intellectual Property Rights",
+      "snippet": "All intellectual property, including copyright in deliverables and inventions created under this Agreement, vests in the party stated in the Schedule."
+    },
+    {
+      "id": "c-warranty",
+      "role": "clause",
+      "heading": "Representations and Warranties",
+      "snippet": "Each party represents and warrants that it has full authority to enter into this Agreement and that doing so breaches no other obligation."
+    },
+    {
+      "id": "c-noncompete",
+      "role": "clause",
+      "heading": "Non-Competition and Non-Solicitation",
+      "snippet": "During the term and for twelve months after, neither party shall solicit the other's employees or engage in directly competing activity."
+    },
+    {
+      "id": "c-data",
+      "role": "clause",
+      "heading": "Data Protection and Privacy",
+      "snippet": "Each party shall process personal data in accordance with applicable data protection law and implement appropriate technical and organizational measures."
+    },
+    {
+      "id": "c-entire",
+      "role": "clause",
+      "heading": "Entire Agreement",
+      "snippet": "This Agreement constitutes the entire agreement between the parties and supersedes all prior discussions, representations and understandings."
+    },
+    {
+      "id": "c-severability",
+      "role": "clause",
+      "heading": "Severability",
+      "snippet": "If any provision is held invalid or unenforceable, the remaining provisions continue in full force and effect."
+    },
+    {
+      "id": "c-insurance",
+      "role": "clause",
+      "heading": "Insurance",
+      "snippet": "Each party shall maintain insurance with reputable insurers covering its liabilities under this Agreement to the minimum amounts stated."
+    },
+    {
+      "id": "app-a",
+      "role": "appendix_title",
+      "heading": "Appendix A: Service Levels",
+      "snippet": "The service levels, availability targets and service credits applicable to the Services are set out in this Appendix."
+    }
+  ],
+  "cases": [
+    { "query": "secrecy", "expected_id": "c-conf" },
+    { "query": "keeping the other side's information private", "expected_id": "c-conf" },
+    { "query": "what happens if the company is bought", "expected_id": "c-coc" },
+    { "query": "limits on damages", "expected_id": "c-liability" },
+    { "query": "how long the agreement lasts", "expected_id": "c-term" },
+    { "query": "ending the contract early for breach", "expected_id": "c-termination" },
+    { "query": "which country's courts decide a dispute", "expected_id": "c-gov-law" },
+    { "query": "who covers third-party lawsuits", "expected_id": "c-indem" },
+    { "query": "can a party hand its rights to someone else", "expected_id": "c-assign" },
+    { "query": "when and how the money gets paid", "expected_id": "c-payment" },
+    { "query": "an earthquake stops one party from performing", "expected_id": "c-fm" },
+    { "query": "where do we send formal legal letters", "expected_id": "c-notices" },
+    { "query": "who owns the inventions and copyright", "expected_id": "c-ip" },
+    { "query": "promises each side makes about its authority to sign", "expected_id": "c-warranty" },
+    { "query": "rules about poaching the other side's staff", "expected_id": "c-noncompete" },
+    { "query": "handling of personal data", "expected_id": "c-data" },
+    { "query": "the meaning of capitalized terms", "expected_id": "c-def" },
+    { "query": "this document replaces everything discussed before", "expected_id": "c-entire" },
+    { "query": "the recipe for a chocolate cake", "expected_id": null },
+    { "query": "the offside rule in a football match", "expected_id": null }
+  ]
+}

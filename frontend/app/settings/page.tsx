@@ -9,6 +9,7 @@ import {
   deleteClient,
   deleteContractType,
   deleteDeal,
+  getOrganization,
   listClients,
   listContractTypes,
   listDeals,
@@ -18,13 +19,14 @@ import {
   type ClientStatus,
   type DealPosition,
   type DealStatus,
+  type OperatorOrganization,
   type RelationshipType,
   type StoredClient,
   type StoredContractType,
   type StoredDeal,
 } from "../lib/api";
 
-type Tab = "clients" | "deals" | "types";
+type Tab = "clients" | "deals" | "types" | "organization";
 
 // Enum values mirror backend/models/settings.py exactly — never invented here.
 const RELATIONSHIP_OPTIONS: { value: RelationshipType; label: string }[] = [
@@ -114,16 +116,18 @@ export default function SettingsPage() {
   const [clients, setClients] = useState<StoredClient[]>([]);
   const [deals, setDeals] = useState<StoredDeal[]>([]);
   const [types, setTypes] = useState<StoredContractType[]>([]);
+  const [org, setOrg] = useState<OperatorOrganization | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([listClients(), listDeals(), listContractTypes()])
-      .then(([c, d, t]) => {
+    Promise.all([listClients(), listDeals(), listContractTypes(), getOrganization()])
+      .then(([c, d, t, o]) => {
         setClients(c);
         setDeals(d);
         setTypes(t);
+        setOrg(o);
       })
       .catch((e) => setLoadError(e instanceof Error ? e.message : "Could not load settings"))
       .finally(() => setLoading(false));
@@ -133,10 +137,11 @@ export default function SettingsPage() {
   const reloadDeals = async () => setDeals(await listDeals());
   const reloadTypes = async () => setTypes(await listContractTypes());
 
-  const tabs: { id: Tab; label: string; count: number }[] = [
+  const tabs: { id: Tab; label: string; count?: number }[] = [
     { id: "clients", label: "Clients", count: clients.length },
     { id: "deals", label: "Deals", count: deals.length },
     { id: "types", label: "Contract types", count: types.length },
+    { id: "organization", label: "Your Organization" },
   ];
 
   return (
@@ -160,7 +165,7 @@ export default function SettingsPage() {
               onClick={() => setTab(t.id)}
             >
               {t.label}
-              <span className={styles.tabCount}>{t.count}</span>
+              {t.count !== undefined && <span className={styles.tabCount}>{t.count}</span>}
             </button>
           ))}
         </div>
@@ -183,9 +188,56 @@ export default function SettingsPage() {
               <DealsSection clients={clients} deals={deals} onCreated={reloadDeals} />
             )}
             {tab === "types" && <ContractTypesSection types={types} onCreated={reloadTypes} />}
+            {tab === "organization" && <OrganizationSection org={org} />}
           </>
         )}
       </main>
+    </div>
+  );
+}
+
+/* ---- Your Organization (F25, DD-44) ----
+   Read-only: the org identity is a config value (config/.env), not a DB entity, so
+   there is no save path here. It authors every redline / export — never "Donna". */
+
+function OrganizationSection({ org }: { org: OperatorOrganization | null }) {
+  const hasName = !!org && org.organization_name.trim() !== "";
+  return (
+    <div
+      className={styles.orgPanel}
+      role="tabpanel"
+      id="panel-organization"
+      aria-labelledby="tab-organization"
+    >
+      <div className={styles.orgCard}>
+        <h2 className={styles.formTitle}>Your Organization</h2>
+        <p className={styles.formLead}>
+          The name authored on every redline and exported document. It is what the
+          counterparty sees on each tracked change — never &ldquo;Donna&rdquo;.
+        </p>
+
+        <div className={styles.field}>
+          <label className={styles.label}>Organization name</label>
+          <div
+            className={[styles.orgValue, hasName ? "" : styles.orgValueMuted].join(" ")}
+          >
+            {hasName ? org!.organization_name : org ? `Not set — exports use “${org.export_author}”` : "—"}
+          </div>
+        </div>
+
+        <div className={styles.field}>
+          <label className={styles.label}>Document author</label>
+          <div className={styles.orgValue}>{org ? org.export_author : "—"}</div>
+        </div>
+
+        <div className={styles.orgNote}>
+          <span>
+            This is a configuration value, not an editable record. Set it per deployment
+            via <code>DONNA_OPERATOR_ORG_NAME</code> in your environment, then restart the
+            app. If unset, exports are authored as “{org ? org.export_author : "Operator Organization"}”.
+          </span>
+        </div>
+      </div>
     </div>
   );
 }

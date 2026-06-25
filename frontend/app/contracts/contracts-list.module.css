@@ -1,251 +1,461 @@
-/* Contract-list row controls (edit / delete) for /contracts. New classes only —
-   the picker shell, title, and loading/empty/error states stay in
-   cockpit.module.css (imported read-only). Same neutral skin: #f4f5f7 field,
-   #1f2328 ink, #2563eb accent, #c8102e danger, ~10px radii. */
+/* All-contracts browse surface. Mirrors the home "Jump back in" skin exactly
+   (#f4f5f7 field, #1f2328 ink, #2563eb accent, 9px card radii, status spine +
+   badge as the one place color carries meaning, mono tabular figures for
+   operator data). The page's own signature is the counterparty grouping: each
+   client is a quiet header with a mono count and a hairline rule running right,
+   echoing home's section labels — the contracts filed beneath it are the same
+   resume cards. All styles live here; nothing is imported from cockpit.module.css. */
 
-.row {
+.screen {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  background: #f4f5f7;
+  color: #1f2328;
+}
+
+.body {
+  flex: 1;
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 40px 24px 72px;
+}
+
+/* ---- header ---- */
+.eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #9aa1ab;
+}
+.eyebrowDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #2563eb;
+  flex-shrink: 0;
+}
+.title {
+  margin: 10px 0 4px;
+  font-size: 30px;
+  font-weight: 680;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+.lead {
+  margin: 0 0 22px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #6b7280;
+  max-width: 720px;
+}
+
+/* ---- search ---- */
+.searchBar {
   position: relative;
   display: flex;
-  align-items: stretch;
-  background: #fff;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.searchIcon {
+  position: absolute;
+  left: 14px;
+  display: inline-flex;
+  color: #9aa1ab;
+  pointer-events: none;
+}
+.searchInput {
+  font: inherit;
+  font-size: 14px;
+  width: 100%;
+  color: #1f2328;
+  background: #ffffff;
   border: 1px solid #e3e6ea;
   border-radius: 10px;
+  padding: 12px 40px 12px 40px;
   transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
-.row:hover {
-  border-color: #2563eb;
-  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.12);
+.searchInput::placeholder {
+  color: #9aa1ab;
 }
-.rowEditing:hover {
-  border-color: #c9d4e6;
-  box-shadow: none;
-}
-
-/* the navigating face of the row — fills the clickable area */
-.link {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex: 1;
-  min-width: 0;
-  padding: 13px 8px 13px 16px;
-  text-decoration: none;
-  color: inherit;
-}
-.link:focus-visible {
+.searchInput:focus {
   outline: none;
-  border-radius: 10px 0 0 10px;
-  box-shadow: inset 0 0 0 2px #2563eb;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
-.arrow {
-  flex-shrink: 0;
-  color: #c4c8cf;
-  font-size: 16px;
+.searchInput::-webkit-search-cancel-button {
+  appearance: none;
 }
-.row:hover .arrow {
-  color: #2563eb;
-}
-
-/* ---- row action buttons (siblings of the link, never inside the anchor) ---- */
-.actions {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 0 10px 0 2px;
-}
-.iconBtn {
+.searchClear {
+  position: absolute;
+  right: 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  padding: 0;
+  width: 28px;
+  height: 28px;
+  font-size: 18px;
+  line-height: 1;
   color: #8a929c;
   background: none;
-  border: 1px solid transparent;
-  border-radius: 8px;
+  border: none;
+  border-radius: 7px;
   cursor: pointer;
-  transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+  transition: color 0.12s ease, background 0.12s ease;
 }
-.iconBtn:hover {
-  color: #2563eb;
-  background: #eef4ff;
+.searchClear:hover {
+  color: #1f2328;
+  background: #eef1f4;
 }
-.iconBtn:focus-visible {
+.searchClear:focus-visible {
   outline: none;
-  border-color: #2563eb;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
-}
-.iconBtnDanger:hover {
-  color: #c8102e;
-  background: #fdecee;
-}
-.iconBtnDanger:focus-visible {
-  border-color: #c8102e;
-  box-shadow: 0 0 0 3px rgba(200, 16, 46, 0.14);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16);
 }
 
-/* ---- inline edit form (replaces the row face) ---- */
-.editForm {
+.summary {
+  margin: 14px 0 6px;
+  font-size: 12.5px;
+  color: #8a929c;
+}
+.summary strong {
+  font-weight: 650;
+  color: #5b6371;
+}
+
+/* ---- counterparty group ---- */
+.group {
+  margin-top: 26px;
+}
+.groupHeader {
   display: flex;
-  flex-direction: column;
-  gap: 12px;
-  flex: 1;
-  min-width: 0;
-  padding: 14px 16px 16px;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
 }
-.editGrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 12px;
+.groupName {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 680;
+  letter-spacing: -0.005em;
+  color: #1f2328;
 }
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  min-width: 0;
-}
-.label {
+.groupCount {
+  flex-shrink: 0;
+  font-family: ui-monospace, "SF Mono", "Menlo", monospace;
   font-size: 11px;
+  font-weight: 600;
+  color: #6b7280;
+  background: #eef1f4;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-variant-numeric: tabular-nums;
+}
+.groupRule {
+  flex: 1;
+  height: 1px;
+  background: #e3e6ea;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ---- contract card (the home resume card) ---- */
+.card {
+  display: block;
+  position: relative;
+  padding: 16px 18px 16px 22px;
+  background: #ffffff;
+  border: 1px solid #e3e6ea;
+  border-left: 3px solid #cbd3dc;
+  border-radius: 9px;
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
+}
+.card:hover {
+  box-shadow: 0 4px 16px rgba(31, 35, 40, 0.08);
+  transform: translateY(-1px);
+}
+.card:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+}
+
+.cardTop {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.badge {
+  flex-shrink: 0;
+  font-size: 10.5px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  border-radius: 6px;
+  padding: 4px 9px;
+}
+.type {
+  font-size: 12px;
+  color: #9aa1ab;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-family: ui-monospace, "SF Mono", "Menlo", monospace;
+  font-size: 11.5px;
+  color: #aab0b9;
+  font-variant-numeric: tabular-nums;
+}
+
+.name {
+  font-size: 16px;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  color: #1f2328;
+}
+
+.cardFoot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 13px;
+  padding-top: 12px;
+  border-top: 1px solid #f0f2f5;
+}
+.issues {
+  font-family: ui-monospace, "SF Mono", "Menlo", monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: #8a929c;
+  font-variant-numeric: tabular-nums;
+}
+.issuesHot {
+  color: #b45309;
+}
+.issuesRed {
+  color: #c8102e;
+}
+.issuesNum {
+  font-size: 13px;
+}
+.open {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  font-weight: 600;
   color: #6b7280;
 }
-.control {
-  font: inherit;
+.card:hover .open {
+  color: #2563eb;
+}
+.openArrow {
   font-size: 14px;
+  transition: transform 0.12s ease;
+}
+.card:hover .openArrow {
+  transform: translateX(2px);
+}
+
+/* ---- status spines + badges (lifted from home's language) ---- */
+.spineDraft {
+  border-left-color: #cbd3dc;
+}
+.badgeDraft {
+  color: #5b6371;
+  background: #eef1f4;
+}
+.spineNegotiating {
+  border-left-color: #e0a106;
+}
+.badgeNegotiating {
+  color: #92400e;
+  background: #fde9c8;
+}
+.spineSigned {
+  border-left-color: #15803d;
+}
+.badgeSigned {
+  color: #15803d;
+  background: #dcfce7;
+}
+
+/* ---- pagination ---- */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 32px;
+}
+.pageBtn {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
   color: #1f2328;
-  background: #fff;
+  background: #ffffff;
   border: 1px solid #d4d9e0;
   border-radius: 8px;
-  padding: 9px 11px;
-  width: 100%;
+  padding: 9px 16px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
 }
-.control:focus {
+.pageBtn:hover:not(:disabled) {
+  border-color: #2563eb;
+  color: #2563eb;
+}
+.pageBtn:focus-visible {
   outline: none;
   border-color: #2563eb;
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
-.editActions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
-}
-.btnGhost {
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  color: #1f2328;
-  background: #fff;
-  border: 1px solid #d4d9e0;
-  border-radius: 8px;
-  padding: 8px 14px;
-  cursor: pointer;
-  transition: border-color 0.12s ease, color 0.12s ease;
-}
-.btnGhost:hover {
-  border-color: #2563eb;
-  color: #2563eb;
-}
-.btnGhost:disabled {
-  color: #9aa1ab;
+.pageBtn:disabled {
+  color: #c4c8cf;
+  background: #f7f8fa;
   cursor: not-allowed;
 }
-.btnPrimary {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  color: #fff;
-  background: #1f2328;
-  border: none;
-  border-radius: 8px;
-  padding: 9px 16px;
-  cursor: pointer;
-}
-.btnPrimary:disabled {
-  background: #c4c8cf;
-  cursor: not-allowed;
+.pageInfo {
+  font-family: ui-monospace, "SF Mono", "Menlo", monospace;
+  font-size: 12px;
+  color: #6b7280;
+  font-variant-numeric: tabular-nums;
 }
 
-/* ---- destructive delete confirm (replaces the row face) ---- */
-.confirm {
+/* ---- loading (indeterminate) ---- */
+.loading {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 12px;
-  flex: 1;
-  min-width: 0;
-  padding: 13px 14px 13px 16px;
-  background: #fdf3f4;
-  border-radius: 9px;
+  padding: 56px 24px;
 }
-.confirmText {
-  flex: 1;
-  min-width: 220px;
+.loadingTrack {
+  position: relative;
+  height: 3px;
+  width: 100%;
+  max-width: 320px;
+  background: #e3e6ea;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.loadingFill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 38%;
+  background: #2563eb;
+  border-radius: 2px;
+}
+.loadingLabel {
   font-size: 13px;
-  line-height: 1.4;
-  color: #1f2328;
+  color: #6b7280;
 }
-.confirmName {
-  font-weight: 650;
-}
-.confirmActions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-left: auto;
-}
-.btnDanger {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  color: #fff;
-  background: #c8102e;
-  border: none;
-  border-radius: 8px;
-  padding: 9px 16px;
-  cursor: pointer;
-}
-.btnDanger:hover {
-  background: #a60d26;
-}
-.btnDanger:disabled {
-  background: #e2a0aa;
-  cursor: not-allowed;
-}
-
-/* inline error, surfaced from the backend `detail` — never white-screen */
-.rowError {
-  margin: 0;
-  font-size: 12.5px;
-  line-height: 1.4;
-  color: #c8102e;
-}
-
-/* tiny spinner so busy buttons show motion, not a frozen word */
-.spin {
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.45);
-  border-top-color: #fff;
-  animation: spin 0.7s linear infinite;
-}
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
+@media (prefers-reduced-motion: no-preference) {
+  .loadingFill {
+    animation: loadingSlide 1.15s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  }
+  @keyframes loadingSlide {
+    0% {
+      transform: translateX(-110%);
+    }
+    100% {
+      transform: translateX(380%);
+    }
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .spin {
-    animation: none;
+
+/* ---- empty / no-match / error ---- */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+  margin-top: 8px;
+  padding: 64px 24px;
+  background: #ffffff;
+  border: 1px dashed #d4d9e0;
+  border-radius: 12px;
+}
+.emptyMark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: #eef4ff;
+  color: #2563eb;
+  font-size: 22px;
+  font-weight: 700;
+}
+.emptyTitle {
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.emptyHint {
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: #6b7280;
+  max-width: 360px;
+}
+.emptyCta {
+  margin-top: 6px;
+  display: inline-block;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: #2563eb;
+  border: none;
+  border-radius: 8px;
+  padding: 11px 20px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.emptyCta:hover {
+  background: #1d4ed8;
+}
+
+/* ---- page-load reveal (subtle, staggered) ---- */
+@media (prefers-reduced-motion: no-preference) {
+  .reveal {
+    opacity: 0;
+    transform: translateY(8px);
+    animation: cardIn 0.42s cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
+  }
+  @keyframes cardIn {
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+@media (max-width: 560px) {
+  .cardTop {
+    flex-wrap: wrap;
+  }
+  .activity {
+    margin-left: 0;
+  }
+  .title {
+    font-size: 25px;
   }
 }

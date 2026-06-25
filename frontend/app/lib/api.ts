@@ -197,16 +197,28 @@ export interface StoredContract {
   created_at: string;
 }
 
+// Carries the HTTP status alongside the `detail` message so callers can branch on
+// it (e.g. redline's 409 → "send a clean copy first" hint, not a raw error). Stays
+// an Error subclass, so existing `e instanceof Error ? e.message` paths are intact.
+export class ApiError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 // Surface the backend's `detail` (e.g. the 409 FK-guard message) rather than a
 // bare status code, so the UI can show "Can't delete: N contracts reference…".
 async function errorFrom(res: Response): Promise<Error> {
   try {
     const body = await res.json();
-    if (body && typeof body.detail === "string") return new Error(body.detail);
+    if (body && typeof body.detail === "string") return new ApiError(body.detail, res.status);
   } catch {
     // non-JSON body — fall through to the status-code message
   }
-  return new Error(`Request failed (${res.status})`);
+  return new ApiError(`Request failed (${res.status})`, res.status);
 }
 
 async function getJson<T>(path: string): Promise<T> {
@@ -234,6 +246,13 @@ async function deleteReq(path: string): Promise<void> {
   if (!res.ok) throw await errorFrom(res);
 }
 
+// DELETE that returns a JSON body (e.g. node delete → { deleted_ids }).
+async function deleteJson<T>(path: string): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, { method: "DELETE" });
+  if (!res.ok) throw await errorFrom(res);
+  return res.json();
+}
+
 export const listClients = (): Promise<StoredClient[]> => getJson("/clients");
 export const createClient = (payload: ClientCreate): Promise<StoredClient> =>
   postJson("/clients", payload);
@@ -249,6 +268,18 @@ export const updateDeal = (id: string, payload: DealUpdate): Promise<StoredDeal>
   patchJson(`/deals/${id}`, payload);
 export const deleteDeal = (id: string): Promise<void> => deleteReq(`/deals/${id}`);
 
+// --- Operator organization (F25, DD-44) ------------------------------------
+// The operator's org identity. A config value (config/.env), not a DB entity, so
+// it is read-only here: `editable` is false and there is no write path.
+// `export_author` is the name authored on every redline / export — never "Donna".
+export interface OperatorOrganization {
+  organization_name: string;
+  export_author: string;
+  editable: boolean;
+}
+
+export const getOrganization = (): Promise<OperatorOrganization> => getJson("/organization");
+
 export const listContractTypes = (): Promise<StoredContractType[]> => getJson("/contract-types");
 export const createContractType = (payload: ContractTypeCreate): Promise<StoredContractType> =>
   postJson("/contract-types", payload);
@@ -263,8 +294,8 @@ export const createContract = (payload: ContractCreate): Promise<StoredContract>
 
 export const listContracts = (): Promise<StoredContract[]> => getJson("/contracts");
 
-// Contract edit/rename + delete (delete CASCADES the contract's clauses + issues +
-// comments — the UI must confirm first).
+// Contract edit/rename + delete (delete CASCADES the contract's clauses + issues —
+// the UI must confirm first).
 export interface ContractUpdate {
   name?: string;
   contract_type_id?: string;
@@ -308,6 +339,7 @@ export interface IssueCreate {
   node_id?: string | null;
   title: string;
   our_position?: string | null;
+  their_position?: string | null;
   initiator?: Initiator;
 }
 
@@ -334,7 +366,7 @@ export const listIssues = (contractId: string): Promise<StoredIssue[]> =>
 export const createIssue = (contractId: string, payload: IssueCreate): Promise<StoredIssue> =>
   postJson(`/contracts/${contractId}/issues`, payload);
 
-export type IssueStatus = "open" | "agreed" | "deferred" | "kicked" | "dismissed";
+export type IssueStatus = "open" | "closed";
 
 export const updateIssueStatus = (
   issueId: string,
@@ -342,24 +374,15 @@ export const updateIssueStatus = (
   decision?: Record<string, unknown> | null,
 ): Promise<StoredIssue> => patchJson(`/issues/${issueId}/status`, { status, decision: decision ?? null });
 
-// Append-only comment thread on an issue (F09). actor is "user" for operator entries.
-export type CommentActor = "user" | "ai" | "principal";
-
-export interface StoredComment {
-  id: string;
-  issue_id: string;
-  actor: string;
-  content: string;
-  created_at: string;
+// Inline edit of an issue's description (DD-67). Only the provided fields update;
+// omitted fields are left untouched. Returns the full updated issue.
+export interface IssueUpdate {
+  title?: string;
+  our_position?: string | null;
+  their_position?: string | null;
 }
-
-export const listComments = (issueId: string): Promise<StoredComment[]> =>
-  getJson(`/issues/${issueId}/comments`);
-
-export const addComment = (
-  issueId: string,
-  payload: { actor: CommentActor; content: string },
-): Promise<StoredComment> => postJson(`/issues/${issueId}/comments`, payload);
+export const updateIssue = (issueId: string, payload: IssueUpdate): Promise<StoredIssue> =>
+  patchJson(`/issues/${issueId}`, payload);
 
 // Conceptual clause search (F-jump): the AI fallback the cockpit fires on Enter
 // when an exact keyword query has zero literal matches. Returns the best-matching
@@ -373,3 +396,215 @@ export const searchClause = (
   contractId: string,
   query: string,
 ): Promise<ClauseSearchResult> => postJson(`/contracts/${contractId}/clause-search`, { query });
+
+// --- Cockpit: inline node edit (F08) + node insert (F08b) -------------------
+// Both mirror backend/models/imports.py StoredNode (the flat row read-back) and
+// backend/models/nodes.py request shapes. Edit rewrites the node's body (else
+// heading); insert lands a new node after `after_node_id` within `parent_id`
+// (after_node_id=null appends as the last child). Numbers are NOT carried — the
+// cockpit re-derives them from tree position (DD-02) after the local mutation.
+
+// A node as read back from the DB (flat row) — the response for both edit + insert.
+export interface StoredNode {
+  id: string;
+  parent_id: string | null;
+  order_index: number;
+  content_type: string;
+  heading: string | null;
+  body: string | null;
+  table_data: string[][] | null;
+  plain_text: string | null;
+  role: Role;
+  has_placeholder: boolean;
+}
+
+export interface NodeCreate {
+  parent_id: string | null;
+  after_node_id: string | null;
+  before_node_id?: string | null;
+  text: string;
+  role?: string;
+}
+
+export const editNode = (
+  contractId: string,
+  nodeId: string,
+  text: string,
+): Promise<StoredNode> => patchJson(`/contracts/${contractId}/nodes/${nodeId}`, { text });
+
+export const createNode = (contractId: string, payload: NodeCreate): Promise<StoredNode> =>
+  postJson(`/contracts/${contractId}/nodes`, payload);
+
+// Soft-delete a node and its whole sub-tree (cockpit ⋮ menu). Mirrors backend/
+// models/nodes.py NodeDeleteResponse — returns every removed id (the node plus
+// all descendants) so the cockpit can drop them from local state and re-derive
+// numbers (DD-02).
+export interface NodeDeleteResponse {
+  deleted_ids: string[];
+}
+
+export const deleteNode = (
+  contractId: string,
+  nodeId: string,
+): Promise<NodeDeleteResponse> => deleteJson(`/contracts/${contractId}/nodes/${nodeId}`);
+
+// Reparent + reposition a clause (carrying its whole sub-tree) anywhere in the
+// tree — the cockpit's Rearrange (drag-and-drop) target. `parent_id` is the new
+// parent (null = top level); the anchor is `after_node_id` OR `before_node_id`
+// (mutually exclusive; neither = append as the parent's last child). Rejects a
+// cycle (moving into own sub-tree) with 422 → surfaced via `detail`. `moved:false`
+// means the position was unchanged. Numbers re-derive from position, so the
+// cockpit re-fetches the tree on a real move (DD-02).
+export interface NodeMoveRequest {
+  parent_id: string | null;
+  after_node_id: string | null;
+  before_node_id: string | null;
+}
+export interface NodeMoveResponse {
+  moved: boolean;
+  node_id: string;
+  parent_id: string | null;
+}
+
+export const moveNode = (
+  contractId: string,
+  nodeId: string,
+  body: NodeMoveRequest,
+): Promise<NodeMoveResponse> =>
+  postJson(`/contracts/${contractId}/nodes/${nodeId}/move`, body);
+
+// --- Cockpit: defined terms (F05 hover-to-define, unblocked by F16) ----------
+// Mirrors the backend GET /contracts/{id}/defined-terms response. `definition` is
+// null when the term was introduced but no "means" clause was captured;
+// `source_node_id` is the node the term was defined in (may be null).
+export interface DefinedTerm {
+  id: string;
+  deal_id: string;
+  term: string;
+  definition: string | null;
+  source_node_id: string | null;
+}
+
+export interface DefinedTermsResponse {
+  deal_id: string;
+  terms: DefinedTerm[];
+}
+
+export const getDefinedTerms = (contractId: string): Promise<DefinedTermsResponse> =>
+  getJson(`/contracts/${contractId}/defined-terms`);
+
+// --- Cockpit: document export (SPEC §9) -------------------------------------
+// These endpoints stream a .docx (binary), not JSON, so they bypass the JSON
+// helpers above. Each cuts a server-side snapshot and hands the browser a file
+// to save. The recipient on a clean copy sets the version pointer server-side.
+export type ExportRecipient = "counterparty" | "legal" | "internal" | "copy_only";
+
+// Pull the server-set name out of Content-Disposition (RFC 5987 filename*= wins
+// over a plain filename=); fall back to the caller's default when absent.
+function filenameFromDisposition(header: string | null, fallback: string): string {
+  if (!header) return fallback;
+  const star = /filename\*=(?:UTF-8'')?([^;]+)/i.exec(header);
+  if (star) {
+    try {
+      return decodeURIComponent(star[1].trim().replace(/^["']|["']$/g, ""));
+    } catch {
+      // malformed encoding — fall through to the plain filename
+    }
+  }
+  const plain = /filename="?([^";]+)"?/i.exec(header);
+  return plain ? plain[1].trim() : fallback;
+}
+
+// Fetch a .docx stream and trigger a browser download. Surfaces the backend
+// `detail` on failure (same contract as errorFrom). The object URL is revoked
+// right after the click so it doesn't leak.
+async function downloadDocx(
+  method: "GET" | "POST",
+  path: string,
+  fallbackName: string,
+  payload?: unknown,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method,
+    ...(payload === undefined
+      ? {}
+      : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }),
+  });
+  if (!res.ok) throw await errorFrom(res);
+  const blob = await res.blob();
+  const name = filenameFromDisposition(res.headers.get("Content-Disposition"), fallbackName);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// Clean copy: POST cuts a snapshot for the chosen recipient and streams the .docx.
+export const exportCleanCopy = (contractId: string, recipient: ExportRecipient): Promise<void> =>
+  downloadDocx("POST", `/contracts/${contractId}/export`, "contract.docx", { recipient });
+
+// Issue list: GET streams the call's issue list as a .docx.
+export const exportIssueList = (contractId: string): Promise<void> =>
+  downloadDocx("GET", `/contracts/${contractId}/issue-list/export`, "issue-list.docx");
+
+// Redline: POST cuts a tracked-changes .docx of the working tree against the
+// baseline snapshot (the last clean copy sent to the counterparty). snapshot_id:null
+// targets that default baseline. Throws an ApiError with status 409 when no baseline
+// exists yet (nothing has been sent) — the cockpit turns that into the friendly
+// "send a clean copy first" hint rather than a raw error.
+export const exportRedline = (contractId: string): Promise<void> =>
+  downloadDocx("POST", `/contracts/${contractId}/redline-export`, "redline.docx", {
+    snapshot_id: null,
+  });
+
+// --- Donna tab: single-contract grounded Q&A (F10, SPEC §9) ----------------
+// Read-and-explain only — Donna locates / explains / status-briefs over THIS
+// contract's nodes + issue ledger; she never advises (DD-14). `citations` are
+// node ids (and may include issue ids) the answer drew from; the cockpit resolves
+// each to a clickable clause chip. `kind` drives the answer treatment: a normal
+// `answer`, an honest `not_found`, or a `deflected` (out-of-scope) reply.
+export type DonnaAnswerKind = "answer" | "not_found" | "deflected";
+
+export interface DonnaAnswer {
+  answer: string;
+  citations: string[];
+  kind: DonnaAnswerKind;
+  deflected: boolean;
+}
+
+// Persistent per-contract thread (DD-40). Stored messages carry only role + text;
+// citation chips + `kind` styling are live on a fresh ask, so loaded history
+// renders as plain grounded answers.
+export type DonnaMessageRole = "user" | "assistant";
+
+export interface DonnaThreadMessage {
+  role: DonnaMessageRole;
+  content: string;
+}
+
+export interface DonnaThread {
+  conversation_id: string;
+  running_summary: string | null;
+  messages: DonnaThreadMessage[];
+}
+
+export const getDonnaThread = (contractId: string): Promise<DonnaThread> =>
+  getJson(`/contracts/${contractId}/donna/thread`);
+
+export const askDonna = (contractId: string, question: string): Promise<DonnaAnswer> =>
+  postJson(`/contracts/${contractId}/donna/ask`, { question });
+
+// Map an ask/thread failure to an operator-facing line. A 429 (rate limit) gets a
+// friendly "catching her breath" message; everything else surfaces the backend
+// `detail` carried on ApiError, with a plain fallback.
+export function donnaErrorMessage(e: unknown): string {
+  if (e instanceof ApiError && e.status === 429) {
+    return "Donna's catching her breath — give it a moment and ask again.";
+  }
+  if (e instanceof Error && e.message) return e.message;
+  return "Donna couldn't answer just now. Try again.";
+}

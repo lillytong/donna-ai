@@ -1,4 +1,4 @@
-"""Issue + comment routes: request parsing, response shape, status codes.
+"""Issue routes: request parsing, response shape, status codes.
 
 The DB and repo boundaries are mocked — no live database. TestClient is used
 without its context manager so the app lifespan (pool open/close) never runs.
@@ -13,7 +13,7 @@ from typing import Any
 
 from backend.api import issues as issues_api
 from backend.models.audit import AuditEvent, StoredAuditEvent
-from backend.models.issues import StoredComment, StoredIssue
+from backend.models.issues import StoredIssue
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -154,10 +154,10 @@ def test_list_issues_passes_status_filter(monkeypatch: Any) -> None:
     monkeypatch.setattr(issues_api, "acquire", _fake_acquire)
     monkeypatch.setattr(issues_api.issue_repo, "list_issues", fake_list)
 
-    resp = client.get("/contracts/c1/issues?status=agreed")
+    resp = client.get("/contracts/c1/issues?status=closed")
     assert resp.status_code == 200
     assert captured["contract_id"] == "c1"
-    assert captured["status"] == "agreed"
+    assert captured["status"] == "closed"
 
 
 def test_get_issue_not_found(monkeypatch: Any) -> None:
@@ -176,7 +176,7 @@ def test_update_status_returns_resolved_issue(monkeypatch: Any) -> None:
         return issue_id
 
     async def fake_get(_conn: Any, issue_id: str) -> StoredIssue:
-        return _stored_issue(issue_id, status="agreed", resolved_at=_NOW)
+        return _stored_issue(issue_id, status="closed", resolved_at=_NOW)
 
     monkeypatch.setattr(issues_api, "acquire", _fake_acquire)
     monkeypatch.setattr(issues_api, "record_event", _noop_record)
@@ -185,11 +185,11 @@ def test_update_status_returns_resolved_issue(monkeypatch: Any) -> None:
 
     resp = client.patch(
         "/issues/issue-1/status",
-        json={"status": "agreed", "decision": {"verdict": "accept_theirs"}},
+        json={"status": "closed", "decision": {"verdict": "accept_theirs"}},
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["status"] == "agreed"
+    assert body["status"] == "closed"
     assert body["resolved_at"] is not None
 
 
@@ -200,45 +200,81 @@ def test_update_status_not_found(monkeypatch: Any) -> None:
     monkeypatch.setattr(issues_api, "acquire", _fake_acquire)
     monkeypatch.setattr(issues_api.issue_repo, "update_issue_status", fake_update)
 
-    resp = client.patch("/issues/missing/status", json={"status": "kicked"})
+    resp = client.patch("/issues/missing/status", json={"status": "closed"})
     assert resp.status_code == 404
 
 
 def test_update_status_rejects_bad_status() -> None:
-    resp = client.patch("/issues/issue-1/status", json={"status": "closed"})
+    resp = client.patch("/issues/issue-1/status", json={"status": "agreed"})
     assert resp.status_code == 422
 
 
-def test_create_comment_overrides_issue_id_from_path(monkeypatch: Any) -> None:
+def test_edit_issue_updates_description(monkeypatch: Any) -> None:
     captured: dict[str, Any] = {}
 
-    async def fake_add(_conn: Any, payload: Any) -> str:
+    async def fake_update(_conn: Any, issue_id: str, payload: Any) -> str:
         captured["payload"] = payload
-        return "comment-1"
+        return issue_id
 
-    async def fake_list(_conn: Any, issue_id: str) -> list[StoredComment]:
-        return [
-            StoredComment(
-                id="comment-1",
-                issue_id=issue_id,
-                actor="user",
-                content="note",
-                created_at=_NOW,
-            )
-        ]
+    async def fake_get(_conn: Any, issue_id: str) -> StoredIssue:
+        return _stored_issue(issue_id, title="Royalty rate (revised)", our_position="4%")
 
     monkeypatch.setattr(issues_api, "acquire", _fake_acquire)
     monkeypatch.setattr(issues_api, "record_event", _noop_record)
-    monkeypatch.setattr(issues_api.issue_repo, "add_comment", fake_add)
-    monkeypatch.setattr(issues_api.issue_repo, "list_comments", fake_list)
+    monkeypatch.setattr(issues_api.issue_repo, "update_issue", fake_update)
+    monkeypatch.setattr(issues_api.issue_repo, "get_issue", fake_get)
 
-    resp = client.post(
-        "/issues/issue-1/comments",
-        json={"issue_id": "ignored", "actor": "user", "content": "note"},
+    resp = client.patch(
+        "/issues/issue-1",
+        json={"title": "Royalty rate (revised)", "our_position": "4%"},
     )
     assert resp.status_code == 200
-    assert resp.json()["id"] == "comment-1"
-    assert captured["payload"].issue_id == "issue-1"
+    body = resp.json()
+    assert body["title"] == "Royalty rate (revised)"
+    assert body["our_position"] == "4%"
+    # only the provided fields are carried to the repo (exclude_unset)
+    assert captured["payload"].model_dump(exclude_unset=True) == {
+        "title": "Royalty rate (revised)",
+        "our_position": "4%",
+    }
+
+
+def test_edit_issue_not_found(monkeypatch: Any) -> None:
+    async def fake_update(_conn: Any, _issue_id: str, _payload: Any) -> None:
+        return None
+
+    monkeypatch.setattr(issues_api, "acquire", _fake_acquire)
+    monkeypatch.setattr(issues_api.issue_repo, "update_issue", fake_update)
+
+    resp = client.patch("/issues/missing", json={"title": "x"})
+    assert resp.status_code == 404
+
+
+def test_edit_issue_records_audit_event(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_update(_conn: Any, issue_id: str, _payload: Any) -> str:
+        return issue_id
+
+    async def fake_get(_conn: Any, issue_id: str) -> StoredIssue:
+        return _stored_issue(issue_id)
+
+    async def capture_record(_conn: Any, event: AuditEvent) -> StoredAuditEvent:
+        captured["event"] = event
+        return await _noop_record(_conn, event)
+
+    monkeypatch.setattr(issues_api, "acquire", _fake_acquire)
+    monkeypatch.setattr(issues_api, "record_event", capture_record)
+    monkeypatch.setattr(issues_api.issue_repo, "update_issue", fake_update)
+    monkeypatch.setattr(issues_api.issue_repo, "get_issue", fake_get)
+
+    resp = client.patch("/issues/issue-1", json={"their_position": "5%"})
+    assert resp.status_code == 200
+    event = captured["event"]
+    assert event.event_type == "updated"
+    assert event.entity_type == "issue"
+    assert event.entity_id == "issue-1"
+    assert event.payload == {"fields": ["their_position"]}
 
 
 def test_create_issue_records_audit_event(monkeypatch: Any) -> None:
@@ -274,7 +310,7 @@ def test_update_status_records_audit_event(monkeypatch: Any) -> None:
         return issue_id
 
     async def fake_get(_conn: Any, issue_id: str) -> StoredIssue:
-        return _stored_issue(issue_id, status="agreed", resolved_at=_NOW)
+        return _stored_issue(issue_id, status="closed", resolved_at=_NOW)
 
     async def capture_record(_conn: Any, event: AuditEvent) -> StoredAuditEvent:
         captured["event"] = event
@@ -285,61 +321,10 @@ def test_update_status_records_audit_event(monkeypatch: Any) -> None:
     monkeypatch.setattr(issues_api.issue_repo, "update_issue_status", fake_update)
     monkeypatch.setattr(issues_api.issue_repo, "get_issue", fake_get)
 
-    resp = client.patch("/issues/issue-1/status", json={"status": "agreed"})
+    resp = client.patch("/issues/issue-1/status", json={"status": "closed"})
     assert resp.status_code == 200
     event = captured["event"]
     assert event.event_type == "status_changed"
     assert event.entity_type == "issue"
     assert event.entity_id == "issue-1"
-    assert event.payload == {"status": "agreed"}
-
-
-def test_create_comment_records_audit_event(monkeypatch: Any) -> None:
-    captured: dict[str, Any] = {}
-
-    async def fake_add(_conn: Any, payload: Any) -> str:
-        return "comment-1"
-
-    async def fake_list(_conn: Any, issue_id: str) -> list[StoredComment]:
-        return [
-            StoredComment(
-                id="comment-1", issue_id=issue_id, actor="user", content="note", created_at=_NOW
-            )
-        ]
-
-    async def capture_record(_conn: Any, event: AuditEvent) -> StoredAuditEvent:
-        captured["event"] = event
-        return await _noop_record(_conn, event)
-
-    monkeypatch.setattr(issues_api, "acquire", _fake_acquire)
-    monkeypatch.setattr(issues_api, "record_event", capture_record)
-    monkeypatch.setattr(issues_api.issue_repo, "add_comment", fake_add)
-    monkeypatch.setattr(issues_api.issue_repo, "list_comments", fake_list)
-
-    resp = client.post("/issues/issue-1/comments", json={"actor": "user", "content": "note"})
-    assert resp.status_code == 200
-    event = captured["event"]
-    assert event.event_type == "comment_added"
-    assert event.entity_type == "issue"
-    assert event.entity_id == "issue-1"
-
-
-def test_create_comment_rejects_bad_actor() -> None:
-    resp = client.post("/issues/issue-1/comments", json={"actor": "robot", "content": "hi"})
-    assert resp.status_code == 422
-
-
-def test_list_comments_chronological(monkeypatch: Any) -> None:
-    async def fake_list(_conn: Any, issue_id: str) -> list[StoredComment]:
-        return [
-            StoredComment(id="c1", issue_id=issue_id, actor="user", content="a", created_at=_NOW),
-            StoredComment(id="c2", issue_id=issue_id, actor="ai", content="b", created_at=_NOW),
-        ]
-
-    monkeypatch.setattr(issues_api, "acquire", _fake_acquire)
-    monkeypatch.setattr(issues_api.issue_repo, "list_comments", fake_list)
-
-    resp = client.get("/issues/issue-1/comments")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert [c["id"] for c in body] == ["c1", "c2"]
+    assert event.payload == {"status": "closed"}

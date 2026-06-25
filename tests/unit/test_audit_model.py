@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 from backend.models.audit import (
-    EVENT_COMMENT_ADDED,
     EVENT_COMMITTED,
     EVENT_CREATED,
     EVENT_STATUS_CHANGED,
@@ -43,7 +42,6 @@ def test_event_type_constants_are_free_form_strings() -> None:
     assert EVENT_UPDATED == "updated"
     assert EVENT_STATUS_CHANGED == "status_changed"
     assert EVENT_COMMITTED == "committed"
-    assert EVENT_COMMENT_ADDED == "comment_added"
     # constants are advisory: arbitrary event types are still accepted
     event = AuditEvent(event_type="exported", entity_type="contract", actor="operator")
     assert event.event_type == "exported"

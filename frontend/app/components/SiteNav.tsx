@@ -29,7 +29,10 @@ function isActive(pathname: string, href: string): boolean {
 
 export default function SiteNav(): React.JSX.Element | null {
   const pathname = usePathname();
-  if (/^\/contracts\/.+/.test(pathname)) return null;
+  // The cockpit and the import flow are focused, self-contained surfaces that own
+  // their own top bar (ImportTopBar on /import) — the global bar steps aside so it
+  // never doubles up. Every other route keeps the persistent SiteNav.
+  if (/^\/contracts\/.+/.test(pathname) || pathname === "/import") return null;
 
   return (
     <header className={styles.bar}>

@@ -1,17 +1,18 @@
-"""Persistence for issues and their comment threads (F06/F07/F08c/F09) — asyncpg.
-DB integration only, no business logic.
+"""Persistence for issues (F06/F07/F08c/F09) — asyncpg. DB integration only, no
+business logic.
 
-The FK chain (issues.contract_id, issues.node_id, issue_comments.issue_id) is
-enforced by the schema: a create with a non-existent parent id is rejected by
-Postgres, not re-checked here. Creates return the generated id as str; the route
-reads the row back so server defaults (status, initiator, created_at) are
-reflected. JSONB columns (auto_flag, decision, donna_research_citations) come back
-as text under asyncpg's default codec and are decoded on read.
+The FK chain (issues.contract_id, issues.node_id) is enforced by the schema: a
+create with a non-existent parent id is rejected by Postgres, not re-checked here.
+Creates return the generated id as str; the route reads the row back so server
+defaults (status, initiator, created_at) are reflected. JSONB columns (auto_flag,
+decision, donna_research_citations) come back as text under asyncpg's default
+codec and are decoded on read.
 
 On this surface the operator flags who raised the issue (`operator` or
 `counterparty`), carried in on the create payload; Donna's analysis columns are
 left null at creation. A status that is not 'open' is terminal, so `resolved_at`
 is stamped on transition to a terminal status and cleared if an issue is reopened.
+The description (title + position text) is editable post-creation (DD-67).
 """
 
 from __future__ import annotations
@@ -20,10 +21,9 @@ import json
 from typing import Any
 
 from backend.models.issues import (
-    CommentCreate,
     IssueCreate,
+    IssueEditRequest,
     IssueStatusUpdate,
-    StoredComment,
     StoredIssue,
 )
 
@@ -136,44 +136,18 @@ async def update_issue_status(conn: Any, issue_id: str, payload: IssueStatusUpda
     return str(updated_id) if updated_id is not None else None
 
 
-# --- comments --------------------------------------------------------------
-
-_INSERT_COMMENT = """
-INSERT INTO issue_comments (issue_id, actor, content)
-VALUES ($1, $2, $3)
-RETURNING id
-"""
-
-_SELECT_COMMENT = """
-SELECT id, issue_id, actor, content, snapshot_id, created_at
-FROM issue_comments
-"""
-
-_LIST_COMMENTS = _SELECT_COMMENT + "WHERE issue_id = $1 ORDER BY created_at"
-
-
-def _to_comment(record: Any) -> StoredComment:
-    snapshot_id = record["snapshot_id"]
-    return StoredComment(
-        id=str(record["id"]),
-        issue_id=str(record["issue_id"]),
-        actor=record["actor"],
-        content=record["content"],
-        snapshot_id=str(snapshot_id) if snapshot_id is not None else None,
-        created_at=record["created_at"],
-    )
-
-
-async def add_comment(conn: Any, payload: CommentCreate) -> str:
-    new_id = await conn.fetchval(
-        _INSERT_COMMENT,
-        payload.issue_id,
-        payload.actor,
-        payload.content,
-    )
-    return str(new_id)
-
-
-async def list_comments(conn: Any, issue_id: str) -> list[StoredComment]:
-    records = await conn.fetch(_LIST_COMMENTS, issue_id)
-    return [_to_comment(r) for r in records]
+# Edit the description (title + position text) post-creation (DD-67). Only fields
+# present on the request are written (model_dump(exclude_unset=...)): an omitted
+# field is left untouched, an explicit null clears a position. Column names come
+# from the fixed Pydantic model, never user input, so the dynamic SET is safe. An
+# empty patch is a no-op that still confirms the row exists (None == not found).
+async def update_issue(conn: Any, issue_id: str, payload: IssueEditRequest) -> str | None:
+    fields = payload.model_dump(exclude_unset=True)
+    if not fields:
+        existing = await conn.fetchval("SELECT id FROM issues WHERE id = $1", issue_id)
+        return str(existing) if existing is not None else None
+    cols = list(fields.keys())
+    assignments = ", ".join(f"{col} = ${i + 2}" for i, col in enumerate(cols))
+    sql = f"UPDATE issues SET {assignments} WHERE id = $1 RETURNING id"
+    updated_id = await conn.fetchval(sql, issue_id, *(fields[col] for col in cols))
+    return str(updated_id) if updated_id is not None else None

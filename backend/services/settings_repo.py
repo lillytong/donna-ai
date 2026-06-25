@@ -341,19 +341,14 @@ async def _delete_count(conn: Any, sql: str, *args: Any) -> int:
 
 
 # Hard delete of a contract and everything it owns. The contract is the owner of
-# its content (SPEC §2.3), so DELETE cascades manually in FK order — comments
-# under issues, then issues, then nodes, then the contract row — inside one
-# transaction so a partial wipe can never commit. Children are removed before
-# the contract regardless of whether it exists; a 0-row contract delete means
-# not-found (returns None) and the empty child deletes roll up harmlessly.
+# its content (SPEC §2.3), so DELETE cascades manually in FK order — issues, then
+# nodes, then the contract row — inside one transaction so a partial wipe can
+# never commit. Children are removed before the contract regardless of whether it
+# exists; a 0-row contract delete means not-found (returns None) and the empty
+# child deletes roll up harmlessly. (Comments were removed in DD-67, so there is
+# no longer a comment cascade.)
 async def delete_contract(conn: Any, contract_id: str) -> ContractDeletion | None:
     async with conn.transaction():
-        issue_comments = await _delete_count(
-            conn,
-            "DELETE FROM issue_comments WHERE issue_id IN "
-            "(SELECT id FROM issues WHERE contract_id = $1)",
-            contract_id,
-        )
         issues = await _delete_count(conn, "DELETE FROM issues WHERE contract_id = $1", contract_id)
         # footnotes + node_versions are children of nodes (FK node_id) — clear them
         # before the nodes themselves or the nodes delete FK-violates for any
@@ -365,4 +360,4 @@ async def delete_contract(conn: Any, contract_id: str) -> ContractDeletion | Non
         contracts = await _delete_count(conn, "DELETE FROM contracts WHERE id = $1", contract_id)
     if contracts == 0:
         return None
-    return ContractDeletion(nodes=nodes, issues=issues, issue_comments=issue_comments)
+    return ContractDeletion(nodes=nodes, issues=issues)

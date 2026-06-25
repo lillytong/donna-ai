@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import styles from "./review.module.css";
 import ContextStep, { type ContractContext } from "./ContextStep";
+import ImportTopBar, { type ImportStep } from "./ImportTopBar";
 import { deriveNumbers, deriveParents } from "../lib/numbering";
 import {
   commitTree,
@@ -749,8 +750,7 @@ export default function ImportReview() {
   if (!ctx) return <ContextStep onReady={setCtx} />;
 
   // Step progression: Context done → Parse (awaiting upload) → Review → Commit.
-  const activeStep = committed ? 3 : rows.length > 0 ? 2 : 1;
-  const steps = ["Context", "Parse", "Review", "Commit"];
+  const activeStep: ImportStep = committed ? "commit" : rows.length > 0 ? "review" : "parse";
 
   // A node's inline correction tools show only when it is the sole selection.
   const showTools = (index: number) => single && selected.has(index);
@@ -765,15 +765,7 @@ export default function ImportReview() {
         className={styles.fileInput}
         onChange={onFile}
       />
-      <header className={styles.topbar}>
-        <ol className={styles.steps}>
-          {steps.map((label, i) => (
-            <li key={label} className={i === activeStep ? styles.stepActive : ""}>
-              {label}
-            </li>
-          ))}
-        </ol>
-        <div className={styles.right}>
+      <ImportTopBar active={activeStep}>
           {rows.length > 0 && (
             <span className={styles.counter}>
               {remaining === 0 ? (
@@ -819,8 +811,7 @@ export default function ImportReview() {
               {committing ? "Committing…" : "Commit import →"}
             </button>
           )}
-        </div>
-      </header>
+      </ImportTopBar>
 
       {tracked && tracked.flattened && !committed && (
         <div className={styles.banner}>

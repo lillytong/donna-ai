@@ -19,9 +19,11 @@ EVENT_CREATED = "created"
 EVENT_UPDATED = "updated"
 EVENT_STATUS_CHANGED = "status_changed"
 EVENT_COMMITTED = "committed"
-EVENT_COMMENT_ADDED = "comment_added"
 EVENT_NODE_EDITED = "node_edited"  # F08 direct inline edit of a node's text
 EVENT_NODE_CREATED = "node_created"  # F08b new node created mid-negotiation
+EVENT_NODE_DELETED = "node_deleted"  # clause soft-deleted (with its sub-tree)
+EVENT_NODE_MOVED = "node_moved"  # clause reordered up/down among its siblings
+EVENT_SNAPSHOT_CUT = "snapshot_cut"  # F14 point-in-time capture (e.g. send to counterparty)
 
 
 class AuditEvent(BaseModel):

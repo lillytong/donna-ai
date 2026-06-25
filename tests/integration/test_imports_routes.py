@@ -159,6 +159,85 @@ def test_commit_persists_corrected_tree(monkeypatch: Any) -> None:
     assert len(captured["rows"]) == 2
 
 
+class _ExtractingFakeConn:
+    """Commit-path fake that also supports F16 extraction (deal lookup, node fetch,
+    term upsert) so a commit can auto-populate `defined_terms`. Upserts are captured."""
+
+    def __init__(
+        self, *, deal_id: str = "deal-1", nodes: list[dict[str, Any]] | None = None
+    ) -> None:
+        self._deal_id = deal_id
+        self._nodes = nodes or []
+        self.upserts: list[tuple[Any, ...]] = []
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[None]:
+        yield
+
+    async def fetchval(self, _sql: str, *_args: Any) -> Any:
+        return self._deal_id
+
+    async def fetch(self, sql: str, *_args: Any) -> list[dict[str, Any]]:
+        if "FROM nodes" in sql:
+            return self._nodes
+        return []
+
+    async def fetchrow(self, _sql: str, *args: Any) -> dict[str, Any]:
+        self.upserts.append(args)
+        deal_id, term, definition, source_node_id = args
+        return dict(
+            id=f"dt-{term}",
+            deal_id=deal_id,
+            term=term,
+            definition=definition,
+            source_node_id=source_node_id,
+        )
+
+
+def _node_record(node_id: str, body: str) -> dict[str, Any]:
+    return dict(
+        id=node_id,
+        parent_id=None,
+        order_index=100,
+        content_type="prose",
+        heading=None,
+        body=body,
+        table_data=None,
+        plain_text=body,
+        role="clause",
+        has_placeholder=False,
+    )
+
+
+def test_commit_auto_extracts_defined_terms(monkeypatch: Any) -> None:
+    conn = _ExtractingFakeConn(nodes=[_node_record("n1", '"Widget Rate" means the rate per unit.')])
+
+    @asynccontextmanager
+    async def fake_acquire() -> AsyncIterator[_ExtractingFakeConn]:
+        yield conn
+
+    async def fake_insert(_conn: Any, _cid: str, rows: list[NodeRow]) -> dict[int, str]:
+        return {r.index: str(r.index) for r in rows}
+
+    monkeypatch.setattr(imports, "acquire", fake_acquire)
+    monkeypatch.setattr(imports, "record_event", _noop_record)
+    monkeypatch.setattr(imports, "insert_nodes", fake_insert)
+
+    payload = {
+        "nodes": [
+            {"index": 0, "parent_index": None, "order_index": 100, "content_type": "prose"},
+        ]
+    }
+    resp = client.post("/contracts/c1/commit", json=payload)
+
+    assert resp.status_code == 200
+    assert len(conn.upserts) == 1
+    _deal_id, term, definition, source_node_id = conn.upserts[0]
+    assert term == "Widget Rate"
+    assert definition == "the rate per unit."
+    assert source_node_id == "n1"
+
+
 def test_commit_records_audit_event(monkeypatch: Any) -> None:
     captured: dict[str, Any] = {}
 

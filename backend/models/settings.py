@@ -34,6 +34,16 @@ ContractStatus = Literal["drafting", "under negotiation", "signed"]
 ContractOrigin = Literal["us", "our_legal", "counterparty"]
 
 
+class OperatorOrganization(BaseModel):
+    """F25: the operator's org identity (DD-44). A config value, not a DB entity —
+    `editable` is False because it's set in config/.env, not via a write path here.
+    `export_author` is the resolved redline/export author (org name or default)."""
+
+    organization_name: str
+    export_author: str
+    editable: bool
+
+
 class ClientCreate(BaseModel):
     name: str
     relationship_type: RelationshipType = "counterparty"
@@ -138,4 +148,3 @@ class StoredContract(BaseModel):
 class ContractDeletion(BaseModel):
     nodes: int
     issues: int
-    issue_comments: int

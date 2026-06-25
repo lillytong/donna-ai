@@ -7,7 +7,20 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from backend.api import audit, clause_search, health, imports, issues, nodes, settings
+from backend.api import (
+    audit,
+    clause_search,
+    defined_terms,
+    donna,
+    export,
+    health,
+    imports,
+    issue_export,
+    issues,
+    nodes,
+    redline,
+    settings,
+)
 from backend.db import close_pool, open_pool
 
 # Local dev: the Next.js frontend calls this API cross-origin. Single source of truth
@@ -56,3 +69,8 @@ app.include_router(issues.router)
 app.include_router(nodes.router)
 app.include_router(audit.router)
 app.include_router(clause_search.router)
+app.include_router(export.router)
+app.include_router(defined_terms.router)
+app.include_router(issue_export.router)
+app.include_router(redline.router)
+app.include_router(donna.router)

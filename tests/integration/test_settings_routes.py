@@ -473,7 +473,7 @@ def test_delete_contract_no_content_records_cascade_counts(monkeypatch: Any) -> 
     captured: dict[str, Any] = {}
 
     async def fake_delete(_conn: Any, _contract_id: str) -> ContractDeletion:
-        return ContractDeletion(nodes=12, issues=3, issue_comments=7)
+        return ContractDeletion(nodes=12, issues=3)
 
     async def capture_record(_conn: Any, event: AuditEvent) -> StoredAuditEvent:
         captured["event"] = event
@@ -489,7 +489,7 @@ def test_delete_contract_no_content_records_cascade_counts(monkeypatch: Any) -> 
     event = captured["event"]
     assert event.event_type == "deleted"
     assert event.entity_type == "contract"
-    assert event.payload == {"nodes": 12, "issues": 3, "issue_comments": 7}
+    assert event.payload == {"nodes": 12, "issues": 3}
 
 
 def test_delete_contract_not_found(monkeypatch: Any) -> None:

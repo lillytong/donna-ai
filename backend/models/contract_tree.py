@@ -34,7 +34,7 @@ FRONT_MATTER_ROLES: frozenset[str] = frozenset(get_args(FrontMatterRole))
 
 # The role set the whole-region front-matter classifier may return: the
 # front-matter roles plus `drafting_note` (bracketed internal counsel notes that
-# sit inside the front matter, e.g. a "[CAM Notes: …]" run before the title). A
+# sit inside the front matter, e.g. a "[Counsel Note: …]" run before the title). A
 # model answer outside this set fails validation and the block keeps its
 # deterministic role (DD-54 graceful failure).
 RegionRole = Literal["title", "date", "parties", "recital", "agreement_statement", "drafting_note"]

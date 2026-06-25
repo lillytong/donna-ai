@@ -39,7 +39,7 @@ Two negotiation paths, both supported:
 ```
 First import .docx  →  Review & correct parse  →  Browse clause tree
      →  During negotiation round (live call or async), per clause:
-            ├─ raise an issue (comment → open issue), or
+            ├─ raise an issue, or
             └─ make a direct inline edit
      →  Brainstorm open issues with Donna (grounded, cited)
      →  Cut a snapshot ("send to counterparty")
@@ -74,9 +74,9 @@ Both paths merge back into the same cockpit. A negotiation round may involve one
 | Persona | Role | Can do | Cannot do |
 |---|---|---|---|
 | **Operator** | Runs the negotiation day-to-day | Full edit: import, edit clauses, raise/resolve issues, snapshot, export, ask Donna | — |
-| **Principal** | Owner/exec; decides escalated points | **Read everything** (full contract view, all open issues, agreed items, Donna Q&A); **respond to issues** (approve a position, leave a directive, add a comment) | **Edit clause content** — no path to it; no inline edit, no ⋮ menu, no insert/delete |
+| **Principal** | Owner/exec; decides escalated points | **Read everything** (full contract view, all open issues, agreed items, Donna Q&A); **respond to issues** (approve a position, leave a directive) | **Edit clause content** — no path to it; no inline edit, no ⋮ menu, no insert/delete |
 
-Rationale: the principal's role is to decide positions, not draft language. Full read access gives the context to decide well. No edit path means the operator's working document is never mutated without her knowledge. Any principal action (directive, comment, approval) is captured with `actor: principal` + timestamp and immediately flagged to the operator via a visual indicator on the relevant issue. The operator always knows when the principal has weighed in. (DD-15)
+Rationale: the principal's role is to decide positions, not draft language. Full read access gives the context to decide well. No edit path means the operator's working document is never mutated without her knowledge. Any principal action (directive, approval) is captured with `actor: principal` + timestamp and immediately flagged to the operator via a visual indicator on the relevant issue. The operator always knows when the principal has weighed in. (DD-15) **Open item (DD-67):** the principal's response channel previously rode the issue comment thread, now removed — the v1.1 principal portal (F22) must re-home the directive/approval mechanism off comments (an `issues.decision` `actor: principal` write, or a dedicated response field); mechanism to be specified at portal build.
 
 **Deployment model — two phases:**
 - **Phase 0 (demo):** run locally on operator's laptop via a single Docker Compose startup script. No IT involvement needed. Principal demos in-person or via screen-share. No external access required.
@@ -104,35 +104,40 @@ Priority: P0 (MVP) · P1 · P2. Phase maps to the build plan (§13).
 | F03c | Counterparty change review — accept/reject/modify + Donna counter-language | P0 | 2 | planned | Inline tracked-change rendering; Donna drafts exact counter; four actions: Accept theirs / Use Donna's counter / Edit Donna's counter / Keep original; DD-26, DD-27 |
 | F03d | Negotiation decision logging (learning infrastructure) | P0 | 2 | planned | Every accept/reject/modify decision logged with rich context; feeds Phase 2 RAG and v2 pattern learning; DD-29 |
 | F04 | Import-review UI — first import (verify/correct parse before commit) | P0 | 0 | **built** | **Function-first UI built** (Next.js, two-panel tree+source, confidence flags, triage counter, commit gating, live backend) on real parses. **Role-region rendering landed** (DD-54: front-/back-matter as labeled regions, drafting-notes flagged, non-clause rows unnumbered). **Correction tools landed:** inline level/type, **per-node role edit that re-buckets the node live**, **multi-select bulk shift (level/type/role)**, and **Move ↑/↓ (subtree-aware sibling reorder) with the commit keyed to operator sequence — reparent = move + level tools**; uncertain nodes highlighted; never trust parse blindly. (Remaining: split, merge.) **UX pass landed (2026-06-23, verified live on real OA):** appendix renders with section/body styling (bold heading vs body + indent); expand/collapse on any node with children; click=navigate (scrolls source) / shift-click=range / ⌘-click=toggle selection (checkboxes removed); source panel mirrors structure (bold headings + depth indent); collapsible front/back-matter regions; SOURCE style-guide emphasis (bold ALL-CAPS in pre/back-matter, bold quoted defined terms); caption parent clauses auto-default to numbered sub-headings (bold, keep number); **back-matter categorization** (DD-56 + DD-58: known appendix-title designators — Schedule/Annex/Annexure/Exhibit/Appendix — detected **deterministically** as `appendix_title` dividers; a Haiku whole-region pass categorizes the rest semantically into title/heading/body and can promote unseen designators; `appendix_title` divider role + default title>heading>body leveling; SOURCE gutter shows the category); **content-type (Heading/Body/Table) corrections now round-trip to commit** (verified against the DB). **All correction ops complete: Move ↑/↓ + reparent (commit keyed to operator sequence), split, merge — each with no-data-loss guards.** Only a cosmetic visual-identity pass remains (not a correction gap) |
-| F05 | Clause tree browser (collapsible, issue badges, term hover) | P0 | 1 | **built** | Cockpit (`app/contracts/[id]`): read-only clause tree + **collapsible nodes** (twirl, jump-expands-ancestors) + issue-count badges + jump-to-clause-by-number. Defined-term hover deferred — needs F16 (defined-terms registry) |
-| F06 | Issue creation (select node → operator writes summary → open issue) | P0 | 1 | **built** | Operator writes own title + summary; Donna's analysis loads when the issue is opened, not at creation. **Cockpit UI built** (`app/contracts/[id]`): select clause → title + note + **Us/Counterparty who-raised toggle** → create; captures `initiator=operator\|counterparty` (drives DD-50 source-stance). Issue list with who-raised badges |
-| F07 | Issue status tracking | P0 | 1 | **built** | open / agreed / deferred / kicked / dismissed. API + cockpit UI (status badge + `<select>` per issue → updateIssueStatus; stamps resolved_at on terminal) |
-| F08 | Direct-edit path (inline edit without raising an issue) | P0 | 1 | **backend done** | Versioned + audited + auto-surfaces in redline (DD-13). Backend: `PATCH /contracts/{id}/nodes/{node_id}` `{text}` → edits `body` (else `heading`), one txn writes node + `node_versions(actor=user)` + audit `node_edited`; no-op skips both; non-prose/derived-only → 422; no renumber (DD-02). Cockpit edit UI pending |
-| F08b | New node creation mid-negotiation | P0 | 1 | backend done | Add clause/section on the fly; anchors to a parent; gets derived number; surfaces as tracked insertion in next redline. Backend: `POST /contracts/{id}/nodes` (gap-based order_index + no-gap re-space; node_versions insertion row; audit). Cockpit add-node UI pending |
+| F05 | Clause tree browser (collapsible, issue badges, term hover) | P0 | 1 | **built** | Cockpit (`app/contracts/[id]`): read-only clause tree + **collapsible nodes** (twirl, jump-expands-ancestors) + issue-count badges + jump-to-clause-by-number. **Defined-term hover now built** (F16 landed): defined terms get a dotted underline + hover card with the definition (null → "no definition captured"); longest-match, empty-registry-safe |
+| F05b | Clause search — keyword + conceptual jump (cockpit jump bar) | P1 | 1 | **built** | Extends the F05 jump bar beyond number-jump: (1) exact keyword **substring jump** with a multi-match counter + ‹/› cycling through hits; (2) **conceptual fallback** — on Enter with no exact literal match, `POST /contracts/{id}/clause-search` returns the best-matching clause. **First live-LLM surface in the project** (LiteLLM wrapper in `services/`, LOW/Haiku tier per DD-35, versioned prompt over clause **headings**). Backend + cockpit UI built + verified (quality 5/5 on real data). Grounded jump only — surfaces an *existing* clause, never generates content (§2.4 trust). **Eng note:** conceptual match is a **per-query LLM call over headings, no embeddings**; embeddings/pgvector (F12/F20) remain the Phase-2 retrieval path and could later back this same surface without changing operator-facing behavior. |
+| F06 | Issue creation (select node → operator writes summary → open issue) | P0 | 1 | **built** | Operator writes own title + summary; Donna's analysis loads when the issue is opened, not at creation. **Cockpit UI built** (`app/contracts/[id]`): select clause → single **Description** box + **Us/Counterparty who-raised toggle** → create; captures `initiator=operator\|counterparty` (drives DD-50 source-stance). Issue list with who-raised badges. **Field-routing pending (DD-59):** box must write to `our_position`/`their_position` per the toggle with `title` auto-derived — currently maps box→`title` (engineering to wire) |
+| F07 | Issue status tracking | P0 | 1 | **built** | Binary `open` \| `closed` (DD-65); the prior 5-value taxonomy collapsed (non-open → `closed`). Set via a horizontal **segmented Open\|Closed toggle** (one click, replaces the dropdown); closing drops the issue from the active list into a collapsed "Closed (N)" section (not deleted); open-count badge counts `open` only. API + cockpit UI; stamps resolved_at on close |
+| F08 | Direct-edit path (inline edit without raising an issue) | P0 | 1 | **built** | Versioned + audited + auto-surfaces in redline (DD-13). Backend: `PATCH /contracts/{id}/nodes/{node_id}` `{text}` → edits `body` (else `heading`), one txn writes node + `node_versions(actor=user)` + audit `node_edited`; no-op skips both; non-prose/derived-only → 422; no renumber (DD-02). **Cockpit edit UI built** — inline textarea via the per-clause ⋮ menu, Save→version (tsc-verified) |
+| F08b | New node creation mid-negotiation | P0 | 1 | **built** | Add clause/section on the fly; anchors to a parent; gets derived number; surfaces as tracked insertion in next redline. Backend: `POST /contracts/{id}/nodes` (gap-based order_index + no-gap re-space + `before_node_id` prepend; node_versions insertion row; audit). **Cockpit insert UI built** — ⋮ menu insert above/sub/below, inline new-row editor (tsc-verified) |
 | F08d | Donna-assisted clause drafting (new clause from description) | P1 | 1 | planned | Operator describes what's missing → Donna drafts complete clause language + heading → operator reviews/edits → commits; offered as "Draft with Donna" option alongside blank insert in ⋮ menu; Donna grounds draft in deal type, surrounding clause context, and live research where applicable |
 | F08c | Free-floating issues (contract-level, no node anchor) | P0 | 1 | **built** | General remarks, structural concerns, points not tied to any existing clause. API (`node_id` nullable) + **cockpit UI built** — raising an issue with no clause selected creates a contract-level issue |
-| F09 | Issue comment thread (append-only) | P0 | 1 | **built** | Human + AI entries. API + cockpit UI (inline per-issue thread, lazy-loaded; add-comment as actor=user) |
-| F10 | Donna — deal-scoped grounded Q&A | P0 | 2 | planned | "What's our position on X?" — cited (§7); persistent thread per contract (`donna_conversations`/`donna_messages`), windowed context (DD-40) |
+| F08e | Direct-edit — delete clause + sub-tree | P0 | 1 | **built** | Soft-delete a clause and its descendants. Backend: `DELETE /contracts/{id}/nodes/{node_id}` → one txn soft-deletes the subtree + a `node_versions` deletion row per node (actor=user) + audit `node_deleted`; surfaces as a tracked deletion in next redline (DD-13); no renumber (numbers re-derive, DD-02). **Cockpit UI built** — ⋮ menu → Delete with subtree-aware confirm. Backend tests green |
+| F08f | Direct-edit — move clause (drag reorder + reparent) | P0 | 1 | **built** | Drag-and-drop **reorder and reparent** (indent/outdent) of a clause, carrying its sub-tree, via a **Rearrange mode** in the cockpit (@dnd-kit, lazy-loaded). Backend: general cycle-safe `POST /contracts/{id}/nodes/{node_id}/move` `{parent_id, after_node_id, before_node_id}` → **order-only** (audit `node_moved`, **no** `node_versions` row); **rejects moving a node into its own sub-tree**; no renumber (numbers re-derive, DD-02); surfaces as a tracked move in next redline (DD-13). **Scope: only the operative clause tree is rearrangeable — front-/back-matter are excluded from drag** (§9). Replaces the earlier up/down-only design. Backend tests green |
+| F09 | ~~Issue comment thread~~ | P0 | 1 | **removed (DD-67)** | Comment feature dropped entirely (endpoints, models, `issue_comments` table, UI). Superseded by the **editable issue description** — the operator edits `title` + `our_position`/`their_position` in place (`PATCH /issues/{id}`), so a separate annotation thread is redundant |
+| F10 | Donna — single-contract grounded Q&A (Donna tab) | P0 | 2 | **built** | **v1 scope locked (DD-62).** Grounded Q&A over **one contract** (the cockpit Donna tab) — three question shapes: **locate** ("where's the liability cap?"), **explain** ("what does clause 12 say?"), **status-briefing** ("what's still open?", "what did we agree?" — over the issue ledger; the most differentiated-vs-Word capability and v1's headline). **Read-and-explain only:** explains the contract, never advises/drafts/takes a position — "should I accept?" / "is this enforceable?" route to the issue surface (F11) or "get a lawyer" (DD-14 rules 1–2). **Cited to clickable clause nodes** (§7): every answer cites the node(s) it drew from, clickable to jump (reuse F05/F05b). **Retrieval via the F05b conceptual lookup — no embeddings**: finds the clause the operator *means* despite phrasing mismatch. Persistent per-contract thread (`donna_conversations`/`donna_messages`), **windowed context** = last 10 turns + rolling summary (DD-40). **Honest failure:** "I don't see anything in this contract about X" — never fabricates. **LATER (out of v1, named so not silently assumed):** position recommendations / drafting → F11; proactive issue flagging → F28; whole-deal / cross-contract Q&A → later (schema already 1-conversation-per-contract); `node_embeddings` implicit semantic search → F12 (Phase 2, backs this same surface invisibly later). See §9 Donna tab. **Backend BUILT + verified:** `services/donna/` (conversation_repo + windowing DD-40 + grounding [F05b clause retrieval + issue ledger] + `qa.py` structured answer at capable tier) + `prompts/donna_qa_v1.txt` + `POST /donna/ask` + `GET /donna/thread`; 24 tests; **grounding eval 4/4** (cites in-contract · honest not_found · deflects advice · status-briefs the ledger). UI: cockpit **Donna tab** (Issues\|Current Clause\|Donna rail, DD-66; chat with citation chips that jump+flash the cited clause; distinct answer / not_found / deflected treatments; read-and-explain guard line; staged loading + example-question empty state). Follow-up: reloaded thread history renders without chips/kind (thread endpoint returns role+content only). |
 | F11 | Donna — issue-scoped recommendation + live research | P0 | 2 | planned | Auto-generated when issue detail is opened; grounded in clause context + DD-31 resolution; live research invoked when issue involves market data (pricing, rates, thresholds); cites sources; proposes specific value/language; DD-38 |
-| F12 | Tiered context injection | P0 | 2 | planned | Explicit links (DB) + intra-contract semantic search (`node_embeddings`) in Phase 2; negotiation history search (`comment_embeddings`) in Phase 2+ — DD-06, DD-32 |
+| F12 | Tiered context injection | P0 | 2 | planned | Explicit links (DB) + intra-contract semantic search (`node_embeddings`) in Phase 2; negotiation-history search over the issue position/decision ledger + `node_versions` (comments removed, DD-67) in Phase 2+ — DD-06, DD-32 |
 | F13 | Negotiation-history RAG (scoped to contested nodes) | P0 | 2 | planned | DD-07 |
-| F14 | Contract snapshot ("send to counterparty") | P0 | 3 | planned | DD-09 |
-| F15 | Tracked-changes export to .docx | P0 | 3 | planned | Snapshot diff → tracked changes; renumber suppressed (§11) |
-| F16 | Defined-terms registry (deal-scoped) | P1 | 2 | planned | Extracted on import; hover-to-define |
+| F14 | Contract snapshot ("send to counterparty") | P0 | 3 | **backend done** | Immutable point-in-time capture of full tree topology + node bodies (OQ-08); cut **only on a send** (Clean-copy recipient Counterparty / Legal) — Internal / Copy-only grabs cut none (DD-61); a send advances the matching DD-48 `shared` pointer. DD-09. Backend: `services/snapshot.py` — cut (full-tree JSONB dump + stamps pending `node_versions.snapshot_id` = the F15 diff group) + read + DD-48 pointer upsert; audit `snapshot_cut`; 12 tests. Wired into export by F15b (gate the cut on send-vs-grab there) |
+| F15b | Clean copy export — DB→.docx regenerate (no markup) | P0 | 3 | **built** | The renderer (built first); regenerates the current contract from the DB through the style config (DD-43). **Send** (Counterparty / Legal) cuts a snapshot + sets the DD-48 `shared` pointer; **grab** (Internal / Copy-only) downloads only, no snapshot/pointer/lineage effect (DD-61). Round-1 send and the foundation F15/F31 build on. §9/§12, DD-60/DD-61. Backend: renderer (`render_docx.py`, round-trip oracle byte-identical on real 413-node contract) + `services/export/clean_copy.py` send/grab branch + `POST /contracts/{id}/export {recipient}`; UI: cockpit **Export ▾** menu (clean-copy + recipient selector) |
+| F15 | Redline export — tracked-changes .docx | P0 | 3 | **built** | Diff(baseline snapshot, working copy) → Word `<w:ins>`/`<w:del>` (DD-51); **baseline defaults to `last shared with counterparty`** (DD-48), operator-overridable; the baseline only advances on a real send, so intervening Internal/Copy-only grabs never move it (DD-61); **renumber shifts suppressed**; authored by operator org, never Donna (DD-44/F25); **disabled until a snapshot exists** (409 on click → "send a clean copy first" hint, §9/§12). DD-60/DD-61. Backend: `services/export/redline.py` (node_versions change-set vs baseline) + `render_redline.py` (`w:ins`/`w:del`) + `POST /contracts/{id}/redline-export {snapshot_id?}`; UI: Redline item in the Export ▾ menu. **Moves + table insert/delete now marked** via a structural diff (baseline snapshot tree vs live tree): a moved node renders struck-at-old + inserted-at-new, a table ins/del is row-marked, edited+moved reconciled, pure-renumber not flagged. **Remaining limits (flagged):** move uses the del+ins fallback, NOT native Word `w:moveFrom/To` (reviewer sees the relocation; Word won't label it "moved" — couldn't validate the move-range OOXML safely here); a deleted table's rows can't be shown (snapshot tree dump omits `table_data`); deleted clause struck near old slot without its old number |
+| F16 | Defined-terms registry (deal-scoped) | P1 | 2 | **built** | Extracted on import; hover-to-define. Backend: `services/defined_terms.py` — deterministic regex extraction (`"Term" means …`, canonical `("Term")` intro), deal-scoped upsert `UNIQUE(deal_id,term)`, precision-over-recall; `POST /contracts/{id}/defined-terms/extract` + `GET …/defined-terms`; 18 tests. **Auto-extracts on import-commit** (failure-isolated, doesn't fail the import) + **cockpit term-hover built** (F05). Follow-up: bare `("Term")` intros store no definition (precision call) |
 | F17 | Cross-references as structured links | P1 | 0/3 | planned | Detected on import; rendered dynamically (DD-11) |
 | F18 | Deal parameters + cross-contract consistency flags | P1 | 4 | planned | Shared values defined once; ripple-flagged (DD-12) |
 | F19 | Audit log (append-only) | P1 | 1 | **built** | Every mutation; never updated. Service + read API + tests, AND `record_event` wired into all mutation routes (settings creates, import commit, issue lifecycle); `operator_actor` config actor (DD-53). Now logging |
-| F20 | Semantic search + knowledge base | P1 | 2+ | planned | pgvector on clause bodies + issue_comments; cross-client pattern queries ("what terms do we typically accept on IP?"); triggered when prose volume exceeds ~100K tokens |
+| F20 | Semantic search + knowledge base | P1 | 2+ | planned | pgvector on clause bodies + the issue position/decision ledger (negotiation-history prose; comments removed, DD-67); cross-client pattern queries ("what terms do we typically accept on IP?"); triggered when prose volume exceeds ~100K tokens |
 | F21 | Contract version diff (between snapshots) | P1 | 3 | planned | "What changed in §12 between v2 and v3?" |
 | F22 | Principal read-only + issue-decision portal | P1 | v1.1 | planned | Built ready; shown when chosen |
 | F23 | Granola / transcript ingest → auto-suggest issues | P2 | v2 | backlog | Live typing is enough for v1. **Held off (operator call, 2026-06-23):** operator types fast enough; live STT adds latency + correction overhead + mis-transcription risk → *net-negative* vs typing for a fast typist (shifts effort, doesn't reduce it). Revisit only if that calculus changes (slower typist / better real-time STT). When built: the issue engine with a transcript input + `initiator=donna` + operator-confirm — not new machinery (collapse) |
 | F24 | Style-config UI editor (per-contract override panel) | P2 | v2 | backlog | Import-time style detection + accept/adjust is covered under F04 (Phase 0). Dedicated per-contract override panel deferred to v2. |
-| F25 | Operator organization identity (Settings → Your Organization) | P0 | 3 | planned | Configured org name (config value, not a DB entity); used as redline / export author; never "Donna" (DD-44) |
+| F25 | Operator organization identity (Settings → Your Organization) | P0 | 3 | **built** | Configured org name (config value, not a DB entity); used as redline / export author; never "Donna" (DD-44). Backend: `config/settings.py` `operator_org_name` (`DONNA_OPERATOR_ORG_NAME`) → validator wires `redline_author` so the export author always resolves to the org name (or a neutral default), never "Donna"; `GET /organization`; 8 tests. UI: Settings → **Your Organization** (read-only — set via env per DD-44). §9 line ~461 calls it "read/edit"; in-app editing would need a settings-store follow-up (flagged) |
 | F26 | External revision sources — legal team / internal review (rides Mode B engine) | P1 | 2 | planned | `revision_session.source`; Donna moderates legal over-reach (DD-47); + `needs_legal_review` issue flag + legal review packet export |
 | F27 | Version pointers + lineage view (where-are-we tracking) | P1 | 3 | planned | 4 named snapshot pointers (DD-48); per-source diff baselines; v1→vN lineage view; recipient-driven export sets pointers. **Status taxonomy (the home-card "where are we" badge, derived not manually set):** `Your move` (received from counterparty/legal, untouched — reactive, floats up) → operator engages it → `In flight` (actively being worked: a fresh draft OR an engaged revision; self-paced) → operator sends → `Sent to counterparty` / `Sent to legal` (waiting on them) → returns → `Your move` … → `Signed`. The home card shows this badge + open-issue count (red when >1) + last activity. Full pointer-states need snapshots (Phase 3) + revision import (Phase 2); the Phase-1 home shows `In flight` + open-issues + recency, richer states fill in by phase |
 | F28 | First-pass auto-issue detection on import | P1 | 2+ | planned | On import, Donna drafts a ranked issue list (red flags, below-market terms, missing provisions, placeholders, missing exhibits, broken cross-refs) grounded in the F29 knowledge layer + deal `position`. Rides the issue engine (`initiator: donna`); **operator-confirmed, never authoritative, never auto-exported** (correctness, §2.4 — F1 ~0.62). Source-parameterized ranking (DD-50). Sequenced **after** the bulk-surface mechanism (DD-47) so the list is ranked, not a flood. Keep/dismiss logged via F03d/DD-29 from day one. DD-50 |
 | F29 | Knowledge layer — market benchmarks + risk taxonomy (reference data) | P1 | 2 | planned | Curated, static seed data: CUAD risk taxonomy (whole) + market-benchmark table + red-flag taxonomy + per-type checklists (Licence / Offtake / JV built fresh, NDA ported; attach to F01b contract types). Derived from CUAD/public sources — **not** a live legal database. Grounds F28 and turns many F11 live-research calls into local lookups. DD-49 |
 | F30 | Negotiation insight distillation | P1 | 2+ | planned | After each brainstorm session closes, Donna runs an extraction pass and synthesizes 0–N compact pattern records — not the raw conversation. Merge-first: checks existing patterns before creating; updates evidence count + refines wording on a match. Consolidation pass triggered after deal close or N new patterns added: redundant patterns merged, low-confidence patterns past TTL (3 deals unreinforced) pruned, contradictions surfaced as flags not silent overwrites. Patterns retrieved selectively alongside tiered context when Donna opens an issue. Converges to ~100–200 records across all subjects; never grows unbounded. DD-55 |
+| F31 | Issue-list export (.docx) | P1 | 3 | **built** | Unresolved issues (`status='open'` only, DD-65) → constructive .docx table for principal briefing / counterparty walkthrough / operator record. Columns #/Clause/Issue/Status/Raised by/Our position/Their position/Proposed resolution; **`#` = 1..n render sequence (not raw `priority` — that drives the sort but isn't printed; raw priority is an internal triage number)**; priority-desc (ties → document order), free-floating last; no internal fields / Donna attribution / IDs. Rides the F15b renderer. §9/§12, DD-60. Backend: `services/export/issue_export.py` + `GET /contracts/{id}/issue-list/export`; UI: Issue-list item in the Export ▾ menu |
 | — | Call mode / negotiation cockpit | — | — | merged | Folded into edit mode (DD-08) |
 | — | Separate appendices entity | — | — | dropped | Appendices are branches of the node tree (DD-05) |
 | — | Multi-user / team collaboration | — | — | out of scope v1 | Permissions designed for it (§4); not built |
@@ -156,9 +161,9 @@ Entities and relationships in plain English. Full SQL lives in `db/schema.sql`.
 
 **contracts** — one agreement. Fields: id, client_id, deal_id, contract_type_id (FK to contract_types), name, status (drafting / under negotiation / signed), current version label, style_template_id (nullable FK — inherits template config), **style_config** (JSONB — per-contract overrides on top of template, or standalone config if no template), created_at.
 
-**contract_snapshots** — immutable point-in-time capture of all node states (topology + bodies, per OQ-08), like a git commit. Cut on every export, and on import to capture an external revision's as-received state (DD-48). Drives redline diffs and the version pointers. Fields: contract_id, label, created_at, origin (`export` | `as_received` | `manual`).
+**contract_snapshots** — immutable point-in-time capture of all node states (topology + bodies, per OQ-08), like a git commit. Cut on a **send** (Clean-copy export to Counterparty / Legal — not on Internal / Copy-only grabs, DD-61), and on import to capture an external revision's as-received state (DD-48). Drives redline diffs and the version pointers. Fields: contract_id, label, created_at, origin (`export` | `as_received` | `manual`).
 
-**snapshot_pointers** — the four named version pointers per contract (DD-48). Fields: id, contract_id, party (`counterparty` | `legal_team` | `internal`), direction (`shared` | `received`), snapshot_id (FK), set_at. Unique on (contract_id, party, direction) — each pointer references at most one snapshot and advances as new boundary events occur. `shared` pointers are the per-source diff baselines (DD-47); `received` pointers are immutable records of what the party last sent. The live working copy is the current node tree, not represented here.
+**snapshot_pointers** — the four named version pointers per contract (DD-48). Fields: id, contract_id, party (`counterparty` | `legal_team` | `internal`), direction (`shared` | `received`), snapshot_id (FK), set_at. Unique on (contract_id, party, direction) — each pointer references at most one snapshot and advances as new boundary events occur. `shared` pointers are the per-source diff baselines (DD-47), set **only by the export/send path** (Counterparty / Legal recipient); `received` pointers are immutable records of what the party last sent, set **only by the Phase-2 revision-import path** (captured before edits, frozen) — export never writes a `received` pointer (DD-48/DD-61). The live working copy is the current node tree, not represented here. (v1 note: the `internal` party value takes no pointer — Internal export is a pure download, DD-61; left dormant for a future multi-user internal-review feature.)
 
 **nodes** — the universal addressable unit. Self-referential adjacency list for arbitrary depth (Article → Section → Clause → Sub-clause; appendices are top-level branches that nest the same way). Fields:
 - id (primary key), contract_id, parent_id
@@ -203,7 +208,7 @@ Operators always type plain text. Donna resolves markers automatically on save. 
 **Inline enumeration note (from contract analysis):**
 Inline `(i) X (ii) Y (iii) Z` enumerations within a single prose paragraph are plain text — no special marker. They appear primarily in multi-part definition clauses and are reproduced verbatim on export. Block enumeration (each item as a separate node) is the dominant structural pattern.
 
-**Inline enumerators are NOT separate clause-tree nodes in v1 (product decision).** Where `(i)(ii)(iii)`-style enumerators are *inline runs inside one paragraph body* (as opposed to Word auto-numbered sub-clauses, which already nest as their own nodes), they stay as body text of their containing node. Issues and direct edits attach at the containing clause/definition level — the operator reads the enumerated list inline and references "(ii)" in the issue text if needed. Two reasons, both principle-anchored: (1) splitting one paragraph mid-body risks the §2.1 content-integrity round-trip — export must reassemble the exact original paragraph (lead-in text, the separators and punctuation between enumerators) byte-for-byte, and a corruption there is a §2.4 trust/credibility failure, not just a parse miss; (2) these enumerators most often sit *inside a multi-part defined-term definition*, where the definition is the cognitive unit the operator negotiates — splitting it shatters the definition into fragments and works against the defined-terms registry (F16). For the target user (single operator, 2–5 agreements) per-enumerator addressability adds tree and round-trip complexity without reducing operator effort — it fails the effort-saved test. **Defined-term definitions are a permanent no-split case regardless.** **Revisit trigger:** real, recurring operator demand to raise issues or edit at per-enumerator granularity (not hypothetical). If revisited, splitting is gated on an engineering round-trip de-risk spike on the reassembly oracle (Kevin, DEV_TODO) *before* any build, with the defined-term no-split carve-out held.
+**Inline enumerators are NOT separate clause-tree nodes in v1 (product decision).** Where `(i)(ii)(iii)`-style enumerators are *inline runs inside one paragraph body* (as opposed to Word auto-numbered sub-clauses, which already nest as their own nodes), they stay as body text of their containing node. Issues and direct edits attach at the containing clause/definition level — the operator reads the enumerated list inline and references "(ii)" in the issue text if needed. Two reasons, both principle-anchored: (1) splitting one paragraph mid-body risks the §2.1 content-integrity round-trip — export must reassemble the exact original paragraph (lead-in text, the separators and punctuation between enumerators) byte-for-byte, and a corruption there is a §2.4 trust/credibility failure, not just a parse miss; (2) these enumerators most often sit *inside a multi-part defined-term definition*, where the definition is the cognitive unit the operator negotiates — splitting it shatters the definition into fragments and works against the defined-terms registry (F16). For the target user (single operator, 2–5 agreements) per-enumerator addressability adds tree and round-trip complexity without reducing operator effort — it fails the effort-saved test. **Defined-term definitions are a permanent no-split case regardless.** **Revisit trigger:** real, recurring operator demand to raise issues or edit at per-enumerator granularity (not hypothetical). If revisited, splitting is gated on an engineering round-trip de-risk spike on the reassembly oracle (engineering, DEV_TODO) *before* any build, with the defined-term no-split carve-out held.
 
 **footnotes** — structured footnote bodies anchored to a node. Created by Donna on import when `[^N]` anchors are detected. Fields: id, node_id, anchor_index (integer — matches the `[^N]` marker in the node body), body (semantic markup), created_at.
 
@@ -228,7 +233,7 @@ Inline `(i) X (ii) Y (iii) Z` enumerations within a single prose paragraph are p
 - our_position, their_position, options_on_table
 - **recommended_position** (Donna's proposed landing; may be a fallback ladder: ask / settle / floor)
 - **donna_counter_language** (exact counter-language drafted by Donna for counterparty-proposed changes)
-- status: `open` | `agreed` | `deferred` | `kicked` | `dismissed` (`dismissed` = operator rejected a Donna auto-flag; the dismissal is logged for learning, DD-50)
+- status: `open` | `closed` (DD-65 — binary; the prior `agreed`/`deferred`/`kicked`/`dismissed` collapse to `closed`, set via a segmented Open|Closed toggle. A dismissed Donna auto-flag closes the issue and the dismissal is logged for learning, DD-50)
 - initiator: `operator` | `counterparty` | `donna` (`donna` = surfaced by first-pass auto-detection on import, DD-50)
 - **auto_flag** (JSONB | null — populated only when `initiator = donna`. `{flag_type: red_flag | below_market | missing_provision | internal_inconsistency | placeholder | missing_exhibit, benchmark_ref (FK into the knowledge layer, DD-49, null for non-benchmark flags), confidence, source_stance: counterparty | legal_team | first_import}`. `source_stance` drives ranking — legal_team surfaces over-reach first, counterparty surfaces unfavorable-to-us first, DD-50. Keep/dismiss outcome logs through the F03d/DD-29 decision path from day one.)
 - **authority**: `within-operator-authority` | `needs-principal`
@@ -249,7 +254,7 @@ Inline `(i) X (ii) Y (iii) Z` enumerations within a single prose paragraph are p
 - **priority** (integer — sort order in open issues list)
 - created_at, resolved_at
 
-**issue_comments** — append-only thread. Fields: id, issue_id, actor (`user` | `ai` | `principal`), content, snapshot_id (nullable — which negotiation round this comment was made in), created_at.
+**issue_comments** — **removed (DD-67).** The comment thread is dropped; the editable issue description (`title` + `our_position`/`their_position` via `PATCH /issues/{id}`) covers the need. Table dropped via forward migration; the DD-63 contract-delete cascade no longer cascades comments.
 
 **node_embeddings** — pgvector embedding per node (of the plain_text projection). Built in **Phase 2** alongside Donna's intelligence — required for intra-contract implicit semantic search (DD-32). Fields: node_id, embedding, embedded_at (timestamp — used to detect staleness: if `nodes.updated_at > node_embeddings.embedded_at`, embedding is stale and re-queued).
 
@@ -270,7 +275,7 @@ Embeddings fire after the operator has confirmed the correct tree structure. Nev
 
 **Stale detection**: worker checks `nodes.updated_at > node_embeddings.embedded_at`; skips any node where `embedded_at >= updated_at`. This is the enforcer — the engineering worker never needs to decide manually whether to skip.
 
-**comment_embeddings** — pgvector embedding per issue comment (free-text prose). Powers cross-deal pattern queries ("what was our reasoning on IP across all deals?"). Built in **Phase 2+** (not Phase 2) — deferred until comment prose volume exceeds ~100K tokens (~3–4 active deals with multiple rounds). Fields: comment_id, embedding.
+**comment_embeddings** — **removed (DD-67)**, with the comment thread it indexed. The negotiation-history search it powered (cross-deal pattern queries — "what was our reasoning on IP across all deals?") re-bases onto the issue position/decision ledger (`issues.our_position`/`their_position`/`decision`, DD-29) + `node_versions` prose; the Phase 2+ embedding substrate over that prose is specified when built (same volume gate: ~100K tokens of negotiation prose).
 
 **negotiation_patterns** — compact extracted insights distilled from brainstorm sessions and accumulated decision history. Not conversation transcripts — synthesized principles that compound over time. Fields: id, pattern_type (`operator_style` | `counterparty_behavior` | `deal_type_norm` | `legal_team_tendency`), subject_type (`operator` | `client` | `deal_type` | `contract_type`), subject_id (nullable — FK to `clients` or `contract_types`; null for operator-level patterns), insight (text — 1–3 sentence compact principle, not a transcript), confidence (`low` | `medium` | `high`), evidence_count (integer — reinforcement events that support this pattern), last_reinforced_at (timestamp — used for TTL pruning: low-confidence patterns unreinforced across 3 deals are pruned), source_issue_ids (JSONB — issue IDs that contributed), created_at, updated_at.
 
@@ -283,7 +288,7 @@ Embeddings fire after the operator has confirmed the correct tree structure. Nev
 ### Key Relationships
 
 ```
-clients ──< deals ──< contracts ──< nodes ──< issues ──< issue_comments
+clients ──< deals ──< contracts ──< nodes ──< issues
                             │            └──< node_versions
                             │            └──< footnotes
                             └──< contract_snapshots
@@ -296,7 +301,6 @@ deals ──< defined_terms
 deals ──< deal_parameters ──< parameter_references >── nodes
 nodes  ──< node_embeddings
 nodes  >── cross_references ──< nodes        (may cross contracts within a deal)
-issue_comments ──< comment_embeddings
 contracts ──< donna_conversations ──< donna_messages
 negotiation_patterns  (operator-level: subject_id null; client-level: subject_id → clients;
                        deal-type/contract-type: subject_id → contract_types)
@@ -308,7 +312,7 @@ negotiation_patterns  (operator-level: subject_id null; client-level: subject_id
 
 Donna is three **surfaces** over one retrieval spine, evolving across phases.
 
-- **Deal-scoped assistant** (F10) — grounded Q&A over a contract or the whole deal. "What's our position on X?" "What licensing fee did we agree with Client A?" "What's still open on the licence agreement?"
+- **Contract-scoped assistant** (F10) — grounded **read-and-explain** Q&A over one contract (the Donna tab). Locate / explain / status-briefing: "Where's the liability cap?" "What does clause 12 say?" "What's still open?" "What did we agree?" Cited to clickable nodes; explains, never advises (advice → F11). v1 is **single-contract**; whole-deal / cross-contract Q&A is deferred (DD-62).
 - **Issue-scoped assistant** (F11) — works *inside* an open issue with that node's text + position ledger + its negotiation history. Brainstorms options, drafts replacement language, weighs trade-offs.
 - **Counterparty revision reviewer** (F03b/F03c) — for every counterparty-proposed change: produces a verdict (accept/counter/keep), one-line reasoning, and exact counter-language ready to use. Operator judges; Donna drafts. Gets smarter over time as decisions accumulate (DD-29).
 - **Knowledge base** (v2+) — cross-client, cross-deal pattern queries. "What terms have we typically accepted on IP protection?" "How did Client B's position on exclusivity compare to Client A's?" Powered by semantic search over accumulated negotiation history.
@@ -337,7 +341,7 @@ Context is layered, not flat. Each tier is populated by DB query in Phase 2, wit
 4. **Issue position ledger** — our/their position, options, status for this issue. DB query by issue_id.
 5. **Contract-level summary** — agreed points + open issues across the contract. DB query, aggregated.
 6. **Deal-level summary** — commercial terms agreed across all contracts in the deal. DB query on deal_parameters + resolved issues.
-7. **Full negotiation history** — only on explicit request. Phase 2: full comment thread injected. Phase 2+: semantic search over `comment_embeddings` surfaces most relevant moments.
+7. **Full negotiation history** — only on explicit request. Re-based off the removed comment thread (DD-67) onto the **issue position/decision ledger** (`issues.our_position`/`their_position`/`decision`, DD-29) + `node_versions`. Phase 2: the issue's ledger + version history injected directly. Phase 2+: semantic search over that negotiation-history prose surfaces the most relevant moments.
 8. **Negotiation pattern layer** (Phase 2+, F30) — always-on alongside tiers 1–7; retrieved selectively from `negotiation_patterns`. Always injected: operator-style patterns (how the operator negotiates, what they consistently accept/reject). Injected when same client: counterparty behavioral patterns for that client (what they push on, where they concede). Injected when same contract type: deal-type norms (typical market positions for this agreement type). Injected when legal team is the revision source: legal-team tendency patterns. Compact records — does not materially increase context size.
 
 Negotiation history is retrieved **only for contested nodes** (DD-07). A clean, never-contested node pulls no history.
@@ -347,12 +351,12 @@ Negotiation history is retrieved **only for contested nodes** (DD-07). A clean, 
 | Phase | Tiers active | What Donna can answer | How |
 |---|---|---|---|
 | Phase 2 | Tiers 1–6 | "What's our position on X?" "What's agreed?" "What's the royalty %?" "What does clause Y mean for clause X?" | Structured DB queries (tiers 1, 4, 5, 6) + explicit reference resolution (tier 2) + intra-contract semantic search on `node_embeddings` (tier 3) |
-| Phase 2+ | Tiers 1–8 | "What did the counterparty say about exclusivity?" "What was our reasoning on IP?" "What does this counterparty typically do on IP?" | Adds `comment_embeddings` semantic search for negotiation history (tier 7) + negotiation pattern layer (tier 8) |
+| Phase 2+ | Tiers 1–8 | "What did the counterparty say about exclusivity?" "What was our reasoning on IP?" "What does this counterparty typically do on IP?" | Adds semantic search over the negotiation-history prose — the issue position/decision ledger + `node_versions` (tier 7, DD-67) + negotiation pattern layer (tier 8) |
 | v2 knowledge base | Tiers 1–8 + cross-client | "What terms do we typically accept on recall?" "How did the counterparty compare on X across deals?" | Cross-client semantic search over all accumulated history |
 
 **pgvector build timing — two distinct triggers:**
 - **`node_embeddings` → Phase 2** (same phase as Donna's intelligence): needed for intra-contract implicit semantic search. Donna cannot discover implicit clause relationships without embeddings, regardless of contract volume. A single contract is sufficient to need this.
-- **`comment_embeddings` → Phase 2+**: needed for negotiation history search across many rounds. Volume-gated: when comment prose exceeds ~100K tokens (~3–4 active deals with multiple rounds).
+- **Negotiation-history embeddings → Phase 2+**: needed for negotiation-history search across many rounds, over the issue position/decision ledger + `node_versions` prose (re-based off the removed comments, DD-67; substrate specified when built). Volume-gated: when that prose exceeds ~100K tokens (~3–4 active deals with multiple rounds).
 
 ### Model quality principle (DD-35)
 
@@ -381,7 +385,7 @@ Donna's four non-negotiable rules — her character:
 
 ## 8. Architecture & Design Decisions
 
-All design decision records (DD-01 … DD-55) live in **[`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md)** — see its index for the full list. Inline `DD-NN` references throughout this spec resolve there.
+All design decision records (DD-01 … DD-67) live in **[`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md)** — see its index for the full list. Inline `DD-NN` references throughout this spec resolve there.
 
 ---
 
@@ -431,9 +435,10 @@ Reached via the top-nav "Contracts" link. Two-level navigation in a persistent l
 
 - Left sidebar: all clients, collapsible to deals, collapsible to individual contracts. Persistent across sessions.
 - Main area: when a deal is selected, shows all contracts in that deal with a summary card (contract count, open issue count, last activity).
-- **"Last activity"** — derived at query time as `MAX(nodes.updated_at, issues.updated_at, issue_comments.created_at)` across all contracts in the deal. No stored field; computed in the deals list endpoint.
+- **"Last activity"** — derived at query time as `MAX(nodes.updated_at, issues.updated_at)` across all contracts in the deal. No stored field; computed in the deals list endpoint.
 - Click a contract → opens the negotiation cockpit.
 - "Import contract" button on each deal card → launches the import flow, pre-filled with that client + deal.
+- **No "imported/committed" filter on the picker (decided).** The picker lists *all* contracts; one with no committed node tree opens to a clear "No clauses yet — import first" empty state rather than being hidden. For the target user (2–5 agreements) a hidden-by-flag picker adds a concept and a "where did my contract go?" failure mode for no benefit; the empty state is self-explanatory and doubles as the next-action prompt.
 
 ### Settings
 
@@ -459,6 +464,8 @@ The operator's own organization identity (single value, single-operator v1). Use
 **Step 1 — Context (new)**
 Select client (dropdown — existing clients or "Create new client"). Select deal (dropdown scoped to that client — existing deals or "Create new deal"). Enter contract name. Select contract type. Upload .docx. This step is where donna.ai knows where to store the contract before parsing begins.
 
+**Deal `position` is required when creating a deal inline (decided).** When the operator picks "Create new deal," the inline form must capture `deals.position` (customer / vendor / buyer / seller / licensor / licensee / receiving_party / disclosing_party — DD-50); selecting an *existing* deal does not re-ask (it already carries one). Rationale: position is a once-per-deal decision that governs what Donna flags as unfavorable (F28 source-stance ranking). It **cannot be reliably inferred from contract type** — a "Licence Agreement" could be licensor or licensee, an "Offtake" buyer or seller — so defaulting from type would plant a *confidently wrong* value, which is worse than null. A deal that lands `position=null` silently disables F28 ranking (logging-precedes-learning: capture the parameter the learning feature depends on at the moment the deal is born, not retroactively). Cost is one dropdown on the create-new-deal path only.
+
 **Step 2 — AI parsing (background)**
 Progress indicator: "Detecting structure… identifying clauses… resolving cross-references… flagging uncertain nodes." 10–30 seconds. Cannot be skipped.
 
@@ -476,35 +483,46 @@ Summary: "Import N clauses, M tables, P appendices under [Client] → [Deal] →
 
 ### Export flow
 
-From the cockpit top-right "Export" button:
+Export is a **per-contract cockpit action** (top-right `Export ▾`), never in global nav (see Navigation model): you export the contract you're already in. **Three exports in v1**, all Phase 3, all rendered through the per-contract style config (no formatting decisions at export time):
 
 ```
 [ Export ▾ ]
-  ├── Clean copy (.docx)          [ ] Mark as sent to counterparty
-  ├── Redline from: [ snapshot label ▾ ]   ← default: snapshot tagged "sent to counterparty"
-  ├── Issues summary (.docx)               ← open issues table; suitable for external use
-  └── Open issues (.csv)
+  ├── Clean copy (.docx)   → recipient: [ Counterparty ▾ | Legal | Internal | Copy only ]   (F15b)
+  ├── Redline (.docx)  from: [ last shared with counterparty ▾ ]                              (F15)
+  └── Issue list (.docx)                                                                       (F31)
 ```
 
-**Issues summary (.docx) format** — a single table of all open issues, sorted by priority descending. Designed to be used externally: the operator or principal can pull it up in a meeting with the counterparty and walk through it together. Language is constructive and neutral — no internal notes, no Donna attribution, no DB IDs.
+**Clean copy (.docx) — F15b.** Regenerates the full contract from the DB through the style config — current state, no markup. The **recipient selector** splits into two intents (DD-61): a **send** (Counterparty / Legal) cuts a snapshot, stamps the pending edits group under it (closing this round's change set), and advances that party's `last_shared_with_X` pointer — the diff baseline for that source's next inbound revision; a **grab** (Internal / Copy-only) regenerates and downloads the current file with **no snapshot, no pointer, no lineage effect** — the operator re-reading their own draft is not a new version. Replaces the old single "Mark as sent to counterparty" checkbox — DD-48 generalised that one exclusive tag into the named pointers. Always available: this is the round-1 send and the foundation the other two exports build on.
+
+**Redline (.docx) — F15.** Tracked-changes export: the diff between a chosen baseline snapshot and the current working copy, emitted as Word `<w:ins>`/`<w:del>` the counterparty can Accept/Reject (DD-51).
+- **Baseline:** defaults to the **`last shared with counterparty`** pointer (DD-48) — the version they last saw, so the redline shows exactly what changed since. Operator can override the dropdown to any earlier snapshot (e.g. redline against the legal-shared version).
+- **Author:** every change is attributed to the operator's configured organization name (F25), **never "Donna"** (DD-44).
+- **Appearance:** insertions underlined, deletions struck through, moved clauses shown as tracked moves (F08f surfaces as a move, DD-13); **pure renumber shifts are suppressed** (§12) so the counterparty sees substantive change, not numbering noise.
+- **Requires a baseline:** a brand-new contract has no snapshot to diff against, so Redline is **disabled until the first send (Counterparty / Legal) cuts a snapshot** — a Copy-only/Internal grab cuts none and never satisfies this, with the hint *"No snapshot yet — send a clean copy first to set the baseline; from the next round you can send redlines."* This matches the core workflow: round 1 = clean copy, every round after = redline.
+
+**Issue list (.docx) — F31.** A single .docx table of **unresolved** issues — for briefing a principal, walking the counterparty through open points on a screen-share, or the operator's own record.
+- **Filter:** `status='open'` only (DD-65 — "unresolved" is now binary). **Excludes** every `closed` issue (resolved / parked / dropped — lives in the in-app collapsed Closed section).
+- **Order:** priority descending, ties broken by document order; free-floating issues (no clause anchor) grouped at the bottom under a separator row.
+- **Language:** constructive, neutral, counterparty-safe. **No internal fields** (Donna reasoning, authority / `needs_legal_review` flags, session IDs), **no Donna attribution, no DB IDs.**
 
 | Column | Content |
 |---|---|
-| # | Priority rank |
+| # | Sequential rank — 1..n in render order (priority-desc sort, free-floating last). Not the raw `priority` value (an internal triage number, not counterparty-safe); the printed `#` is a stable reference number so the operator can say "item 3" on a walkthrough (DD-60) |
 | Clause | Node reference (e.g. 3.4.12) or "—" for free-floating |
-| Issue | Short title |
-| Raised by | `Us` / `Them` / `Both` / `—` |
+| Issue | Short title (the issue `title`) |
+| Status | `Open` (the export lists open issues only, DD-65) |
+| Raised by | `Us` / `Them` / `—` (derived from `initiator`) |
 | Our position | Brief factual summary of our stance |
 | Their position | Brief factual summary of their stance |
-| Proposed resolution | Donna-drafted landing zone: favours the operator's side but framed as a mutual solution acceptable to the counterparty |
+| Proposed resolution | Donna's constructive landing zone — favours the operator but framed as a mutual solution; `—` if Donna has not drafted one |
 
-Free-floating issues (no clause anchor) appear at the bottom under a separator row. Agreed and closed issues are excluded — this table covers open items only. Internal fields (Donna reasoning, authority flags, session IDs) never appear in this export.
+**One artifact, two audiences (decided):** the export is counterparty-safe by construction, which makes it equally usable as a principal briefing and as the operator's own outstanding-items record — no separate "internal" variant in v1. A **full-status record export** (including agreed items, an end-of-deal archive) is deferred pending real demand; the in-app Agreed tab already covers "what we've agreed" for the operator. **No CSV in v1 (decided):** the .docx issue list serves the briefing / walkthrough / record need; a parallel CSV adds a second format and maintenance surface with no distinct user-visible capability for a single operator (fails the effort-saved test) — revisit only if data-manipulation demand appears. (DD-60.)
 
-Style config is applied automatically — no formatting decisions at export time. Every export cuts a snapshot (version history). The **"sent to counterparty" tag** is separate: operator checks "Mark as sent to counterparty" on whichever export is actually going to the counterparty. The tag is exclusive — only one snapshot holds it at any time; applying it to a new snapshot removes it from the previous one. Mode B counterparty revision import always diffs against the tagged snapshot. Tag can also be moved retroactively via the snapshot history view (e.g. if you forgot to tick the box). Sharing a copy with a lawyer or for internal review is just a file download — no tag applied, no baseline impact.
+**Snapshots & baselines (DD-61).** Only a **send** cuts a snapshot — i.e. a Clean-copy export with recipient **Counterparty** or **Legal**. That snapshot stamps the pending `node_versions` edits group under it (closing this round's change set, which is what the next redline diffs) and advances the matching `last_shared_with_X` pointer. A **grab** — Clean-copy with recipient **Internal** or **Copy-only** — only regenerates and downloads the current file: **no snapshot cut, no pointer moved, no edits-group stamped, zero lineage effect.** Rationale: an operator re-pulling the current .docx mid-draft to read it is not a new version; cutting a snapshot on every grab would fragment one round's change set into many tiny snapshots and litter the lineage view (F27) with phantom versions, muddying both the redline baseline and the "where are we" briefing (§2.4 trust). Export only ever sets `shared` pointers; the `received` pointer is set solely by the Phase-2 revision-import path, pointing at an immutable as-received snapshot captured at import before any edits (DD-48) — the export/send path never touches it. A `shared` pointer can be moved retroactively from the snapshot-history view if a recipient was set wrong. Mode B counterparty-revision import diffs against the `last shared with counterparty` pointer (DD-48).
 
 ### Negotiation cockpit
 
-**Build status (2026-06-23) — increment-1 shipped at `/contracts/{id}`; the full design below is the target.** Built: read-only clause tree (depth indent, derived numbers, headings, issue-count badges) · **jump-to-clause-by-number** (a `/`-focused command bar — type the clause number the counterparty says, it scrolls/flashes that node) · **raise an issue in seconds** (select clause or none=free-floating → title + note + **Us / Counterparty "who raised it" toggle** → creates with `initiator=operator|counterparty`) · **issue list** (who-raised badges, click-anchor to jump). Planned next (increment-1b → Phase 2): F05 collapsible tree + defined-term hover; F07 issue **status** (open/agreed/deferred/kicked/dismissed); F09 **comment threads**; F08 inline **edit**; the Donna tab + per-issue analysis (Phase 2). The tree is **read-only** in the cockpit (structural editing stays in the import-review screen).
+**Build status (2026-06-23) — increment-1 shipped at `/contracts/{id}`; the full design below is the target.** Built: read-only clause tree (depth indent, derived numbers, headings, issue-count badges) · **jump-to-clause-by-number** (a `/`-focused command bar — type the clause number the counterparty says, it scrolls/flashes that node) · **clause search** (F05b: same bar also does keyword substring jump with match-cycling, and an AI conceptual fallback on no-literal-match — the project's first live-LLM surface) · **raise an issue in seconds** (select clause or none=free-floating → one **Description** box + **Us / Counterparty "who raised it" toggle** → creates with `initiator=operator|counterparty`; the box routes to `our_position`/`their_position` and `title` is auto-derived, DD-59) · **issue list** (who-raised badges, click-anchor to jump). The right rail cycles three tabs — **Issues** (the open list + a collapsed "Closed (N)" section, plus the free-floating "+ new issue" affordance) · **Current Clause** (DD-66: the selected clause's text + a raise-issue form scoped to that clause + that clause's open issues; clicking an issue card jumps to its clause and this tab) · **Donna** (F10 Q&A). Issue **status** is the binary **segmented Open|Closed toggle** (DD-65); the issue **description is editable in place** (`title` + position via `PATCH /issues/{id}`, DD-67); the **comment thread is removed** (DD-67). Planned next (Phase 2): F05 collapsible tree + defined-term hover; per-issue Donna analysis. Structural editing is now **live in the cockpit** via the per-clause ⋮ menu — inline **edit** (F08), **insert** (F08b), **delete** subtree (F08e) — plus a **Rearrange mode** (F08f, @dnd-kit, lazy-loaded) for drag reorder + reparent. **Front-/back-matter are excluded from drag** — only the operative clause tree is rearrangeable; structural editing of front/back-matter stays in the import-review screen.
 
 ### Layout
 
@@ -554,7 +572,7 @@ Renders the full contract scrollably. Looks like a contract, not a database UI. 
 
 **Inline actions on any clause (hover to reveal):**
 - **Edit** — clause body becomes an inline editable field. Save → markup resolves, version logged, audit trail written.
-- **+ Issue** — opens issue creation inline. No page change. Fields: **Anchor** (defaults to the clicked node — clause or sub-clause, any depth; editable at creation and re-anchorable afterward, since `node_id` is mutable per DD-17), **Title** (short label shown in issue list), **Issue Description** (operator's note — free text; this is what Donna reads to generate her recommendation), and **Who raised it** — a Us / Counterparty toggle setting `initiator=operator|counterparty` (DD-50 source-stance; `donna` reserved for F28 auto-flag). Donna is not involved at creation. Save → issue appears in Open Issues list with ● badge on the anchored clause; Donna's analysis is triggered asynchronously and ready by the time the operator opens the issue detail view. **Document-level (free-floating) issues** are created via a persistent **+ Free-floating issue** button pinned in the left panel (always visible, in both Tree and Issues modes, independent of document scroll position — no navigation required even when scrolled deep into a clause), or via **+ New issue** in the Open Issues tab. Both default the anchor to document-level (editable — can be anchored to a node if desired).
+- **+ Issue** — opens issue creation inline. No page change. **Single-box capture (DD-59):** two inputs only — **Anchor** (defaults to the clicked node — clause or sub-clause, any depth; editable at creation and re-anchorable afterward, since `node_id` is mutable per DD-17) and one **Description** box where the operator types the substance of the point in plain prose — plus the **Who raised it** Us / Counterparty toggle, which sets `initiator=operator|counterparty` (`donna` reserved for F28 auto-flag) **and routes the Description box:** operator-raised → `our_position`, counterparty-raised → `their_position` (it is *their* stance — keeps `our_position` clean for Us; this is the field Donna reads for her recommendation and the DD-50 source-stance). **`title` (NOT NULL) is auto-derived** from the Description text — a deterministic first-line/truncation snippet computed at raise (instant, no LLM on the capture path) — and is the short label in the Open Issues list; it is **editable in the issue detail view** (and may optionally be refined to a cleaner Donna-generated label by the async analysis pass). There is **no separate title field at capture** — the prior Title + Note two-field form is collapsed to this one box. Donna is not involved at creation. Save → issue appears in Open Issues list with ● badge on the anchored clause; the routed position is populated immediately, so Donna's analysis (triggered asynchronously) has the operator's stance to read and is ready by the time the detail view opens. **Document-level (free-floating) issues** are created via a persistent **+ Free-floating issue** button pinned in the left panel (always visible, in both Tree and Issues modes, independent of document scroll position — no navigation required even when scrolled deep into a clause), or via **+ New issue** in the Open Issues tab. Both default the anchor to document-level (editable — can be anchored to a node if desired).
 - **⋮ menu** — Insert clause above / Insert sub-clause / Insert clause below / Delete / Move.
 
 **Quick-jump bar** — top of right panel, always visible:
@@ -574,7 +592,40 @@ Type "3.4.12", hit Enter → instant scroll. The single most important live-call
 | Document | The two-panel cockpit (layers 1+2) | Default — live call |
 | Open Issues (N) | Full sortable/filterable issue list across the contract. Filter by status / authority / category / clause. Click any issue → issue detail view. | Pre-call prep, briefing export |
 | Agreed (N) | Read-only list of all closed/agreed positions. Visually locked — grey, no edit path. | "We already agreed this" defence during calls |
-| Donna | Contract-level Q&A, **persistent thread** (history survives across sessions). "What's still open?" "Summarise agreed terms." | Between calls, briefing prep |
+| Donna | **Single-contract grounded Q&A** — persistent chat thread (history survives across sessions, DD-40). Locate / explain / status-briefing ("what's still open?", "what did we agree?"); answers **cite clause nodes, clickable to jump**; **read-and-explain only** (advice routes out). See the Donna tab spec below. | Between calls, briefing prep |
+
+### Donna tab — single-contract Q&A (F10)
+
+The contract-level Q&A surface (Layer 3). A **persistent chat thread**, one per contract (`donna_conversations`/`donna_messages`), that survives across sessions — the operator returns days later to her prior Q&A, not a blank box (DD-40). Scope locked to v1 in DD-62.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Donna · <Contract>                                          │
+├─────────────────────────────────────────────────────────────┤
+│  You:   What's still open on payment terms?                  │
+│                                                              │
+│  Donna: Two issues are open under §4 Payment:                │
+│         • 4.1(b) Payment terms — we want net-30, they …      │
+│              ↳ [4.1(b)]   ← click jumps to the clause         │
+│         • 4.3 Late-payment interest — open, no position yet   │
+│              ↳ [4.3]                                          │
+│                                                              │
+│  You:   Where's the liability cap?                           │
+│                                                              │
+│  Donna: The cap is in §11.2 "Maximum aggregate liability".   │
+│              ↳ [11.2]                                         │
+├─────────────────────────────────────────────────────────────┤
+│  [ Ask about this contract…                             ↵ ]  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+- **Three question shapes**, all read-and-explain: **locate** ("where's the liability cap?"), **explain** ("what does clause 12 say about termination?"), **status-briefing** ("what's still open?", "what did we agree?" — answered over the issue ledger; the headline capability for briefing a principal, the clearest thing Word/Ctrl-F can't do).
+- **Cited, clickable answers.** Every answer cites the node(s) it drew from at the **clause/sub-clause level**; each citation is a chip that **jumps to that clause** in the right panel (reuse the F05/F05b jump). No char-offset highlighting in v1.
+- **Read-and-explain guardrail.** The box **explains the contract; it never advises, drafts, or takes a position.** "Should I accept this?" / "is this enforceable?" / "what should we counter?" are **not** answered here — Donna deflects to the issue-scoped surface (F11, where advice + drafting + live research live) or, when the question needs legal judgment beyond the document, to **"get a lawyer"** with a framed question + attached clauses (DD-14 rules 1–2). A positional assertion made outside an issue and ungrounded in a ledger is exactly the §2.4 credibility risk this guardrail removes.
+- **Honest failure.** When the answer isn't in this contract, Donna says so plainly — "I don't see anything in this contract about X" — and never fabricates.
+- **Grounding.** Answers draw **only** from this contract's node text + the issue ledger (`our_position`/`their_position`) + agreed/open status — no outside law or general knowledge in this surface (live market research stays in F11, DD-38). Retrieval finds the clause the operator *means* even when her words differ from the contract's via the **F05b conceptual lookup — no embeddings** (DD-62); `node_embeddings` (F12, Phase 2) later backs the same surface invisibly.
+- **Single contract, not whole-deal** in v1. Cross-contract "what did we agree with this counterparty across all agreements" is a later add (the schema already makes `donna_conversations` one-per-contract).
+- Context is managed by the DD-40 window (last 10 turns + rolling summary); the operator manages nothing. Optional "new thread / clear" affordance, not load-bearing for v1.
 
 ### Issue detail view
 
@@ -620,24 +671,21 @@ Opened when operator clicks any issue from the Open Issues tab or the Donna tab.
 │  [ Brainstorm with Donna ↗ ]                                           │
 │                                                                         │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  [ ✓ Mark agreed ]    [ → Defer ]    [ ↑ Escalate to principal ]       │
-├─────────────────────────────────────────────────────────────────────────┤
-│  COMMENTS                                               [ + Comment ]   │
-│                                                                         │
-│  No comments yet.                                                       │
+│  Status:  [ Open │ Closed ]              [ ↑ Escalate to principal ]    │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Behaviour notes:**
-- **Issue Description** — operator-written at creation. Editable inline. This is what Donna reads to generate her recommendation.
+- **Issue Description** — the populated stance field (`our_position` or `their_position`, routed by `initiator` at capture, DD-59); operator-written at creation, editable inline. This is what Donna reads to generate her recommendation. The header **title** (the auto-derived short label) is also editable here.
 - **Donna's recommendation** — generated asynchronously after issue creation; ready when the detail view opens. If the issue involves a market data point, Donna invokes live research (DD-38) and cites sources. Reasoning purely from clause context + agreed/open positions otherwise (DD-27).
 - **Use Donna's language** — applies her proposed text to the clause body immediately. **Edit Donna's language** — opens the clause inline editor pre-filled with her proposed text.
 - **Brainstorm with Donna ↗** — opens a chat overlay pre-loaded with the clause + issue description. Back-and-forth exploration ("what if we propose a tiered rate?", "what's the floor we should accept?") without leaving context. The conversation is **ephemeral** — not persisted; it opens fresh each time. If the brainstorm produces language the operator accepts, that committed outcome applies to the issue through the standard apply path (adopted language lands on the issue, node version + audit entry written, decision logged per DD-29). Only the adopted outcome is remembered — the exploratory chat and any rejected intermediate proposals are discarded (DD-42).
-- **Mark agreed flow** — clicking "Mark agreed" shows a single confirmation step:
+- **Status control** — a horizontal **segmented Open|Closed toggle** (DD-65), one click to switch; replaces the old status dropdown. Toggling to **Closed** drops the issue from the open list into the collapsed Closed section (not deleted; reopenable).
+- **Closing flow** — toggling an issue to **Closed** shows a single confirmation step:
 
 ```
   ┌─────────────────────────────────────────────────────────┐
-  │  Agreed language                                        │
+  │  Final agreed language                                  │
   │                                                         │
   │  ┌─────────────────────────────────────────────────┐   │
   │  │  "…shall store Products at a rate of USD 15/ton │   │
@@ -650,9 +698,7 @@ Opened when operator clicks any issue from the Open Issues tab or the Donna tab.
   └─────────────────────────────────────────────────────────┘
 ```
 
-  Pre-filled with the current clause body. Editable — covers "agreed as-is" (no edit) and "we settled on different language on the call" (edit before confirming). On confirm: clause body updated (if changed), issue status → agreed, ● badge on clause → ✓, issue moves to Agreed tab (locked, read-only), audit log entry written.
-
-- **Comment thread** — shared between operator and principal. Principal comments appear flagged with their name and a visual indicator.
+  Pre-filled with the current clause body. Editable — covers "agreed as-is" (no edit) and "we settled on different language on the call" (edit before confirming). On confirm: clause body updated (if changed), issue status → `closed`, ● badge on clause → ✓, issue drops from the open list into the collapsed Closed section (the Agreed tab, locked/read-only), audit log entry written.
 
 ### Design decisions captured here
 
@@ -711,14 +757,21 @@ Triggered from within the cockpit of an existing contract. The contract already 
 
 ---
 
-## 12. Export Pipeline (F14/F15)
+## 12. Export Pipeline (F14 / F15b / F15 / F31)
 
-1. **Snapshot** the contract ("send to counterparty") — captures all node states (DD-09).
-2. **Regenerate** the full .docx from the DB through the per-contract style config (numbering, fonts, emphasis rules). Full regeneration is safe precisely because the data layer is content-complete; there is no hand-edited Word file to clobber.
-3. **Tracked changes** from the diff between the last snapshot and current state (DD-03). Content and structure changes are shown; **pure renumber shifts are suppressed**. Each change is authored by the operator's organization, never Donna (DD-44).
-4. **Integrity check** — verify content (wording, numbering, tables, special chars) is preserved; only styling may be normalized to the house style.
+Three operator-facing exports (§9 `Export ▾`), all surfaced from the cockpit, all rendered through the per-contract style config so styling is never decided at export time.
 
-Internal artifacts (issue notes, "ask the principal" TODOs) **never** cross into the counterparty export.
+**Clean copy (.docx) — F15b** (the DB→.docx renderer; the foundation build):
+1. **Snapshot** the contract — **only on a send** (recipient Counterparty / Legal): captures the full tree topology + node bodies at this point in time (DD-09, OQ-08), stamps the pending `node_versions` edits group under the new snapshot (closing this round's change set), and advances the matching `last_shared_with_X` `shared` pointer (DD-48). A **grab** (recipient Internal / Copy-only) **skips this step entirely** — no snapshot, no pointer, no edits-group stamp; it goes straight to regenerate + download (DD-61). Export sets `shared` pointers only; `received` pointers are set solely by the Phase-2 revision-import path (DD-48), never by export.
+2. **Regenerate** the full .docx from the DB through the style config (numbering, fonts, emphasis rules). Safe because the data layer is content-complete — there is no hand-edited Word file to clobber (DD-43).
+3. **Integrity check** — verify content (wording, numbering, tables, special chars) is preserved; only styling may be normalized to the house style.
+
+**Redline (.docx) — F15** (builds on F15b's renderer):
+4. **Tracked changes** from the diff between the chosen baseline snapshot (default `last shared with counterparty`, DD-48) and the current working copy (DD-03). Content and structure changes are shown — moves as tracked moves (DD-13); **pure renumber shifts are suppressed**. Emitted as Word `<w:ins>`/`<w:del>` (DD-51), each authored by the operator's configured organization, **never Donna** (DD-44, F25). Requires a baseline — disabled until the first snapshot exists (§9).
+
+**Issue list (.docx) — F31:** a standalone table render (no snapshot, no contract body) of unresolved issues (`status='open'` only, DD-65) — columns, filter, and order in §9. Constructive, counterparty-safe language only.
+
+Internal artifacts — issue notes, Donna reasoning, `drafting_note` nodes (DD-54), "ask the principal" TODOs, authority / `needs_legal_review` flags — **never** cross into any counterparty-facing export.
 
 ---
 
@@ -727,9 +780,9 @@ Internal artifacts (issue notes, "ask the principal" TODOs) **never** cross into
 | Phase | Deliverable | Gate (done = …) |
 |---|---|---|
 | **0 — Import spine** | Parser → node tree (incl. `w:sdt` content-control extraction, DD-45); cross-ref/term/parameter detection; clean-document guard (DD-46); comments→issues; import-review UI; **de-risk spike first** | All contracts correctly structured; parse verified by operator |
-| **1 — Cockpit** | Clause tree browser; issue capture (comment→issue) with initiator/authority/category/status; direct-edit path; audit log | Operator runs a live call capturing in Donna (Word still screen-shared) |
+| **1 — Cockpit** | Clause tree browser; issue capture with initiator/authority/category/status; direct-edit path; audit log | Operator runs a live call capturing in Donna (Word still screen-shared) |
 | **2 — Donna's brain** | Deal- and issue-scoped AI; tiered RAG + contested-node history; behavioral contract; defined-terms registry; semantic search; counterparty revision import + change review (F03b/F03c); decision logging (F03d) | Donna answers and brainstorms (every claim cited to a node); counterparty revision import functional; decisions logged |
-| **3 — Redline export** | Snapshot; regenerate via style config; tracked changes (renumber suppressed); version diff | A counterparty-readable redline with verified round-trip integrity |
+| **3 — Redline export** | Snapshot (F14); clean-copy DB→.docx regenerate via style config (F15b); tracked-changes redline, renumber suppressed (F15); issue-list export (F31); version diff | A counterparty-readable redline with verified round-trip integrity |
 | **4 — Cross-contract layer** | Deal parameters defined once, referenced, ripple-flagged; import-time inconsistency flags | Changing a shared value flags every ripple across contracts |
 | **v1.1 — Principal portal** | Curated read-only view + issue-decision write path | Principal can read escalated items and decide them; no edit path |
 | **v2 — Backlog** | Granola/transcript ingest; style-config UI editor; negotiation pattern learning (DD-29 v2); first-import tracked-change triage — onboard an existing in-flight contract (DD-34, DD-46); three-way merge (reconciling parallel legal team revision + operator verbally-captured edits — deferred pending v1 learnings and counterparty sequencing validation, DD-39) | — |

@@ -164,6 +164,99 @@ async def test_no_gap_fallback_respaces_then_inserts(monkeypatch: Any) -> None:
     assert result.order_index == 150  # after_new(100) + gap//2
 
 
+async def test_prepend_before_first_child_uses_half_slot(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(node_create, "record_event", _capture_record(captured))
+    before = _node_record(id="a", order_index=100, parent_id=None)
+    conn = _FakeConn(
+        nodes={"a": before},
+        siblings=[{"id": "a", "order_index": 100}, {"id": "b", "order_index": 200}],
+    )
+
+    result = await node_create.create_node(conn, "c1", None, None, "Top.", before_node_id="a")
+
+    assert result.order_index == 50  # no prev: before(100) // 2
+    assert _insert_args(conn)[2] == 50
+
+
+async def test_insert_before_middle_child_computes_midpoint(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(node_create, "record_event", _capture_record(captured))
+    before = _node_record(id="b", order_index=200, parent_id=None)
+    conn = _FakeConn(
+        nodes={"b": before},
+        siblings=[{"id": "a", "order_index": 100}, {"id": "b", "order_index": 200}],
+    )
+
+    result = await node_create.create_node(conn, "c1", None, None, "Between.", before_node_id="b")
+
+    assert result.order_index == 150  # midpoint(prev 100, before 200)
+
+
+async def test_before_no_gap_fallback_respaces_then_inserts(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(node_create, "record_event", _capture_record(captured))
+    before = _node_record(id="b", order_index=101, parent_id=None)
+    # adjacent integers — midpoint(100, 101) == 100 == prev: no room below before.
+    conn = _FakeConn(
+        nodes={"b": before},
+        siblings=[{"id": "a", "order_index": 100}, {"id": "b", "order_index": 101}],
+    )
+
+    result = await node_create.create_node(conn, "c1", None, None, "Squeeze.", before_node_id="b")
+
+    assert any("order_index = order_index +" in sql for sql, _ in conn.executes)
+    set_orders = [
+        args
+        for sql, args in conn.executes
+        if sql.strip().startswith("UPDATE nodes SET order_index = $2")
+    ]
+    assert ("a", 100) in set_orders and ("b", 200) in set_orders
+    assert result.order_index == 150  # just below re-spaced before(200): 200 - gap//2
+
+
+async def test_before_first_child_no_room_respaces(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(node_create, "record_event", _capture_record(captured))
+    before = _node_record(id="a", order_index=1, parent_id=None)
+    # before is first child at order_index 1: 1 // 2 == 0, no room — re-space.
+    conn = _FakeConn(nodes={"a": before}, siblings=[{"id": "a", "order_index": 1}])
+
+    result = await node_create.create_node(conn, "c1", None, None, "Top.", before_node_id="a")
+
+    set_orders = [
+        args
+        for sql, args in conn.executes
+        if sql.strip().startswith("UPDATE nodes SET order_index = $2")
+    ]
+    assert ("a", 100) in set_orders
+    assert result.order_index == 50  # below re-spaced before(100): 100 - gap//2
+
+
+async def test_both_anchors_rejected() -> None:
+    after = _node_record(id="a", order_index=100, parent_id=None)
+    before = _node_record(id="b", order_index=200, parent_id=None)
+    conn = _FakeConn(nodes={"a": after, "b": before}, siblings=[])
+    with pytest.raises(node_create.ConflictingAnchors):
+        await node_create.create_node(conn, "c1", None, "a", "x", before_node_id="b")
+    assert conn.fetchvals == []
+
+
+async def test_before_node_not_found_rejected() -> None:
+    conn = _FakeConn(nodes={}, siblings=[])
+    with pytest.raises(node_create.BeforeNodeNotFound):
+        await node_create.create_node(conn, "c1", None, None, "x", before_node_id="missing")
+    assert conn.fetchvals == []
+
+
+async def test_before_node_wrong_parent_rejected() -> None:
+    before = _node_record(id="a", order_index=100, parent_id="otherparent")
+    conn = _FakeConn(nodes={"a": before}, siblings=[])
+    with pytest.raises(node_create.BadPlacement):
+        await node_create.create_node(conn, "c1", None, None, "x", before_node_id="a")
+    assert conn.fetchvals == []
+
+
 async def test_invalid_role_rejected() -> None:
     conn = _FakeConn(siblings=[])
     with pytest.raises(node_create.InvalidRole):

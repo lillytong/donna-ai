@@ -59,7 +59,7 @@ def test_deterministic_does_not_blindly_title_the_first_block() -> None:
     # deterministic pass defers titling to the region pass; the note is a
     # drafting_note.
     blocks = [
-        _p(0, "[CAM Notes: confirm stamping before execution]"),
+        _p(0, "[Counsel Note: confirm stamping before execution]"),
         _p(1, "TECHNOLOGY LICENSING AGREEMENT"),
         _p(2, "AGREED AS FOLLOWS:"),
         _p(3, "1. Scope"),
@@ -107,13 +107,13 @@ def test_operative_clause_with_executed_keyword_stays_clause() -> None:
 
 
 def test_plural_drafting_note_detected() -> None:
-    # "\bNOTE\b" missed the plural; "[CAM Notes: …]" / "[Notes to Draft: …]" must
+    # "\bNOTE\b" missed the plural; "[Counsel Notes: …]" / "[Notes to Draft: …]" must
     # still be drafting notes.
     blocks = [
         _p(0, "AGREEMENT"),
         _p(1, "AGREED AS FOLLOWS:"),
         _p(2, "1. Supply", num_id=7),
-        _p(3, "[CAM Notes: align defined terms across the Transaction Documents]"),
+        _p(3, "[Counsel Notes: align defined terms across the Transaction Documents]"),
         _p(4, "[Notes to Draft: confirm the volume with counsel before sending]"),
     ]
     classified = classify(blocks)

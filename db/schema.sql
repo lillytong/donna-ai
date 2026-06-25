@@ -275,7 +275,7 @@ CREATE TABLE issues (
     recommended_position            TEXT,
     donna_counter_language          TEXT,
     status                          TEXT NOT NULL DEFAULT 'open'
-                                    CHECK (status IN ('open','agreed','deferred','kicked','dismissed')),
+                                    CHECK (status IN ('open','closed')),
     initiator                       TEXT NOT NULL
                                     CHECK (initiator IN ('operator','counterparty','donna')),
     auto_flag                       JSONB,    -- non-null only when initiator='donna' (DD-50)
@@ -298,14 +298,8 @@ CREATE TABLE issues (
 CREATE INDEX issues_contract_idx ON issues (contract_id);
 CREATE INDEX issues_node_idx     ON issues (node_id);
 
-CREATE TABLE issue_comments (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    issue_id    UUID NOT NULL REFERENCES issues(id),
-    actor       TEXT NOT NULL CHECK (actor IN ('user','ai','principal')),
-    content     TEXT NOT NULL,
-    snapshot_id UUID REFERENCES contract_snapshots(id),  -- which round
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+-- (The issue_comments table was removed in DD-67: the issue description is
+-- editable inline, so a separate comment thread is redundant.)
 
 -- ============================================================================
 -- Donna conversation state (DD-40) — windowed last-10-turns + rolling summary
@@ -338,10 +332,7 @@ CREATE TABLE node_embeddings (
     embedded_at TIMESTAMPTZ NOT NULL DEFAULT now()  -- staleness: nodes.updated_at > embedded_at
 );
 
-CREATE TABLE comment_embeddings (
-    comment_id UUID PRIMARY KEY REFERENCES issue_comments(id),
-    embedding  VECTOR(1024)
-);
+-- (comment_embeddings was removed in DD-67 alongside the issue_comments table.)
 
 -- ============================================================================
 -- Audit log — append-only; never updated. Every content/issue mutation.
@@ -373,4 +364,6 @@ CREATE TABLE schema_migrations (
 );
 
 INSERT INTO schema_migrations (version) VALUES
-    ('0000_baseline');
+    ('0000_baseline'),
+    ('0001_issue_status_binary'),
+    ('0002_drop_issue_comments');

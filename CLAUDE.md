@@ -45,6 +45,9 @@ db/schema.sql · frontend/ (Next.js) · evals/ · tests/{unit,integration,system
 
 ## Privacy (open-source repo, hard rule)
 
-No client/counterparty/deal/person names, contract content, or parameter values
-in the repo. All logic parameterized; prompts use variables; seed data is
-gitignored. Run the name pass before the first commit.
+No client/counterparty/deal/person names, **legal-firm names (our outside counsel
+or a counterparty's — never name a real firm; use a generic label like
+"[Counsel Note: …]" or a clearly fictional firm if an example is needed)**, contract
+content, or parameter values in the repo. All logic parameterized; prompts use
+variables; seed data is gitignored. The name pass treats legal-firm names as a
+flagged category; run it before any commit that will be pushed.

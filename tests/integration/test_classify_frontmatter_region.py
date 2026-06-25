@@ -135,7 +135,7 @@ async def test_apply_region_never_overrides_deterministic_drafting_note(monkeypa
 
     monkeypatch.setattr(classify_mod, "complete", fake_complete)
 
-    doc = _doc("[CAM Notes: ...]", "AGREED AS FOLLOWS:")
+    doc = _doc("[Counsel Note: ...]", "AGREED AS FOLLOWS:")
     classifications = {
         0: BlockClassification(role="drafting_note"),
         1: BlockClassification(role="agreement_statement"),

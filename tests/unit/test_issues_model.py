@@ -1,5 +1,6 @@
-"""Issue + comment model validation (pure logic): defaults, enums, the F06
-creation contract that Donna's analysis fields are never set at creation."""
+"""Issue model validation (pure logic): defaults, enums, the F06 creation
+contract that Donna's analysis fields are never set at creation, and the DD-67
+edit contract (partial, only provided fields written)."""
 
 from __future__ import annotations
 
@@ -7,8 +8,8 @@ from datetime import UTC, datetime
 
 import pytest
 from backend.models.issues import (
-    CommentCreate,
     IssueCreate,
+    IssueEditRequest,
     IssueStatusUpdate,
     StoredIssue,
 )
@@ -61,25 +62,27 @@ def test_issue_create_rejects_bad_authority() -> None:
 
 def test_status_update_rejects_bad_status() -> None:
     with pytest.raises(ValidationError):
-        IssueStatusUpdate(status="closed")  # type: ignore[arg-type]
+        IssueStatusUpdate(status="agreed")  # type: ignore[arg-type]
 
 
 def test_status_update_accepts_decision_passthrough() -> None:
     update = IssueStatusUpdate(
-        status="agreed",
+        status="closed",
         decision={"verdict": "accept_theirs", "actor": "user"},
     )
     assert update.decision == {"verdict": "accept_theirs", "actor": "user"}
 
 
-def test_comment_rejects_bad_actor() -> None:
-    with pytest.raises(ValidationError):
-        CommentCreate(issue_id="i1", actor="robot", content="hi")  # type: ignore[arg-type]
+def test_edit_request_is_fully_partial() -> None:
+    # DD-67: an empty edit sets nothing; all three fields are optional.
+    edit = IssueEditRequest()
+    assert edit.model_dump(exclude_unset=True) == {}
 
 
-def test_comment_issue_id_optional_for_path_override() -> None:
-    comment = CommentCreate(actor="user", content="note")
-    assert comment.issue_id is None
+def test_edit_request_tracks_only_provided_fields() -> None:
+    # exclude_unset distinguishes "omitted" from an explicit null clearing a position.
+    edit = IssueEditRequest(title="Revised", their_position=None)
+    assert edit.model_dump(exclude_unset=True) == {"title": "Revised", "their_position": None}
 
 
 def test_stored_issue_carries_jsonb_passthrough() -> None:

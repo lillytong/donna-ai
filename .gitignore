@@ -40,6 +40,7 @@ db/dump*.sql
 
 # Dev/throwaway artifacts (screenshots, browser tool output, sample docs)
 *.png
+!docs/assets/*.png          # committed README/docs images are the exception
 .playwright-mcp/
 sample-contract.docx
 

@@ -1,5 +1,4 @@
-"""Issues entities (F06/F07/F08c/F09) — negotiation points and their append-only
-comment threads.
+"""Issues entities (F06/F07/F08c/F09) — negotiation points raised on a contract.
 
 Each entity has a create-input model (validated request body) and a stored-output
 model (read back from the DB, with server defaults populated). Enum fields mirror
@@ -15,9 +14,12 @@ COUNTERPARTY raised it (`counterparty`); `donna` is reserved for the F28 auto-fl
 path and is intentionally not accepted here. `node_id` null = a free-floating,
 contract-level issue (F08c); it is mutable and can be anchored to a node later.
 
-`IssueCreate.contract_id` and `CommentCreate.issue_id` default to None because the
-parent id is carried in the URL path; the route overrides them from the path so
-the URL is authoritative.
+The description (title + position text) is editable after creation via
+`IssueEditRequest` (DD-67): only the fields present on the request are updated, so
+an omitted field is left untouched and an explicit null clears a position.
+
+`IssueCreate.contract_id` defaults to None because the parent id is carried in the
+URL path; the route overrides it from the path so the URL is authoritative.
 
 `decision` and `auto_flag` are open JSONB blobs whose shapes are documented in
 SPEC §6; here they are passthrough dicts (full models belong with the Phase-2
@@ -31,12 +33,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-IssueStatus = Literal["open", "agreed", "deferred", "kicked", "dismissed"]
+IssueStatus = Literal["open", "closed"]
 IssueInitiator = Literal["operator", "counterparty", "donna"]
 IssueCreateInitiator = Literal["operator", "counterparty"]
 IssueAuthority = Literal["within-operator-authority", "needs-principal"]
 IssueCategory = Literal["commercial", "legal", "operational", "counterparty_proposed_edit"]
-CommentActor = Literal["user", "ai", "principal"]
 
 
 class IssueCreate(BaseModel):
@@ -84,16 +85,7 @@ class IssueStatusUpdate(BaseModel):
     decision: dict[str, Any] | None = None
 
 
-class CommentCreate(BaseModel):
-    issue_id: str | None = None
-    actor: CommentActor
-    content: str
-
-
-class StoredComment(BaseModel):
-    id: str
-    issue_id: str
-    actor: str
-    content: str
-    snapshot_id: str | None = None
-    created_at: datetime
+class IssueEditRequest(BaseModel):
+    title: str | None = None
+    our_position: str | None = None
+    their_position: str | None = None

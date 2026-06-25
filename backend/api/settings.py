@@ -23,6 +23,7 @@ from backend.models.settings import (
     ContractUpdate,
     DealCreate,
     DealUpdate,
+    OperatorOrganization,
     StoredClient,
     StoredContract,
     StoredContractType,
@@ -36,8 +37,8 @@ router = APIRouter()
 # Delete policy: clients/deals/contract_types are hard-deleted but FK-guarded —
 # a referenced row is refused with 409 rather than orphaning children. Contracts
 # are the exception: a contract OWNS its content (SPEC §2.3), so its delete
-# cascades (issue_comments → issues → nodes → contract) in one transaction. The
-# client `status` archive (clients only) is a separate concept, not touched here.
+# cascades (issues → nodes → contract) in one transaction. The client `status`
+# archive (clients only) is a separate concept, not touched here.
 EVENT_DELETED = "deleted"
 
 
@@ -57,6 +58,21 @@ async def _audit(
             actor=get_settings().operator_actor,
             payload=payload,
         ),
+    )
+
+
+# --- operator organization (F25, DD-44) ------------------------------------
+# Read-only: the org identity is a config value (config/.env), not a DB entity,
+# so there is no write path here. `export_author` is the resolved redline author.
+
+
+@router.get("/organization", response_model=OperatorOrganization)
+async def get_organization() -> OperatorOrganization:
+    s = get_settings()
+    return OperatorOrganization(
+        organization_name=s.operator_org_name,
+        export_author=s.export_author,
+        editable=False,
     )
 
 

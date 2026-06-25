@@ -29,16 +29,15 @@ class _FakeConn:
 
 
 async def test_delete_contract_cascades_in_fk_order() -> None:
-    # issue_comments, issues, footnotes, node_versions, nodes, contract
-    conn = _FakeConn([7, 3, 2, 5, 12, 1])
+    # issues, footnotes, node_versions, nodes, contract (comments removed, DD-67)
+    conn = _FakeConn([3, 2, 5, 12, 1])
 
     result = await settings_repo.delete_contract(conn, "contract-1")
 
     assert result is not None
-    assert (result.issue_comments, result.issues, result.nodes) == (7, 3, 12)
+    assert (result.issues, result.nodes) == (3, 12)
     tables = [sql.split("FROM")[1].split()[0] for sql, _ in conn.calls]
     assert tables == [
-        "issue_comments",
         "issues",
         "footnotes",
         "node_versions",
@@ -49,7 +48,7 @@ async def test_delete_contract_cascades_in_fk_order() -> None:
 
 
 async def test_delete_contract_missing_returns_none() -> None:
-    conn = _FakeConn([0, 0, 0, 0, 0, 0])  # no rows anywhere -> contract did not exist
+    conn = _FakeConn([0, 0, 0, 0, 0])  # no rows anywhere -> contract did not exist
 
     result = await settings_repo.delete_contract(conn, "missing")
 

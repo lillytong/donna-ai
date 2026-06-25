@@ -7,10 +7,10 @@
 }
 
 /* ---- step / actions bar ---- */
-/* Secondary toolbar that sits under the persistent SiteNav: the Context → Parse
-   → Review → Commit steps on the left, the upload/review/commit actions on the
-   right. Tinted to the faint field tone (not white) so it reads as a working
-   sub-bar rather than a second top nav. */
+/* The sole top bar on /import (SiteNav steps aside, like the cockpit): the donna.ai
+   brand returns home, the Context → Parse → Review → Commit steps mark progress,
+   and the upload/review/commit actions sit on the right. Tinted to the faint field
+   tone (not white) so it reads as a quiet working bar, never a heavy nav. */
 .topbar {
   display: flex;
   align-items: center;

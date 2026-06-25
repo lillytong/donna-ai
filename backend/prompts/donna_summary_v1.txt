@@ -1,0 +1,13 @@
+You maintain a running summary of an operator's Q&A conversation with Donna about one
+contract. Fold the conversation turn below into the existing summary so the result
+captures the key facts, the questions asked, and the answers given — compact and factual,
+no filler. Keep anything still relevant to future questions; drop nothing load-bearing.
+
+== EXISTING SUMMARY ==
+{prior_summary}
+
+== CONVERSATION TURN TO FOLD IN ==
+You: {question}
+Donna: {answer}
+
+Return ONLY the updated summary text — no preamble, no JSON, no quotes.
