@@ -80,10 +80,12 @@ class FakeConn:
         changes: list[dict[str, Any]] | None = None,
         hunks: list[dict[str, Any]] | None = None,
         nodes: list[dict[str, Any]] | None = None,
+        session_status: str = "reviewing",
     ) -> None:
         self.changes = changes or []
         self.hunks = hunks or []
         self.nodes = nodes or []
+        self.session_status = session_status
         self.executes: list[tuple[str, tuple[Any, ...]]] = []
         self.inserted_hunks: list[tuple[Any, ...]] = []
 
@@ -103,7 +105,7 @@ class FakeConn:
 
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
         if "FROM counterparty_revision_sessions" in sql:
-            return _SESSION
+            return {**_SESSION, "status": self.session_status}
         if "FROM counterparty_revision_changes" in sql and "id = $1" in sql:
             return next((c for c in self.changes if c["id"] == args[0]), None)
         if "FROM counterparty_revision_hunks h" in sql:
@@ -284,3 +286,42 @@ async def test_decide_node_rejects_edited_change() -> None:
     )
     with pytest.raises(svc.WrongChangeKind):
         await svc.decide_node(conn, "ch1", NodeDecideRequest(verdict="accept"))
+
+
+# --- guard: no decisions on an already-applied (completed) session ----------
+
+
+@pytest.mark.asyncio
+async def test_decide_hunk_rejects_completed_session() -> None:
+    conn = FakeConn(changes=[_change()], hunks=[_hunk()], session_status="completed")
+    with pytest.raises(svc.SessionAlreadyApplied) as exc:
+        await svc.decide_hunk(conn, "h1", HunkDecideRequest(verdict="accept"))
+    assert exc.value.status_code == 409
+    assert not any("SET verdict = $2" in sql for sql, _ in conn.executes)
+
+
+@pytest.mark.asyncio
+async def test_decide_node_rejects_completed_session() -> None:
+    conn = FakeConn(
+        changes=[_change(node_id=None, proposed_order_index=200, match_confidence=None)],
+        hunks=[_hunk(hunk_type="insertion", original_text=None, proposed_text="added clause")],
+        session_status="completed",
+    )
+    with pytest.raises(svc.SessionAlreadyApplied) as exc:
+        await svc.decide_node(conn, "ch1", NodeDecideRequest(verdict="accept"))
+    assert exc.value.status_code == 409
+    assert not any("SET verdict = $2" in sql for sql, _ in conn.executes)
+
+
+@pytest.mark.asyncio
+async def test_confirm_match_rejects_completed_session() -> None:
+    conn = FakeConn(
+        changes=[_change(proposed_parent_id="b3", match_confidence=0.5)],
+        hunks=[_hunk()],
+        nodes=[_node()],
+        session_status="completed",
+    )
+    with pytest.raises(svc.SessionAlreadyApplied) as exc:
+        await svc.confirm_match(conn, "ch1", ConfirmMatchRequest(action="confirm"))
+    assert exc.value.status_code == 409
+    assert not any("SET node_id = $2" in sql for sql, _ in conn.executes)

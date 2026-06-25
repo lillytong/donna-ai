@@ -82,10 +82,12 @@ class FakeConn:
         changes: list[dict[str, Any]] | None = None,
         hunks: list[dict[str, Any]] | None = None,
         nodes: list[dict[str, Any]] | None = None,
+        session_status: str = "reviewing",
     ) -> None:
         self.changes = changes or []
         self.hunks = hunks or []
         self.nodes = nodes or []
+        self.session_status = session_status
         self.executes: list[tuple[str, tuple[Any, ...]]] = []
         self.issues: list[tuple[Any, ...]] = []
 
@@ -107,7 +109,7 @@ class FakeConn:
 
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
         if "FROM counterparty_revision_sessions" in sql:
-            return _SESSION
+            return {**_SESSION, "status": self.session_status}
         if "FROM counterparty_revision_changes" in sql and "id = $1" in sql:
             return next((c for c in self.changes if c["id"] == args[0]), None)
         if "FROM counterparty_revision_hunks h" in sql:
@@ -262,6 +264,46 @@ def test_decide_node_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     _install(monkeypatch, conn)
     resp = client.post("/revisions/changes/ch/decide-node", json={"verdict": "accept"})
     assert resp.status_code == 200
+
+
+# --- guard: decisions rejected (409) once the session is applied/completed --
+
+
+def test_confirm_match_on_completed_session_409(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = FakeConn(
+        changes=[_change(id="ch", proposed_parent_id="b3", match_confidence=0.4, status="pending")],
+        hunks=[_hunk(id="h", change_id="ch")],
+        nodes=[_node(id="b3")],
+        session_status="completed",
+    )
+    _install(monkeypatch, conn)
+    resp = client.post("/revisions/changes/ch/confirm-match", json={"action": "confirm"})
+    assert resp.status_code == 409
+    assert not any("SET node_id = $2" in sql for sql, _ in conn.executes)
+
+
+def test_decide_hunk_on_completed_session_409(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = FakeConn(
+        changes=[_change(id="ch", node_id="b1", match_confidence=0.9, status="partial")],
+        hunks=[_hunk(id="h", change_id="ch")],
+        session_status="completed",
+    )
+    _install(monkeypatch, conn)
+    resp = client.post("/revisions/hunks/h/decide", json={"verdict": "accept"})
+    assert resp.status_code == 409
+    assert not any("SET verdict = $2" in sql for sql, _ in conn.executes)
+
+
+def test_decide_node_on_completed_session_409(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = FakeConn(
+        changes=[_change(id="ch", node_id=None, proposed_order_index=200, status="pending")],
+        hunks=[_hunk(id="h", change_id="ch", hunk_type="insertion", original_text=None)],
+        session_status="completed",
+    )
+    _install(monkeypatch, conn)
+    resp = client.post("/revisions/changes/ch/decide-node", json={"verdict": "accept"})
+    assert resp.status_code == 409
+    assert not any("SET verdict = $2" in sql for sql, _ in conn.executes)
 
 
 # --- apply ------------------------------------------------------------------

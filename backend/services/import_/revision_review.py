@@ -424,6 +424,17 @@ async def _change_view(conn: Any, change_id: str) -> ReviewChange:
     return _to_change(row, hunks)
 
 
+async def _assert_session_reviewing(conn: Any, session_id: str) -> None:
+    """Decisions mutate verdicts that only matter pre-apply; reject them once the
+    session has advanced past `reviewing` (apply is the sole state-advancing op and
+    is already terminal). Mirrors apply_session's already-completed rejection."""
+    row = await conn.fetchrow(_SELECT_SESSION, session_id)
+    if row is None:
+        raise SessionNotFound(session_id)
+    if row["status"] != "reviewing":
+        raise SessionAlreadyApplied(f"session {session_id} has already been applied")
+
+
 # --------------------------------------------------------------------------- #
 # 6b match-confirm (abstain resolution)                                         #
 # --------------------------------------------------------------------------- #
@@ -435,6 +446,8 @@ async def confirm_match(conn: Any, change_id: str, req: ConfirmMatchRequest) -> 
         raise NotAnAbstain(f"change {change_id} is not in the abstain bucket")
 
     session = await conn.fetchrow(_SELECT_SESSION, str(row["session_id"]))
+    if session["status"] != "reviewing":
+        raise SessionAlreadyApplied(f"session {session['id']} has already been applied")
     contract_id = str(session["contract_id"])
     candidate = str(row["proposed_parent_id"]) if row["proposed_parent_id"] is not None else None
     confidence = row["match_confidence"]
@@ -537,6 +550,7 @@ async def decide_hunk(conn: Any, hunk_id: str, req: HunkDecideRequest) -> Review
     hunk = await conn.fetchrow(_SELECT_HUNK_WITH_CHANGE, hunk_id)
     if hunk is None:
         raise HunkNotFound(hunk_id)
+    await _assert_session_reviewing(conn, str(hunk["session_id"]))
     verdict, final_text = _map_hunk_verdict(req, hunk)
     change_id = str(hunk["change_id"])
     async with conn.transaction():
@@ -547,6 +561,7 @@ async def decide_hunk(conn: Any, hunk_id: str, req: HunkDecideRequest) -> Review
 
 async def decide_node(conn: Any, change_id: str, req: NodeDecideRequest) -> ReviewChange:
     row, hunks = await _load_change(conn, change_id)
+    await _assert_session_reviewing(conn, str(row["session_id"]))
     kind = _derive_kind(row)
     if kind not in ("new", "deleted"):
         raise WrongChangeKind(f"decide-node is for new/deleted changes, not {kind}")
