@@ -9,8 +9,9 @@ from typing import Any
 
 from backend.api import donna as donna_api
 from backend.models.donna import (
-    DonnaAskResponse,
+    DonnaChatResponse,
     DonnaClearResponse,
+    DonnaContext,
     DonnaMessage,
     DonnaThreadResponse,
 )
@@ -24,44 +25,45 @@ client = TestClient(app)
 
 
 def test_ask_returns_answer_with_citations(monkeypatch: Any) -> None:
-    async def fake_ask(_cid: str, _q: str) -> DonnaAskResponse:
-        return DonnaAskResponse(
-            answer="The cap is in 11.2.", citations=["n-liab"], deflected=False, kind="answer"
+    # F10b envelope: no-context read-and-explain comes back as mode "explain" (F10 preserved).
+    async def fake_chat(_cid: str, _q: str, _ctx: DonnaContext | None) -> DonnaChatResponse:
+        return DonnaChatResponse(
+            reply="The cap is in 11.2.", mode="explain", citations=["n-liab"], draft_language=None
         )
 
-    monkeypatch.setattr(donna_api, "ask", fake_ask)
+    monkeypatch.setattr(donna_api, "chat", fake_chat)
     resp = client.post("/contracts/c1/donna/ask", json={"question": "Where's the cap?"})
     assert resp.status_code == 200
     body = resp.json()
     assert body == {
-        "answer": "The cap is in 11.2.",
+        "reply": "The cap is in 11.2.",
+        "mode": "explain",
         "citations": ["n-liab"],
-        "deflected": False,
-        "kind": "answer",
+        "draft_language": None,
     }
 
 
-def test_ask_passes_through_deflection(monkeypatch: Any) -> None:
-    async def fake_ask(_cid: str, _q: str) -> DonnaAskResponse:
-        return DonnaAskResponse(
-            answer="That's a position call — raise it as an issue or ask a lawyer.",
+def test_ask_softer_deflection_is_need_context(monkeypatch: Any) -> None:
+    # No-context advice request -> the softer acquire-context deflection, not the old wall.
+    async def fake_chat(_cid: str, _q: str, _ctx: DonnaContext | None) -> DonnaChatResponse:
+        return DonnaChatResponse(
+            reply="Tell me which clause you mean — select it.",
+            mode="need_context",
             citations=[],
-            deflected=True,
-            kind="deflected",
+            draft_language=None,
         )
 
-    monkeypatch.setattr(donna_api, "ask", fake_ask)
+    monkeypatch.setattr(donna_api, "chat", fake_chat)
     resp = client.post("/contracts/c1/donna/ask", json={"question": "Should I accept clause 11?"})
     assert resp.status_code == 200
-    assert resp.json()["deflected"] is True
-    assert resp.json()["kind"] == "deflected"
+    assert resp.json()["mode"] == "need_context"
 
 
 def test_ask_maps_rate_limit_to_429(monkeypatch: Any) -> None:
-    async def fake_ask(_cid: str, _q: str) -> DonnaAskResponse:
+    async def fake_chat(_cid: str, _q: str, _ctx: DonnaContext | None) -> DonnaChatResponse:
         raise LLMRateLimitError("429 from provider")
 
-    monkeypatch.setattr(donna_api, "ask", fake_ask)
+    monkeypatch.setattr(donna_api, "chat", fake_chat)
     resp = client.post("/contracts/c1/donna/ask", json={"question": "anything"})
     assert resp.status_code == 429
 
@@ -89,6 +91,29 @@ def test_thread_returns_history(monkeypatch: Any) -> None:
     assert body["conversation_id"] == "conv1"
     assert len(body["messages"]) == 2
     assert body["messages"][0]["role"] == "user"
+
+
+def test_thread_propagates_kind_and_citations(monkeypatch: Any) -> None:
+    async def fake_thread(_cid: str) -> DonnaThreadResponse:
+        return DonnaThreadResponse(
+            conversation_id="conv1",
+            running_summary=None,
+            messages=[
+                DonnaMessage(role="user", content="Where's the cap?"),
+                DonnaMessage(
+                    role="assistant", content="In 11.2.", kind="answer", citations=["n-liab"]
+                ),
+            ],
+        )
+
+    monkeypatch.setattr(donna_api, "get_thread", fake_thread)
+    resp = client.get("/contracts/c1/donna/thread")
+    assert resp.status_code == 200
+    msgs = resp.json()["messages"]
+    # User turn carries null meta; assistant turn rehydrates kind + cited ids.
+    assert msgs[0]["kind"] is None and msgs[0]["citations"] is None
+    assert msgs[1]["kind"] == "answer"
+    assert msgs[1]["citations"] == ["n-liab"]
 
 
 def test_clear_thread_returns_cleared(monkeypatch: Any) -> None:

@@ -36,7 +36,8 @@ class StyleConfig(BaseModel):
 
     font: str = "Times New Roman"
     numbering_scheme: NumberingScheme = "decimal"
-    body_font_size_pt: int = 10
+    body_font_size_pt: int = 11
+    title_font_size_pt: int = 12
     indent_per_level_pt: int = 18
     page_breaks_before_articles: bool = False
     levels: dict[int, LevelStyle] = Field(default_factory=dict)

@@ -54,6 +54,15 @@ RETURNING id, issue_id, rationale, draft_recommended_position, draft_counter_lan
 
 _CONFIRM_REC = "UPDATE donna_recommendations SET confirmed = true WHERE issue_id = $1"
 
+# Operator [Edit]: overwrite the draft language with the edited text before the copy, so
+# the single _COPY_TO_ISSUE path (which reads from the draft row) exports exactly what the
+# operator confirmed (DD-68 addendum). The draft row stays the one source of confirmed truth.
+_EDIT_DRAFT = """
+UPDATE donna_recommendations
+SET draft_recommended_position = $2, draft_counter_language = $3
+WHERE issue_id = $1
+"""
+
 # The draft -> issues.* copy (DD-68): the only write into the F31-exported issue fields.
 _COPY_TO_ISSUE = """
 UPDATE issues i
@@ -101,13 +110,22 @@ async def get_by_issue(conn: Any, issue_id: str) -> StoredRecommendation | None:
     return _to_recommendation(record) if record is not None else None
 
 
-async def confirm(conn: Any, issue_id: str) -> StoredRecommendation | None:
+async def confirm(
+    conn: Any,
+    issue_id: str,
+    edited: tuple[str | None, str | None] | None = None,
+) -> StoredRecommendation | None:
     """Copy the draft into the issue's exported fields (DD-68) in one transaction. Returns
-    the now-confirmed recommendation, or None if no draft exists for the issue."""
+    the now-confirmed recommendation, or None if no draft exists for the issue. When `edited`
+    is given (operator [Edit] before confirm), it carries the edited
+    (recommended_position, counter_language) — both overwrite the draft row first, so the
+    same copy path exports the operator-edited language."""
     existing = await conn.fetchrow(_GET_BY_ISSUE, issue_id)
     if existing is None:
         return None
     async with conn.transaction():
+        if edited is not None:
+            await conn.execute(_EDIT_DRAFT, issue_id, edited[0], edited[1])
         await conn.execute(_CONFIRM_REC, issue_id)
         await conn.execute(_COPY_TO_ISSUE, issue_id)
         await record_event(

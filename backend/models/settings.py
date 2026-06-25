@@ -144,7 +144,18 @@ class StoredContract(BaseModel):
 
 # A contract owns its content, so deleting it cascades through the rows beneath
 # it; these are the per-table counts of what was removed, recorded in the audit
-# payload (the delete itself is one atomic transaction).
+# payload (the delete itself is one atomic transaction). Per DD-63 the contract's
+# OWN subtree is cascaded, while deal-shared rows are preserved-and-nulled rather
+# than deleted: `cross_references_deleted` are this contract's own outgoing refs
+# (deleted), `cross_references_nulled` are sibling contracts' refs that pointed
+# INTO a deleted node (target SET NULL, clause kept), and `defined_terms_nulled`
+# are deal-scoped terms whose source_node_id pointed at a deleted node (term
+# survives, source SET NULL).
 class ContractDeletion(BaseModel):
     nodes: int
     issues: int
+    footnotes: int
+    node_versions: int
+    cross_references_deleted: int
+    cross_references_nulled: int
+    defined_terms_nulled: int

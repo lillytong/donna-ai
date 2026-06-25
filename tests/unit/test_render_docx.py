@@ -205,6 +205,41 @@ def test_appendix_title_is_centered_page_break_and_bold() -> None:
     assert run.font.bold is True
 
 
+def test_title_is_centered_bold_and_12pt() -> None:
+    """The contract title (role=title) renders centred, bold and 12pt (front matter),
+    mirroring appendix-title alignment but WITHOUT a page break. Display-only: the
+    stored text is unchanged."""
+    nodes = [_node("t", None, 100, heading="Master Agreement", role="title")]
+    data = render_contract_docx(nodes, {})
+    doc = Document(io.BytesIO(data))
+    paragraph = doc.paragraphs[0]
+    run = _runs(paragraph)[0]
+    assert paragraph.alignment == WD_ALIGN_PARAGRAPH.CENTER
+    assert paragraph._p.find(qn("w:pPr")) is None or (
+        paragraph._p.find(qn("w:pPr")).find(qn("w:pageBreakBefore")) is None
+    )
+    assert run.font.bold is True
+    assert run.font.size == Pt(12)
+    assert run.text == "Master Agreement"
+
+
+def test_default_body_size_is_11pt_and_body_after_title_is_left_aligned() -> None:
+    """House-style default body size is 11pt when no level overrides it, and a body
+    paragraph after the title stays left-aligned (only the title centres)."""
+    nodes = [
+        _node("t", None, 100, heading="Master Agreement", role="title"),
+        _node("b", None, 200, body="Some plain body text.", role="parties"),
+    ]
+    data = render_contract_docx(nodes, {})
+    doc = Document(io.BytesIO(data))
+    body_p = doc.paragraphs[1]
+    body_run = _runs(body_p)[0]
+    # default (None) alignment renders as left
+    assert body_p.alignment in (None, WD_ALIGN_PARAGRAPH.LEFT)
+    assert body_run.font.size == Pt(11)
+    assert body_run.text == "Some plain body text."
+
+
 def test_all_caps_span_in_body_renders_bold_inline() -> None:
     """An all-caps emphasis span (≥4 caps) in body text renders as its own bold run
     while the surrounding text stays regular (DD-37 inline house style)."""

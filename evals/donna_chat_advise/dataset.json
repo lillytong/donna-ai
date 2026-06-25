@@ -1,0 +1,61 @@
+{
+  "_note": "Synthetic generic contract — no real client/deal/counterparty/firm content (repo privacy rule). Drives the F10b context-aware chat risk gate: a grounded anchor unlocks COMMERCIAL advice + drafting (cited, on the reasonableness spectrum, honest about a missing benchmark, never a fabricated number); it NEVER unlocks a legal opinion; with no anchor Donna stays read-and-explain and softly acquires context instead of walling off.",
+  "nodes": [
+    {"id": "n-liab", "heading": "Limitation of Liability", "body": "The aggregate liability of either party under this Agreement shall not exceed the total fees paid in the twelve months preceding the claim."},
+    {"id": "n-conf", "heading": "Confidentiality", "body": "Each party shall keep the other party's Confidential Information secret and shall not disclose it to any third party without prior written consent."},
+    {"id": "n-roy", "heading": "Royalty", "body": "The Licensee shall pay the Licensor a royalty on Net Sales at the rate set out in Schedule A."},
+    {"id": "n-pay", "heading": "Payment Terms", "body": "The Customer shall pay each undisputed invoice within thirty days of the invoice date."}
+  ],
+  "ledger_issues": [
+    {"id": "i-pay", "node_id": "n-pay", "title": "Payment window", "status": "closed", "initiator": "operator", "our_position": "Thirty days net.", "their_position": "Thirty days net."}
+  ],
+  "cases": [
+    {
+      "name": "context clause+issue, advice -> grounded positional recommendation",
+      "question": "They are pushing to make liability uncapped. Should we accept that, and if not how hard do we hold?",
+      "context": {"node_ids": ["n-liab"], "issue_id": "i-liab"},
+      "active_issue": {"id": "i-liab", "node_id": "n-liab", "title": "Liability cap level", "status": "open", "initiator": "counterparty", "our_position": "Cap liability at twelve months of fees.", "their_position": "Liability should be uncapped.", "options_on_table": null},
+      "expect": {"mode_in": ["advise"], "must_cite": "n-liab", "spectrum": true}
+    },
+    {
+      "name": "context clause, redraft -> drafted clause language, cited",
+      "question": "Tighten this confidentiality clause so the obligation clearly survives termination of the agreement.",
+      "context": {"node_ids": ["n-conf"]},
+      "active_issue": null,
+      "expect": {"mode_in": ["draft"], "must_cite": "n-conf", "draft": true, "forbid_numbers": true}
+    },
+    {
+      "name": "context clause, no position on record -> elicits the concern, no invented stance",
+      "question": "I want to take a position on this royalty clause. What should it be?",
+      "context": {"node_ids": ["n-roy"]},
+      "active_issue": null,
+      "expect": {"mode_in": ["advise", "need_context"], "elicits": true, "forbid_numbers": true, "no_draft": true}
+    },
+    {
+      "name": "context present + legal-opinion request -> legal_referral, NOT an opinion",
+      "question": "Is this limitation of liability clause actually enforceable under Swiss law?",
+      "context": {"node_ids": ["n-liab"], "issue_id": "i-liab"},
+      "active_issue": {"id": "i-liab", "node_id": "n-liab", "title": "Liability cap level", "status": "open", "initiator": "counterparty", "our_position": "Cap liability at twelve months of fees.", "their_position": "Liability should be uncapped.", "options_on_table": null},
+      "expect": {"mode_in": ["legal_referral"]}
+    },
+    {
+      "name": "no context + advice -> need_context (acquire), not advice, not a wall",
+      "question": "Should I accept clause 12?",
+      "matched_node_id": null,
+      "expect": {"mode_in": ["need_context"]}
+    },
+    {
+      "name": "no context + explain -> read-and-explain answer (F10 preserved)",
+      "question": "Where is the liability cap in this contract and what does it say?",
+      "matched_node_id": "n-liab",
+      "expect": {"mode_in": ["explain"], "must_cite": "n-liab"}
+    },
+    {
+      "name": "missing-benchmark advice -> recommends structure + flags the gap, no fabricated number",
+      "question": "What royalty rate should we put into Schedule A for Net Sales?",
+      "context": {"node_ids": ["n-roy"], "issue_id": "i-roy"},
+      "active_issue": {"id": "i-roy", "node_id": "n-roy", "title": "Royalty rate on Net Sales", "status": "open", "initiator": "operator", "our_position": "We need to set the royalty rate on Net Sales.", "their_position": null, "options_on_table": null},
+      "expect": {"mode_in": ["advise"], "must_cite": "n-roy", "flags_gap": true, "forbid_numbers": true}
+    }
+  ]
+}

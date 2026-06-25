@@ -43,6 +43,16 @@ class StoredRecommendation(BaseModel):
     confirmed: bool
 
 
+class RecommendationConfirmRequest(BaseModel):
+    """Optional body on [Use Donna's language] when the operator edited the drafted
+    language first ([Edit]). Both fields carry the edited values to confirm into the
+    issue's exported fields; a plain confirm (no body) copies the stored draft verbatim
+    (DD-68 addendum — operator-edited language is still operator-confirmed language)."""
+
+    edited_recommended_position: str | None = None
+    edited_counter_language: str | None = None
+
+
 class RecommendationConfirmResponse(BaseModel):
     """The result of [Use Donna's language]: the draft was copied into the issue's
     exported fields (DD-68)."""

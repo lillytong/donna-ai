@@ -229,3 +229,77 @@ def test_clear_conversation_deletes_messages_and_nulls_summary() -> None:
     assert delete_args == ("c1",)
     assert "running_summary = NULL" in update_sql
     assert update_args == ("c1",)
+
+
+# --- message meta persistence (DD-40 rehydration) --------------------------
+
+
+class _InsertCapturingConn:
+    """Captures the INSERT args fetchval receives, so append_message's kind/citations
+    serialization can be asserted offline (no DB)."""
+
+    def __init__(self) -> None:
+        self.insert_args: tuple[object, ...] | None = None
+
+    async def fetchval(self, _sql: str, *args: object) -> str:
+        self.insert_args = args
+        return "new-id"
+
+
+def test_append_message_serializes_kind_and_citations() -> None:
+    import asyncio
+    import json
+
+    from backend.services.donna.conversation_repo import append_message
+
+    conn = _InsertCapturingConn()
+    asyncio.run(
+        append_message(
+            conn, "conv1", "assistant", "In 11.2.", kind="answer", citations=["n1", "i2"]
+        )
+    )
+    # args: (conversation_id, role, content, kind, citations-json)
+    assert conn.insert_args is not None
+    assert conn.insert_args[3] == "answer"
+    assert json.loads(conn.insert_args[4]) == ["n1", "i2"]  # type: ignore[arg-type]
+
+
+def test_append_message_user_turn_leaves_kind_and_citations_null() -> None:
+    import asyncio
+
+    from backend.services.donna.conversation_repo import append_message
+
+    conn = _InsertCapturingConn()
+    asyncio.run(append_message(conn, "conv1", "user", "Where's the cap?"))
+    assert conn.insert_args is not None
+    assert conn.insert_args[3] is None  # kind
+    assert conn.insert_args[4] is None  # citations (None stays SQL NULL, not "null")
+
+
+class _FetchConn:
+    """Returns canned rows so fetch_messages's kind/citations read-back can be asserted."""
+
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self.rows = rows
+
+    async def fetch(self, _sql: str, *_args: object) -> list[dict[str, object]]:
+        return self.rows
+
+
+def test_fetch_messages_round_trips_kind_and_citations() -> None:
+    import asyncio
+
+    from backend.services.donna.conversation_repo import fetch_messages
+
+    base = datetime(2026, 1, 1)
+    rows: list[dict[str, object]] = [
+        {"role": "user", "content": "Where's the cap?", "kind": None, "citations": None,
+         "created_at": base},
+        # asyncpg may hand JSONB back as a str -> json.loads path.
+        {"role": "assistant", "content": "In 11.2.", "kind": "answer",
+         "citations": '["n1", "i2"]', "created_at": base + timedelta(seconds=1)},
+    ]
+    msgs = asyncio.run(fetch_messages(_FetchConn(rows), "conv1"))
+    assert msgs[0].kind is None and msgs[0].citations is None
+    assert msgs[1].kind == "answer"
+    assert msgs[1].citations == ["n1", "i2"]

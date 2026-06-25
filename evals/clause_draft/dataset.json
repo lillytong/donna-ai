@@ -1,0 +1,40 @@
+{
+  "_note": "Synthetic generic Master Supply Agreement between 'Acme Supplier' and 'Buyer' — no real client/deal/counterparty/firm content (repo privacy rule). Drives the F08d clause-drafting risk gate: the draft must reuse the document's defined terms (not coin new ones), leave a bracketed placeholder instead of a fabricated figure where the operator must supply a value, and return an empty body when the description is too vague to draft anything grounded.",
+  "deal_type": "Master Supply Agreement",
+  "nodes": [
+    {"id": "n-conf", "heading": "Confidentiality", "body": "Each party shall keep confidential all Confidential Information disclosed to it by the other party and shall not use such Confidential Information except for the purposes of this Agreement."},
+    {"id": "n-deliv", "heading": "Delivery", "body": "Acme Supplier shall deliver the Goods to the Buyer within the Lead Time at the Delivery Point specified in each Purchase Order."},
+    {"id": "n-price", "heading": "Pricing and Payment", "body": "The Buyer shall pay the Price for the Goods set out in Schedule 1 against each undisputed invoice."},
+    {"id": "n-term", "heading": "Term and Termination", "body": "This Agreement commences on the Effective Date and continues until terminated in accordance with this clause."}
+  ],
+  "cases": [
+    {
+      "name": "reuse defined term — return/destroy confidential materials",
+      "description": "Add a clause requiring each party, when this Agreement ends, to return or destroy all of the other party's confidential materials in its possession.",
+      "anchor_node_id": "n-conf",
+      "mode": "below",
+      "expect": {"reuse_term": "Confidential Information", "placeholder": false, "forbid_numbers": false, "empty_body": false}
+    },
+    {
+      "name": "reuse defined term — late delivery against the Lead Time",
+      "description": "Add a sub-clause giving the Buyer a remedy if Acme Supplier fails to deliver the Goods within the agreed delivery time.",
+      "anchor_node_id": "n-deliv",
+      "mode": "sub",
+      "expect": {"reuse_term": "Lead Time", "placeholder": false, "forbid_numbers": false, "empty_body": false}
+    },
+    {
+      "name": "placeholder not a fabricated figure — termination notice period",
+      "description": "Add a clause letting either party terminate this Agreement for convenience by giving the other prior written notice.",
+      "anchor_node_id": "n-term",
+      "mode": "below",
+      "expect": {"reuse_term": null, "placeholder": true, "forbid_numbers": true, "empty_body": false}
+    },
+    {
+      "name": "too vague — honest no-draft",
+      "description": "Make this contract better.",
+      "anchor_node_id": null,
+      "mode": "below",
+      "expect": {"reuse_term": null, "placeholder": false, "forbid_numbers": false, "empty_body": true}
+    }
+  ]
+}

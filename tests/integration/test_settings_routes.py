@@ -473,7 +473,15 @@ def test_delete_contract_no_content_records_cascade_counts(monkeypatch: Any) -> 
     captured: dict[str, Any] = {}
 
     async def fake_delete(_conn: Any, _contract_id: str) -> ContractDeletion:
-        return ContractDeletion(nodes=12, issues=3)
+        return ContractDeletion(
+            nodes=12,
+            issues=3,
+            footnotes=7,
+            node_versions=5,
+            cross_references_deleted=4,
+            cross_references_nulled=2,
+            defined_terms_nulled=6,
+        )
 
     async def capture_record(_conn: Any, event: AuditEvent) -> StoredAuditEvent:
         captured["event"] = event
@@ -489,7 +497,17 @@ def test_delete_contract_no_content_records_cascade_counts(monkeypatch: Any) -> 
     event = captured["event"]
     assert event.event_type == "deleted"
     assert event.entity_type == "contract"
-    assert event.payload == {"nodes": 12, "issues": 3}
+    # The full DD-63 cascade ledger lands in the audit payload (preserve-and-null
+    # effects included, so the audit records what was nulled, not just deleted).
+    assert event.payload == {
+        "nodes": 12,
+        "issues": 3,
+        "footnotes": 7,
+        "node_versions": 5,
+        "cross_references_deleted": 4,
+        "cross_references_nulled": 2,
+        "defined_terms_nulled": 6,
+    }
 
 
 def test_delete_contract_not_found(monkeypatch: Any) -> None:

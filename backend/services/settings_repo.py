@@ -335,29 +335,103 @@ async def update_contract(
     return _to_contract(record) if record is not None else None
 
 
-async def _delete_count(conn: Any, sql: str, *args: Any) -> int:
+async def _exec_count(conn: Any, sql: str, *args: Any) -> int:
+    # Parses the trailing row count from an asyncpg command tag, e.g. "DELETE 5"
+    # or "UPDATE 2" — works for both the DELETE cascades and the SET NULL updates.
     status = await conn.execute(sql, *args)
     return int(status.split()[-1])
 
 
-# Hard delete of a contract and everything it owns. The contract is the owner of
-# its content (SPEC §2.3), so DELETE cascades manually in FK order — issues, then
-# nodes, then the contract row — inside one transaction so a partial wipe can
-# never commit. Children are removed before the contract regardless of whether it
-# exists; a 0-row contract delete means not-found (returns None) and the empty
-# child deletes roll up harmlessly. (Comments were removed in DD-67, so there is
-# no longer a comment cascade.)
+# Hard delete of a contract scoped to its OWN subtree (DD-63). The contract owns
+# its content (SPEC §2.3), so its rows are cascaded manually in FK order (children
+# before parents) inside ONE transaction — a partial wipe can never commit. But
+# two entity types are DEAL-scoped, not contract-scoped, and must survive so the
+# deal's sibling contracts stay valid:
+#   * cross_references — a sibling contract's clause may reference one of this
+#     contract's nodes. source_node_id/source_contract_id are NOT NULL, so a ref
+#     whose SOURCE is in this contract belongs to it and is DELETED; a ref in a
+#     sibling whose TARGET points INTO this contract is SET NULL (target_node_id +
+#     target_contract_id), keeping the sibling clause with a dangling-link marker.
+#   * defined_terms — deal-scoped, shared across the deal's contracts; NEVER
+#     deleted. Only source_node_id is SET NULL where it pointed at a deleted node,
+#     so the term survives without a dangling FK.
+# Children are removed before the contract regardless of whether it exists; a
+# 0-row contract delete means not-found (returns None) and the empty child wipes
+# roll up harmlessly. (Comments were removed in DD-67, so no comment cascade.)
 async def delete_contract(conn: Any, contract_id: str) -> ContractDeletion | None:
+    # Rows hanging off this contract's nodes (FK node_id) are scoped via the node
+    # subquery so they clear before the nodes themselves FK-violate.
+    nodes_subq = "(SELECT id FROM nodes WHERE contract_id = $1)"
     async with conn.transaction():
-        issues = await _delete_count(conn, "DELETE FROM issues WHERE contract_id = $1", contract_id)
-        # footnotes + node_versions are children of nodes (FK node_id) — clear them
-        # before the nodes themselves or the nodes delete FK-violates for any
-        # imported contract (Phase-0 import populates both).
-        _nodes_subq = "node_id IN (SELECT id FROM nodes WHERE contract_id = $1)"
-        await _delete_count(conn, f"DELETE FROM footnotes WHERE {_nodes_subq}", contract_id)
-        await _delete_count(conn, f"DELETE FROM node_versions WHERE {_nodes_subq}", contract_id)
-        nodes = await _delete_count(conn, "DELETE FROM nodes WHERE contract_id = $1", contract_id)
-        contracts = await _delete_count(conn, "DELETE FROM contracts WHERE id = $1", contract_id)
+        # 1. Donna recommendations hang off this contract's issues (FK issue_id) —
+        #    clear before the issues they reference.
+        await _exec_count(
+            conn,
+            "DELETE FROM donna_recommendations WHERE issue_id IN "
+            "(SELECT id FROM issues WHERE contract_id = $1)",
+            contract_id,
+        )
+        # 2. Issues hold FKs into nodes + snapshots, so delete them before either.
+        issues = await _exec_count(conn, "DELETE FROM issues WHERE contract_id = $1", contract_id)
+        # 3. Donna conversation state (messages FK conversation_id → conversations).
+        await _exec_count(
+            conn,
+            "DELETE FROM donna_messages WHERE conversation_id IN "
+            "(SELECT id FROM donna_conversations WHERE contract_id = $1)",
+            contract_id,
+        )
+        await _exec_count(
+            conn, "DELETE FROM donna_conversations WHERE contract_id = $1", contract_id
+        )
+        # 4. Node-scoped children (FK node_id) — clear before the nodes.
+        await _exec_count(
+            conn, f"DELETE FROM node_embeddings WHERE node_id IN {nodes_subq}", contract_id
+        )
+        await _exec_count(
+            conn, f"DELETE FROM parameter_references WHERE node_id IN {nodes_subq}", contract_id
+        )
+        footnotes = await _exec_count(
+            conn, f"DELETE FROM footnotes WHERE node_id IN {nodes_subq}", contract_id
+        )
+        node_versions = await _exec_count(
+            conn, f"DELETE FROM node_versions WHERE node_id IN {nodes_subq}", contract_id
+        )
+        # 5. cross_references (DD-63): DELETE this contract's own (source) refs;
+        #    SET NULL the target of any sibling ref that pointed INTO this contract.
+        #    Both must precede the node/contract deletes to avoid FK violations.
+        cross_references_deleted = await _exec_count(
+            conn, "DELETE FROM cross_references WHERE source_contract_id = $1", contract_id
+        )
+        cross_references_nulled = await _exec_count(
+            conn,
+            "UPDATE cross_references SET target_node_id = NULL, target_contract_id = NULL "
+            "WHERE target_contract_id = $1",
+            contract_id,
+        )
+        # 6. defined_terms (DD-63): NEVER deleted (deal-scoped); only null a
+        #    source_node_id that pointed at a node about to be deleted.
+        defined_terms_nulled = await _exec_count(
+            conn,
+            f"UPDATE defined_terms SET source_node_id = NULL WHERE source_node_id IN {nodes_subq}",
+            contract_id,
+        )
+        # 7. Now the nodes, then the contract's own snapshots/pointers, then the row.
+        nodes = await _exec_count(conn, "DELETE FROM nodes WHERE contract_id = $1", contract_id)
+        await _exec_count(
+            conn, "DELETE FROM snapshot_pointers WHERE contract_id = $1", contract_id
+        )
+        await _exec_count(
+            conn, "DELETE FROM contract_snapshots WHERE contract_id = $1", contract_id
+        )
+        contracts = await _exec_count(conn, "DELETE FROM contracts WHERE id = $1", contract_id)
     if contracts == 0:
         return None
-    return ContractDeletion(nodes=nodes, issues=issues)
+    return ContractDeletion(
+        nodes=nodes,
+        issues=issues,
+        footnotes=footnotes,
+        node_versions=node_versions,
+        cross_references_deleted=cross_references_deleted,
+        cross_references_nulled=cross_references_nulled,
+        defined_terms_nulled=defined_terms_nulled,
+    )

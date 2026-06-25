@@ -8,29 +8,35 @@ import { deriveNumbers } from "../../lib/numbering";
 import {
   ApiError,
   askDonna,
+  confirmRecommendation,
   createIssue,
   createNode,
   deleteNode,
   donnaErrorMessage,
+  draftClause,
   editNode,
   exportCleanCopy,
   exportIssueList,
   exportRedline,
+  generateRecommendation,
   getContractTree,
   getDefinedTerms,
   getDonnaThread,
+  getRecommendation,
   listIssues,
   searchClause,
   updateIssue,
   updateIssueStatus,
   type DefinedTerm,
   type DonnaAnswerKind,
+  type DonnaChatMode,
   type ExportRecipient,
   type Initiator,
   type IssueStatus,
   type NodeTreeItem,
   type Role,
   type StoredIssue,
+  type StoredRecommendation,
 } from "../../lib/api";
 
 // Rearrange mode is gated + lazy: @dnd-kit and the sortable tree only enter the
@@ -330,13 +336,54 @@ type ChatCitation =
   | { kind: "clause"; nodeId: string; label: string }
   | { kind: "issue"; label: string };
 
-// One rendered chat turn. `kind` + `citations` are live on a fresh ask; loaded
-// history carries neither (renders as a plain grounded answer).
+// One rendered chat turn. A FRESH ask carries `mode` (F10b context-aware
+// treatment) + optional `draftLanguage` + `citations`. A RELOADED thread turn
+// carries `kind` + `citations` (F10 persistence) and no `mode`. The bubble
+// treatment derives from whichever is present (mode wins; see donnaBubbleClass).
 interface DonnaUiMessage {
   role: "user" | "donna";
   content: string;
   kind?: DonnaAnswerKind;
+  mode?: DonnaChatMode;
+  draftLanguage?: string | null;
   citations?: ChatCitation[];
+}
+
+// Map a turn to its bubble treatment. Live `mode` wins; otherwise fall back to the
+// persisted `kind`. legal_referral reuses the amber deflected wash; need_context is
+// its own gentle (non-error) hint; every advisory/explain mode reads as a normal
+// grounded answer (the draft block + tags are layered on separately).
+function donnaBubbleClass(m: DonnaUiMessage): string {
+  if (m.mode) {
+    if (m.mode === "legal_referral") return styles.bubbleDeflected;
+    if (m.mode === "need_context") return styles.bubbleNeedContext;
+    return styles.bubbleDonna;
+  }
+  if (m.kind === "deflected") return styles.bubbleDeflected;
+  if (m.kind === "not_found") return styles.bubbleNotFound;
+  return styles.bubbleDonna;
+}
+
+// F11 resolution-card state, scoped to the issue being resolved. `status` drives the
+// card: loading (generating/fetching), ready (a draft to show), or error. `acting` is
+// the in-flight action ("use" = confirm, "refresh" = regenerate). `editing` reveals the
+// edit buffers (editPos/editLang) so the operator can adjust before [Use]. Held against
+// `issueId` so a late async never paints onto a different issue's view.
+interface RecState {
+  issueId: string;
+  status: "loading" | "ready" | "error";
+  draft: StoredRecommendation | null;
+  error?: string;
+  acting?: "use" | "refresh" | null;
+  editing?: boolean;
+  editPos: string;
+  editLang: string;
+}
+
+// A draft is "usable" (worth a [Use]/[Edit]) only when it carries language to apply —
+// the honest could-not-ground fallback has neither field and offers no action.
+function recHasLanguage(d: StoredRecommendation): boolean {
+  return !!(d.draft_recommended_position?.trim() || d.draft_counter_language?.trim());
 }
 
 // Resolve backend citation ids to chips. A node id → a jumping clause chip labeled
@@ -486,6 +533,13 @@ interface InsertState {
   draft: string;
   saving: boolean;
   error: string | null;
+  // F08d "Draft with Donna": the anchor the draft grounds on (the clause the insert is
+  // relative to), the description box, and its async state. `donnaOpen` toggles the panel.
+  anchorNodeId: string | null;
+  donnaOpen: boolean;
+  donnaDesc: string;
+  donnaBusy: boolean;
+  donnaError: string | null;
 }
 
 // F08c delete: a per-clause confirm before the destructive call. `descendantCount`
@@ -609,6 +663,11 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
   const [resolvingId, setResolvingId] = useState<string | null>(null);
   const [resolveOrigin, setResolveOrigin] = useState<"issues" | "clause">("issues");
   const [clauseCtxOpen, setClauseCtxOpen] = useState(false);
+  // F11 Donna recommendation for the issue in the resolution view. Generated/fetched
+  // on drill-in (auto-on-first-open); `resolvingIdRef` lets the async generate guard
+  // against painting onto an issue the operator has since navigated away from.
+  const [rec, setRec] = useState<RecState | null>(null);
+  const resolvingIdRef = useRef<string | null>(null);
 
   // F10 Donna tab. The rail cycles Issues | Current Clause (DD-66) | Donna without
   // unmounting the tree. `donnaMessages` is null until the thread is first loaded
@@ -621,6 +680,15 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
   const [asking, setAsking] = useState(false);
   const [askError, setAskError] = useState<string | null>(null);
   const [phaseIdx, setPhaseIdx] = useState(0);
+  // F10b context-aware chat. `donnaContext` is the active clause/issue Donna grounds
+  // on; null = open read-and-explain. Sent with every ask (node_ids + issue_id).
+  const [donnaContext, setDonnaContext] = useState<{ nodeIds: string[]; issueId: string | null } | null>(null);
+  // A draft turn's "Use this language" routes through an existing confirmed apply
+  // surface (DD-68 rec-edit confirm). When an issue is in context we open its
+  // resolution view; this holds the language to drop into the rec edit buffer once
+  // that view's recommendation finishes loading (see the effect below).
+  const [pendingDraftLang, setPendingDraftLang] = useState<string | null>(null);
+  const [copiedDraft, setCopiedDraft] = useState(false);
   const donnaScrollRef = useRef<HTMLDivElement | null>(null);
   const donnaInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -683,6 +751,16 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
     () => [...issues].sort((a, b) => b.created_at.localeCompare(a.created_at)),
     [issues],
   );
+  // Stable per-contract issue numbers (#1, #2 …) by creation order — independent of the
+  // display sort and of open/closed, so each issue keeps a fixed handle even when two
+  // share a title (the operator can say "issue #3").
+  const issueNumberById = useMemo(() => {
+    const m = new Map<string, number>();
+    [...issues]
+      .sort((a, b) => a.created_at.localeCompare(b.created_at))
+      .forEach((i, idx) => m.set(i.id, idx + 1));
+    return m;
+  }, [issues]);
   // The Issues tab works the OPEN list; closed issues collapse into a footer (DD-65.4).
   const openIssues = useMemo(
     () => sortedIssues.filter((i) => asStatus(i.status) === "open"),
@@ -707,6 +785,17 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
   // id → issue, so a Donna citation that points at an issue (not a node) resolves
   // to that issue's anchored clause chip.
   const issueById = useMemo(() => new Map(issues.map((i) => [i.id, i])), [issues]);
+  // F10b context chip label: "Issue #3 · §3.4.12" (issue + its clause), "§3.4.12"
+  // (clause only), or "this contract" as a fallback. Null when no context is active.
+  const donnaContextLabel = useMemo(() => {
+    if (!donnaContext) return null;
+    const parts: string[] = [];
+    if (donnaContext.issueId) parts.push(`Issue #${issueNumberById.get(donnaContext.issueId) ?? "—"}`);
+    const nodeId = donnaContext.nodeIds[0];
+    const row = nodeId ? rowById.get(nodeId) : null;
+    if (row) parts.push(row.number ? `§${row.number}` : titleCase(row.role));
+    return parts.join(" · ") || "this contract";
+  }, [donnaContext, issueNumberById, rowById]);
   // Three document-order region partitions (FIX 2: positional drafting_note).
   const { front, body, back } = useMemo(() => partitionRegions(rows), [rows]);
   // Per-node children + visibility are computed PER REGION (mirrors the import
@@ -811,14 +900,111 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
   function openResolve(issueId: string, origin: "issues" | "clause", nodeId: string | null) {
     setResolveOrigin(origin);
     setResolvingId(issueId);
+    resolvingIdRef.current = issueId;
     setClauseCtxOpen(false);
     setEditingId(null);
     if (nodeId) jumpTo(nodeId);
+    void loadRecommendation(issueId);
   }
   function closeResolve() {
     setResolvingId(null);
+    resolvingIdRef.current = null;
     setEditingId(null);
+    setRec(null);
     setRailTab(resolveOrigin);
+  }
+
+  // F11 auto-on-first-open: show the persisted draft if one exists, else generate one
+  // (the only LLM call — subsequent opens reuse the stored draft). `regenerate` forces a
+  // fresh draft ([↻ Refresh]). Every setRec is guarded on the issue still being open, so
+  // a slow generate can't paint onto an issue the operator has navigated away from.
+  async function loadRecommendation(issueId: string, regenerate = false) {
+    setRec({ issueId, status: "loading", draft: null, editPos: "", editLang: "" });
+    try {
+      let draft = regenerate ? null : await getRecommendation(id, issueId);
+      if (draft === null) draft = await generateRecommendation(id, issueId);
+      if (resolvingIdRef.current !== issueId) return;
+      setRec({ issueId, status: "ready", draft, editPos: "", editLang: "" });
+    } catch (e) {
+      if (resolvingIdRef.current !== issueId) return;
+      setRec({
+        issueId,
+        status: "error",
+        draft: null,
+        error: donnaErrorMessage(e),
+        editPos: "",
+        editLang: "",
+      });
+    }
+  }
+
+  // [↻ Refresh]: regenerate, but keep the current card visible with a refresh spinner
+  // rather than flashing the loading state.
+  async function refreshRecommendation(issueId: string) {
+    setRec((s) => (s && s.issueId === issueId ? { ...s, acting: "refresh", editing: false } : s));
+    try {
+      const draft = await generateRecommendation(id, issueId);
+      if (resolvingIdRef.current !== issueId) return;
+      setRec({ issueId, status: "ready", draft, editPos: "", editLang: "" });
+    } catch (e) {
+      if (resolvingIdRef.current !== issueId) return;
+      setRec((s) =>
+        s && s.issueId === issueId ? { ...s, acting: null, error: donnaErrorMessage(e) } : s,
+      );
+    }
+  }
+
+  // Open the inline edit buffers seeded from the current draft language.
+  function startRecEdit(d: StoredRecommendation) {
+    setRec((s) =>
+      s
+        ? {
+            ...s,
+            editing: true,
+            error: undefined,
+            editPos: d.draft_recommended_position ?? "",
+            editLang: d.draft_counter_language ?? "",
+          }
+        : s,
+    );
+  }
+  function cancelRecEdit() {
+    setRec((s) => (s ? { ...s, editing: false, error: undefined } : s));
+  }
+
+  // [Use Donna's language] / [Use this language]: confirm the draft into the issue's
+  // exported fields (DD-68). When `edited` is true the operator's edit buffers are sent
+  // (DD-68 edited-confirm addendum); otherwise the stored draft is copied verbatim. On
+  // success the draft reflects what was confirmed and flips `confirmed`.
+  async function useRecommendation(issueId: string, edited: boolean) {
+    setRec((s) => (s && s.issueId === issueId ? { ...s, acting: "use", error: undefined } : s));
+    try {
+      const editPayload = edited
+        ? { edited_recommended_position: rec?.editPos ?? "", edited_counter_language: rec?.editLang ?? "" }
+        : undefined;
+      const result = await confirmRecommendation(id, issueId, editPayload);
+      if (resolvingIdRef.current !== issueId) return;
+      setRec((s) =>
+        s && s.draft && s.issueId === issueId
+          ? {
+              ...s,
+              acting: null,
+              editing: false,
+              draft: {
+                ...s.draft,
+                confirmed: true,
+                draft_recommended_position: result.recommended_position,
+                draft_counter_language: result.donna_counter_language,
+              },
+            }
+          : s,
+      );
+    } catch (e) {
+      if (resolvingIdRef.current !== issueId) return;
+      setRec((s) =>
+        s && s.issueId === issueId ? { ...s, acting: null, error: donnaErrorMessage(e) } : s,
+      );
+    }
   }
 
   function toggleCollapse(nodeId: string) {
@@ -892,7 +1078,30 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
     setDonnaInput("");
     setAsking(false);
     setAskError(null);
+    setDonnaContext(null);
+    setPendingDraftLang(null);
   }, [id]);
+
+  // DD-68 reuse for a draft turn's "Use this language" with an issue in context:
+  // openResolve fires loadRecommendation (which resets `rec`), so we can't seed the
+  // edit buffer synchronously. Once the issue's recommendation lands ready, drop the
+  // pending draft language into the rec [Edit] buffer and open it — the operator then
+  // commits via the SAME edited-confirm path the card uses (useRecommendation(_, true)).
+  useEffect(() => {
+    if (!pendingDraftLang || !rec || rec.status !== "ready" || !rec.draft) return;
+    setRec((s) =>
+      s && s.status === "ready" && s.draft
+        ? {
+            ...s,
+            editing: true,
+            error: undefined,
+            editPos: s.draft.draft_recommended_position ?? "",
+            editLang: pendingDraftLang,
+          }
+        : s,
+    );
+    setPendingDraftLang(null);
+  }, [pendingDraftLang, rec]);
 
   // Lazily load the persistent thread the first time Donna's tab is opened. Stored
   // history has no live citations/kind, so it renders as plain grounded answers.
@@ -905,11 +1114,22 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
       try {
         const thread = await getDonnaThread(id);
         if (!live) return;
+        // An assistant turn persists its kind + cited ids (DD-40 rehydration): resolve the
+        // stored ids back into chips so reloaded answers render identical to a fresh ask.
+        // A turn without stored kind/citations (user turns, pre-migration rows) stays plain.
         setDonnaMessages(
-          thread.messages.map((m) => ({
-            role: m.role === "user" ? ("user" as const) : ("donna" as const),
-            content: m.content,
-          })),
+          thread.messages.map((m) =>
+            m.role === "user"
+              ? { role: "user" as const, content: m.content }
+              : {
+                  role: "donna" as const,
+                  content: m.content,
+                  ...(m.kind ? { kind: m.kind } : {}),
+                  ...(m.citations
+                    ? { citations: resolveCitations(m.citations, rowById, issueById) }
+                    : {}),
+                },
+          ),
         );
       } catch (e) {
         if (live) setDonnaError(donnaErrorMessage(e));
@@ -954,11 +1174,22 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
     setDonnaMessages((m) => [...(m ?? []), { role: "user", content: question }]);
     setAsking(true);
     try {
-      const res = await askDonna(id, question);
+      // Send the active context chip (clause node(s) + issue) so Donna advises/drafts
+      // grounded on it; omitted entirely when nothing is selected (open read-and-explain).
+      const ctx = donnaContext
+        ? { node_ids: donnaContext.nodeIds, issue_id: donnaContext.issueId }
+        : undefined;
+      const res = await askDonna(id, question, ctx);
       const citations = resolveCitations(res.citations, rowById, issueById);
       setDonnaMessages((m) => [
         ...(m ?? []),
-        { role: "donna", content: res.answer, kind: res.kind, citations },
+        {
+          role: "donna",
+          content: res.reply,
+          mode: res.mode,
+          draftLanguage: res.draft_language,
+          citations,
+        },
       ]);
     } catch (e) {
       setAskError(donnaErrorMessage(e));
@@ -974,6 +1205,86 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
   function clearDonnaView() {
     setDonnaMessages([]);
     setAskError(null);
+  }
+
+  // F10b "Ask Donna about this clause": set the clause as Donna's context, jump to her
+  // tab, focus the composer. Lilly's motivating case — editing a clause and wanting help
+  // grounded on it. Donna then advises/drafts on this clause until the chip is cleared.
+  function askDonnaAboutClause(clauseId: string) {
+    setDonnaContext({ nodeIds: [clauseId], issueId: null });
+    setRailTab("donna");
+    requestAnimationFrame(() => donnaInputRef.current?.focus());
+  }
+
+  // F10b "Brainstorm with Donna ↗" from the F11 rec card: leave the resolution view,
+  // set the issue (+ its clause) as context, and PRIME the chat with an opening turn that
+  // restates Donna's current recommendation — so the operator lands in a conversation that
+  // already knows it and can iterate ("make it more aggressive", "shorter"). The seed is a
+  // local opening message; subsequent asks carry the issue context, so Donna's advise
+  // engine continues it.
+  function brainstormFromRec(issueId: string, d: StoredRecommendation) {
+    const clauseId = resolveClauseRow?.id ?? null;
+    // Tear down the resolution view directly (closeResolve would return to the prior tab,
+    // not Donna).
+    setResolvingId(null);
+    resolvingIdRef.current = null;
+    setEditingId(null);
+    setRec(null);
+    setDonnaContext({ issueId, nodeIds: clauseId ? [clauseId] : [] });
+    const num = issueNumberById.get(issueId) ?? "—";
+    const parts: string[] = [d.rationale.trim()];
+    if (d.draft_recommended_position?.trim())
+      parts.push(`**Recommended position:** ${d.draft_recommended_position.trim()}`);
+    if (d.draft_counter_language?.trim())
+      parts.push(`**Counter-language:**\n${d.draft_counter_language.trim()}`);
+    const opening: DonnaUiMessage = {
+      role: "donna",
+      content:
+        `Let's brainstorm issue #${num}. Here's where I've landed — tell me to make it more ` +
+        `aggressive, tighten it, or take a different angle.\n\n${parts.join("\n\n")}`,
+      mode: "advise",
+      citations: resolveCitations(d.citations ?? [], rowById, issueById),
+    };
+    setDonnaMessages((m) => [...(m ?? []), opening]);
+    setRailTab("donna");
+    requestAnimationFrame(() => donnaInputRef.current?.focus());
+  }
+
+  // A draft turn's "Use this language" — never a new write. Route into an EXISTING
+  // confirmed apply surface and let the operator commit there:
+  //  • issue in context  → open its resolution view + prime the rec [Edit] buffer (DD-68
+  //                        edited-confirm) via pendingDraftLang.
+  //  • only a clause     → open the clause inline editor (F08) pre-filled; saveEdit commits.
+  //  • neither           → copy to clipboard with a note (no apply surface to reuse).
+  async function applyDraftLanguage(draftLang: string) {
+    const text = draftLang.trim();
+    if (!text) return;
+    const issueId = donnaContext?.issueId ?? null;
+    if (issueId) {
+      const node = issueById.get(issueId)?.node_id ?? null;
+      setPendingDraftLang(text);
+      openResolve(issueId, "issues", node);
+      return;
+    }
+    const clauseId = donnaContext?.nodeIds[0] ?? null;
+    const row = clauseId ? rowById.get(clauseId) ?? null : null;
+    if (row) {
+      setMenuFor(null);
+      setInserting(null);
+      setDeleteState(null);
+      setRailTab("clause");
+      setSelectedId(row.id);
+      setEditing({ nodeId: row.id, draft: text, saving: false, error: null });
+      jumpTo(row.id);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedDraft(true);
+      window.setTimeout(() => setCopiedDraft(false), 1600);
+    } catch {
+      // Clipboard blocked — the text stays visible in the bubble to copy manually.
+    }
   }
 
   // Live jump as the operator types. A numeric query keeps the clause-number
@@ -1359,10 +1670,54 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
       draft: "",
       saving: false,
       error: null,
+      anchorNodeId: node.id,
+      donnaOpen: false,
+      donnaDesc: "",
+      donnaBusy: false,
+      donnaError: null,
     });
   }
   function cancelInsert() {
     setInserting(null);
+  }
+
+  // F08d "Draft with Donna": send the operator's description + the insert anchor/mode to
+  // Donna, then pre-fill the editor with her grounded clause (heading prepended when she
+  // returns one, since the create path stores a single text field). The operator reviews
+  // and edits before committing through the normal saveInsert (F08b) — nothing is
+  // persisted by the draft call. An empty body = Donna couldn't draft → a gentle nudge.
+  async function draftWithDonna() {
+    if (!inserting || inserting.donnaBusy) return;
+    const description = inserting.donnaDesc.trim();
+    if (!description) return;
+    const { anchorNodeId, mode } = inserting;
+    setInserting((s) => (s ? { ...s, donnaBusy: true, donnaError: null } : s));
+    try {
+      const result = await draftClause(id, {
+        description,
+        anchor_node_id: anchorNodeId,
+        mode,
+      });
+      const body = result.body.trim();
+      if (!body) {
+        setInserting((s) =>
+          s
+            ? {
+                ...s,
+                donnaBusy: false,
+                donnaError:
+                  "Donna couldn't draft this from the contract — try describing it with more detail.",
+              }
+            : s,
+        );
+        return;
+      }
+      const composed = result.heading?.trim() ? `${result.heading.trim()}\n${body}` : body;
+      // Fill the editor, close the prompt panel, keep the description for a re-draft.
+      setInserting((s) => (s ? { ...s, draft: composed, donnaBusy: false, donnaOpen: false } : s));
+    } catch (e) {
+      setInserting((s) => (s ? { ...s, donnaBusy: false, donnaError: donnaErrorMessage(e) } : s));
+    }
   }
   async function saveInsert() {
     if (!inserting || inserting.saving) return;
@@ -1508,17 +1863,79 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
       >
         <span className={styles.twirlSpace} aria-hidden />
         <span className={styles.insertLabel}>{inserting.mode === "sub" ? "New sub" : "New"}</span>
-        {renderEditor({
-          draft: inserting.draft,
-          saving: inserting.saving,
-          error: inserting.error,
-          busyLabel: "Adding…",
-          saveLabel: "Add clause",
-          placeholder: "New clause text…",
-          onChange: (v) => setInserting((s) => (s ? { ...s, draft: v } : s)),
-          onSave: saveInsert,
-          onCancel: cancelInsert,
-        })}
+        <div className={styles.insertBody}>
+          {/* F08d: draft this clause with Donna, then edit the result below. */}
+          {inserting.donnaOpen ? (
+            <div className={styles.draftPanel} onClick={(e) => e.stopPropagation()}>
+              <div className={styles.draftPanelHead}>
+                <span className={styles.recMark} aria-hidden>
+                  ✦
+                </span>
+                Draft with Donna
+              </div>
+              <textarea
+                className={styles.draftDesc}
+                rows={2}
+                value={inserting.donnaDesc}
+                autoFocus
+                placeholder="Describe the clause you need — e.g. “a 30-day cure period before termination for breach”"
+                onChange={(e) => setInserting((s) => (s ? { ...s, donnaDesc: e.target.value } : s))}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    void draftWithDonna();
+                  }
+                }}
+              />
+              <div className={styles.draftBar}>
+                <button
+                  type="button"
+                  className={styles.recBtnPrimary}
+                  disabled={inserting.donnaBusy || !inserting.donnaDesc.trim()}
+                  onClick={() => void draftWithDonna()}
+                >
+                  {inserting.donnaBusy ? "Drafting…" : "Draft it"}
+                </button>
+                <button
+                  type="button"
+                  className={styles.recBtnGhost}
+                  disabled={inserting.donnaBusy}
+                  onClick={() => setInserting((s) => (s ? { ...s, donnaOpen: false } : s))}
+                >
+                  Cancel
+                </button>
+                {inserting.donnaError && (
+                  <span className={styles.editorError}>{inserting.donnaError}</span>
+                )}
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              className={styles.draftWithDonnaBtn}
+              onClick={(e) => {
+                e.stopPropagation();
+                setInserting((s) => (s ? { ...s, donnaOpen: true } : s));
+              }}
+            >
+              <span className={styles.recMark} aria-hidden>
+                ✦
+              </span>
+              {inserting.draft.trim() ? "Redraft with Donna" : "Draft with Donna"}
+            </button>
+          )}
+          {renderEditor({
+            draft: inserting.draft,
+            saving: inserting.saving,
+            error: inserting.error,
+            busyLabel: "Adding…",
+            saveLabel: "Add clause",
+            placeholder: "New clause text… or draft it with Donna above",
+            onChange: (v) => setInserting((s) => (s ? { ...s, draft: v } : s)),
+            onSave: saveInsert,
+            onCancel: cancelInsert,
+          })}
+        </div>
       </div>
     );
   };
@@ -1745,6 +2162,7 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
     return (
       <div key={i.id} className={styles.issueCard}>
         <div className={styles.issueTop}>
+          <span className={styles.issueNum}>#{issueNumberById.get(i.id) ?? "—"}</span>
           <span className={[styles.issueAnchor, i.node_id ? "" : styles.issueAnchorNone].join(" ")}>
             {anchor ? (anchor.number ? `§${anchor.number}` : titleCase(anchor.role)) : "Contract"}
           </span>
@@ -1774,10 +2192,204 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
     );
   };
 
+  // F11 recommendation card — the live resolution layer (DD-68). Donna's grounded,
+  // cited draft for THIS issue: a rationale, a recommended landing and/or counter-
+  // language, an honest market-gap flag, and the operator's confirm/edit/refresh
+  // controls. Replaces the Phase-2 placeholder. The draft never reaches the exported
+  // issue fields until [Use] (DD-68). Citation chips reuse the Donna-tab resolver.
+  const renderRecCard = (issueId: string) => {
+    const eyebrow = (
+      <div className={styles.recEyebrow}>
+        <span className={styles.recMark} aria-hidden>
+          ✦
+        </span>
+        Donna&apos;s recommendation
+      </div>
+    );
+
+    // Loading / error / no-state-yet: a quiet framed bay so the slot never looks broken.
+    if (!rec || rec.issueId !== issueId || (rec.status === "loading" && !rec.draft)) {
+      return (
+        <section className={styles.recCard} aria-label="Donna's recommendation">
+          {eyebrow}
+          <p className={styles.recLoading}>
+            <span className={styles.recSpinner} aria-hidden />
+            Donna&apos;s working out a recommendation…
+          </p>
+        </section>
+      );
+    }
+    if (rec.status === "error") {
+      return (
+        <section className={styles.recCard} aria-label="Donna's recommendation">
+          {eyebrow}
+          <p className={styles.recError}>{rec.error ?? "Donna couldn't produce one just now."}</p>
+          <button type="button" className={styles.recBtnGhost} onClick={() => void loadRecommendation(issueId)}>
+            ↻ Try again
+          </button>
+        </section>
+      );
+    }
+
+    const d = rec.draft;
+    if (!d) return null;
+    const chips = resolveCitations(d.citations ?? [], rowById, issueById);
+    const usable = recHasLanguage(d);
+    const busy = rec.acting === "use";
+    const refreshing = rec.acting === "refresh";
+
+    return (
+      <section className={styles.recCard} aria-label="Donna's recommendation">
+        <div className={styles.recHead}>
+          {eyebrow}
+          {d.confirmed && <span className={styles.recApplied}>✓ Applied to this issue</span>}
+        </div>
+
+        <div className={styles.recRationale}>{renderDonnaMarkdown(d.rationale)}</div>
+
+        {chips.length > 0 && (
+          <div className={styles.cites}>
+            {chips.map((c, ci) =>
+              c.kind === "clause" ? (
+                <button
+                  key={ci}
+                  type="button"
+                  className={styles.cite}
+                  title="Jump to this clause"
+                  onClick={() => jumpTo(c.nodeId)}
+                >
+                  <span className={styles.citeArrow} aria-hidden>
+                    ↳
+                  </span>
+                  {c.label}
+                </button>
+              ) : (
+                <span key={ci} className={[styles.cite, styles.citeIssue].join(" ")}>
+                  {c.label}
+                </span>
+              ),
+            )}
+          </div>
+        )}
+
+        {d.missing_benchmark && (
+          <p className={styles.recGap}>
+            Donna needed a market benchmark she couldn&apos;t ground here — she&apos;s recommended the
+            structure, not a number. Add the figure before relying on it.
+          </p>
+        )}
+
+        {rec.editing ? (
+          <div className={styles.recEditForm}>
+            <div className={styles.detailField}>
+              <span className={styles.detailLabel}>Recommended position</span>
+              <textarea
+                className={[styles.control, styles.note].join(" ")}
+                rows={3}
+                value={rec.editPos}
+                onChange={(e) => setRec((s) => (s ? { ...s, editPos: e.target.value } : s))}
+                placeholder="Where this should land…"
+              />
+            </div>
+            <div className={styles.detailField}>
+              <span className={styles.detailLabel}>Counter-language</span>
+              <textarea
+                className={[styles.control, styles.note].join(" ")}
+                rows={5}
+                value={rec.editLang}
+                onChange={(e) => setRec((s) => (s ? { ...s, editLang: e.target.value } : s))}
+                placeholder="Exact clause language to propose…"
+              />
+            </div>
+            <div className={styles.recActions}>
+              <button
+                type="button"
+                className={styles.recBtnPrimary}
+                disabled={busy}
+                onClick={() => void useRecommendation(issueId, true)}
+              >
+                {busy ? "Applying…" : "Use this language"}
+              </button>
+              <button type="button" className={styles.recBtnGhost} disabled={busy} onClick={cancelRecEdit}>
+                Cancel
+              </button>
+            </div>
+            {rec.error && <span className={styles.recInlineError}>{rec.error}</span>}
+          </div>
+        ) : (
+          <>
+            {d.draft_recommended_position && (
+              <div className={styles.detailField}>
+                <span className={styles.detailLabel}>Recommended position</span>
+                <p className={styles.detailText}>{d.draft_recommended_position}</p>
+              </div>
+            )}
+            {d.draft_counter_language && (
+              <div className={styles.detailField}>
+                <span className={styles.detailLabel}>Counter-language</span>
+                <p className={[styles.detailText, styles.recLanguage].join(" ")}>
+                  {d.draft_counter_language}
+                </p>
+              </div>
+            )}
+
+            <div className={styles.recActions}>
+              {usable && !d.confirmed && (
+                <button
+                  type="button"
+                  className={styles.recBtnPrimary}
+                  disabled={busy || refreshing}
+                  onClick={() => void useRecommendation(issueId, false)}
+                >
+                  {busy ? "Applying…" : "Use Donna's language"}
+                </button>
+              )}
+              {usable && (
+                <button
+                  type="button"
+                  className={styles.recBtnGhost}
+                  disabled={busy || refreshing}
+                  onClick={() => startRecEdit(d)}
+                >
+                  Edit
+                </button>
+              )}
+              <button
+                type="button"
+                className={styles.recBtnGhost}
+                disabled={busy || refreshing}
+                onClick={() => void refreshRecommendation(issueId)}
+                title="Generate a fresh recommendation"
+              >
+                {refreshing ? "Refreshing…" : "↻ Refresh"}
+              </button>
+              {usable && (
+                <button
+                  type="button"
+                  className={styles.brainstormBtn}
+                  disabled={busy || refreshing}
+                  onClick={() => brainstormFromRec(issueId, d)}
+                  title="Open a conversation with Donna primed on this recommendation"
+                >
+                  Brainstorm with Donna ↗
+                </button>
+              )}
+            </div>
+            {rec.error && <span className={styles.recInlineError}>{rec.error}</span>}
+            <p className={styles.recDisclaimer}>
+              Donna&apos;s draft — grounded in this contract, but yours to decide. Nothing reaches the
+              export until you use it.
+            </p>
+          </>
+        )}
+      </section>
+    );
+  };
+
   // DD-68 single-issue resolution view — the surface where one issue is worked.
   // Rendered in place of the rail tabs while a drill-in is active. Top → bottom:
   // clause context (compact, jump/edit) → editable issue → Open/Closed → the F11
-  // resolution slot. The clause edit + status toggle reuse the cockpit's own
+  // resolution card. The clause edit + status toggle reuse the cockpit's own
   // mechanisms (startEdit/saveEdit, changeStatus).
   const renderResolveView = (i: StoredIssue) => {
     const status = asStatus(i.status);
@@ -1932,7 +2544,9 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
               </div>
             ) : (
               <>
-                <h2 className={styles.resolveTitle}>{i.title}</h2>
+                <h2 className={styles.resolveTitle}>
+                  <span className={styles.issueNum}>#{issueNumberById.get(i.id) ?? "—"}</span> {i.title}
+                </h2>
                 {i.our_position && (
                   <div className={styles.detailField}>
                     <span className={styles.detailLabel}>Our position</span>
@@ -1985,29 +2599,8 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
             {statusBusy && <span className={styles.statusBusy}>Saving…</span>}
           </section>
 
-          {/* F11 resolution slot — designed-in placeholder for advanced Donna
-              (Phase 2). Not wired; clearly reserved, not broken. */}
-          <section className={styles.donnaSlot} aria-label="Donna's resolution — coming with advanced Donna">
-            <div className={styles.donnaSlotEyebrow}>
-              <span className={styles.donnaSlotMark} aria-hidden>
-                ✦
-              </span>
-              Advanced Donna
-              <span className={styles.donnaSlotPhase}>Phase 2 · F11</span>
-            </div>
-            <p className={styles.donnaSlotTitle}>Donna will help you resolve this here</p>
-            <p className={styles.donnaSlotLead}>
-              A recommended landing on the reasonableness spectrum, a proposed redline for the clause,
-              and a back-and-forth to think it through — grounded in this contract and cited.
-            </p>
-            <div className={styles.donnaSlotChips} aria-hidden>
-              <span className={styles.donnaSlotChip}>Use Donna&apos;s language</span>
-              <span className={styles.donnaSlotChip}>Edit</span>
-              <span className={styles.donnaSlotChip}>Reject</span>
-              <span className={styles.donnaSlotChip}>Brainstorm</span>
-            </div>
-            <p className={styles.donnaSlotNote}>Arrives with advanced Donna — not active yet.</p>
-          </section>
+          {/* F11 resolution layer — Donna's live recommendation for this issue. */}
+          {renderRecCard(i.id)}
         </div>
       </div>
     );
@@ -2407,6 +3000,20 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
                   ) : (
                     <p className={styles.selPreview}>{selectedRow.text || "(no text)"}</p>
                   )}
+                  {!editingSelected && !deletingSelected && (
+                    <button
+                      type="button"
+                      className={styles.askClauseBtn}
+                      onClick={() => askDonnaAboutClause(selectedRow.id)}
+                      title="Ask Donna for help grounded on this clause"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                        <path d="M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H9l-4 3v-3H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z" />
+                        <path d="M9 10h6M9 13h4" />
+                      </svg>
+                      Ask Donna about this clause
+                    </button>
+                  )}
                 </>
               ) : (
                 <p className={styles.selHint}>
@@ -2629,23 +3236,26 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
                           <div key={i} className={[styles.msg, styles.msgDonna].join(" ")}>
                             <span className={styles.donnaEyebrow}>
                               Donna
-                              {m.kind === "deflected" && (
+                              {/* live mode tags (F10b) */}
+                              {m.mode === "advise" && (
+                                <span className={styles.adviseTag}>recommendation</span>
+                              )}
+                              {m.mode === "draft" && <span className={styles.draftTag}>draft</span>}
+                              {m.mode === "legal_referral" && (
+                                <span className={styles.scopeTag}>get a lawyer</span>
+                              )}
+                              {m.mode === "need_context" && (
+                                <span className={styles.needTag}>needs a clause</span>
+                              )}
+                              {/* persisted-kind tags (reloaded thread turns) */}
+                              {!m.mode && m.kind === "deflected" && (
                                 <span className={styles.scopeTag}>scoped to reading</span>
                               )}
-                              {m.kind === "not_found" && (
+                              {!m.mode && m.kind === "not_found" && (
                                 <span className={styles.notFoundTag}>not in this contract</span>
                               )}
                             </span>
-                            <div
-                              className={[
-                                styles.bubble,
-                                m.kind === "deflected"
-                                  ? styles.bubbleDeflected
-                                  : m.kind === "not_found"
-                                    ? styles.bubbleNotFound
-                                    : styles.bubbleDonna,
-                              ].join(" ")}
-                            >
+                            <div className={[styles.bubble, donnaBubbleClass(m)].join(" ")}>
                               {m.citations && m.citations.length > 0 && (
                                 <div className={[styles.cites, styles.citesTop].join(" ")}>
                                   {m.citations.map((c, ci) =>
@@ -2671,7 +3281,54 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
                                 </div>
                               )}
                               <div className={styles.bubbleText}>{renderDonnaMarkdown(m.content)}</div>
-                              {m.kind === "deflected" && (
+
+                              {/* draft mode: the clause language to apply, set apart, with a
+                                  "Use this language" action that routes into an existing
+                                  confirmed apply surface (issue rec-edit or clause editor). */}
+                              {m.mode === "draft" && m.draftLanguage?.trim() && (
+                                <div className={styles.draftTurn}>
+                                  <span className={styles.draftTurnLabel}>Draft language</span>
+                                  <p className={[styles.detailText, styles.recLanguage].join(" ")}>
+                                    {m.draftLanguage}
+                                  </p>
+                                  <div className={styles.draftTurnBar}>
+                                    {donnaContext?.issueId ||
+                                    (donnaContext?.nodeIds.length ?? 0) > 0 ? (
+                                      <button
+                                        type="button"
+                                        className={styles.recBtnPrimary}
+                                        onClick={() => void applyDraftLanguage(m.draftLanguage ?? "")}
+                                      >
+                                        Use this language
+                                      </button>
+                                    ) : (
+                                      <>
+                                        <button
+                                          type="button"
+                                          className={styles.recBtnGhost}
+                                          onClick={() => void applyDraftLanguage(m.draftLanguage ?? "")}
+                                        >
+                                          {copiedDraft ? "Copied ✓" : "Copy"}
+                                        </button>
+                                        <span className={styles.draftHint}>
+                                          Select a clause or open an issue to apply it directly.
+                                        </span>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* legal_referral: Donna won't opine — route to a lawyer. */}
+                              {m.mode === "legal_referral" && (
+                                <p className={styles.deflectFoot}>
+                                  This calls for a legal judgment — get a lawyer. Donna won&apos;t
+                                  opine on it.
+                                </p>
+                              )}
+
+                              {/* deflected (reloaded F10 turn) keeps its original footer. */}
+                              {!m.mode && m.kind === "deflected" && (
                                 <p className={styles.deflectFoot}>
                                   For a position or advice, raise an issue — or get a lawyer for a
                                   legal judgment.
@@ -2712,6 +3369,24 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
                   </div>
                 )}
 
+                {/* F10b context chip — the clause/issue Donna is grounded on. [×]
+                    clears it, reverting to open read-and-explain. */}
+                {donnaContext && (
+                  <div className={styles.ctxChip}>
+                    <span className={styles.ctxChipLabel}>Discussing</span>
+                    <span className={styles.ctxChipBody}>{donnaContextLabel}</span>
+                    <button
+                      type="button"
+                      className={styles.ctxChipClear}
+                      aria-label="Clear context — go back to open questions"
+                      title="Clear context"
+                      onClick={() => setDonnaContext(null)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                )}
+
                 <form
                   className={styles.composer}
                   onSubmit={(e) => {
@@ -2724,7 +3399,11 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
                     className={styles.composerInput}
                     value={donnaInput}
                     onChange={(e) => setDonnaInput(e.target.value)}
-                    placeholder="Ask about this contract…"
+                    placeholder={
+                      donnaContext
+                        ? `Ask about ${donnaContextLabel}…`
+                        : "Ask about this contract…"
+                    }
                     aria-label="Ask Donna about this contract"
                     disabled={donnaLoading}
                   />
@@ -2738,7 +3417,9 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
                   </button>
                 </form>
                 <p className={styles.donnaGuard}>
-                  Donna reads &amp; explains this contract — she doesn&apos;t give legal advice.
+                  {donnaContext
+                    ? "Donna's advising on your selected context — grounded in this contract, but your call to apply."
+                    : "Donna reads & explains this contract — give her a clause or issue for advice."}
                 </p>
               </div>
             )}

@@ -27,6 +27,7 @@ from backend.models.imports import (
 )
 from backend.services.audit_repo import record_event
 from backend.services.contract_repo import fetch_nodes, insert_nodes
+from backend.services.cross_references import extract_and_store as extract_cross_references
 from backend.services.defined_terms import extract_and_store
 from backend.services.import_.pipeline import import_docx, preview_docx
 
@@ -45,6 +46,17 @@ async def _extract_defined_terms_safely(conn: Any, contract_id: str) -> None:
         await extract_and_store(conn, contract_id)
     except Exception:
         log.warning("defined_terms_extraction_failed", contract_id=contract_id, exc_info=True)
+
+
+async def _extract_cross_references_safely(conn: Any, contract_id: str) -> None:
+    """Auto-populate F17 cross-reference links after an import commit. Isolated like
+    the defined-terms pass above: runs after the import transaction has committed and
+    swallows any error (logged), so an extraction failure can never roll back or lose
+    the just-committed contract."""
+    try:
+        await extract_cross_references(conn, contract_id)
+    except Exception:
+        log.warning("cross_references_extraction_failed", contract_id=contract_id, exc_info=True)
 
 
 def _write_temp(data: bytes) -> str:
@@ -95,6 +107,7 @@ async def commit_contract(contract_id: str, body: CommitRequest) -> ImportResult
                 ),
             )
         await _extract_defined_terms_safely(conn, contract_id)
+        await _extract_cross_references_safely(conn, contract_id)
     return ImportResult(
         contract_id=contract_id,
         node_count=len(body.nodes),

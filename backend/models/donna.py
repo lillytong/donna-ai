@@ -16,10 +16,20 @@ from pydantic import BaseModel, Field
 DonnaAnswerKind = Literal["answer", "not_found", "deflected"]
 DonnaRole = Literal["user", "assistant"]
 
+# F10b context-aware chat treatments. Richer than the persisted `kind` (which stays the
+# three F10 values, schema-pinned): `mode` is mapped down to a `kind` on persistence
+# (_mode_to_kind in services/donna/advise.py) so a rehydrated thread keeps F10 styling.
+DonnaChatMode = Literal["explain", "advise", "draft", "legal_referral", "need_context"]
+
 
 class DonnaMessage(BaseModel):
     role: DonnaRole
     content: str
+    # Persisted on assistant turns only (DD-40 thread rehydration): `kind` is the answer
+    # treatment, `citations` the validated node/issue ids. NULL on user turns / pre-migration
+    # rows, which then render as plain grounded answers.
+    kind: DonnaAnswerKind | None = None
+    citations: list[str] | None = None
     created_at: datetime | None = None
 
 
@@ -46,8 +56,21 @@ class DonnaStructuredAnswer(BaseModel):
     citations: list[str] = Field(default_factory=list)
 
 
+class DonnaContext(BaseModel):
+    """The grounded anchor the operator is looking at when they ask (F10b). A POINTER,
+    not a snapshot: `node_ids` are the selected clause node(s) and `issue_id` an open
+    issue — both resolved LIVE from the DB each turn (never frozen into the window).
+    Empty (no nodes, no issue) = no-context mode = read-and-explain (F10 preserved)."""
+
+    node_ids: list[str] = Field(default_factory=list)
+    issue_id: str | None = None
+
+
 class DonnaAskRequest(BaseModel):
     question: str
+    # Optional grounded anchor (F10b). When present and non-empty it unlocks COMMERCIAL
+    # advice + drafting (never a legal opinion); when absent Donna stays read-and-explain.
+    context: DonnaContext | None = None
 
 
 class DonnaAskResponse(BaseModel):
@@ -55,6 +78,28 @@ class DonnaAskResponse(BaseModel):
     citations: list[str]
     deflected: bool
     kind: DonnaAnswerKind
+
+
+class DonnaChatReply(BaseModel):
+    """The model's raw structured chat output (F10b). `mode` routes the boundary
+    (advise/draft/explain/legal_referral/need_context); `draft_language` carries clause
+    text only on a draft turn; `citations` are the grounded node/issue ids."""
+
+    reply: str
+    mode: DonnaChatMode = "explain"
+    citations: list[str] = Field(default_factory=list)
+    draft_language: str | None = None
+
+
+class DonnaChatResponse(BaseModel):
+    """The /donna/ask API payload (F10b). `reply` is the prose Donna returns; `mode`
+    tells the frontend which treatment to render; `draft_language` is present only on a
+    draft turn (a transient clause the operator commits via the existing apply paths)."""
+
+    reply: str
+    mode: DonnaChatMode
+    citations: list[str]
+    draft_language: str | None = None
 
 
 class DonnaThreadResponse(BaseModel):

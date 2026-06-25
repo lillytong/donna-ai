@@ -384,6 +384,76 @@ export interface IssueUpdate {
 export const updateIssue = (issueId: string, payload: IssueUpdate): Promise<StoredIssue> =>
   patchJson(`/issues/${issueId}`, payload);
 
+// --- F11: Donna's issue recommendation (DD-68) -----------------------------
+// Donna's issue-scoped advisory draft: a grounded rationale plus the two draftable
+// fields (a recommended landing and/or exact counter-language) and the cited ids.
+// The draft lives apart from the issue's exported fields until the operator confirms
+// ([Use Donna's language]); `missing_benchmark` is her honest "needed a market figure
+// I don't have" flag — she recommends the structure, never invents a number.
+export interface StoredRecommendation {
+  id: string;
+  issue_id: string;
+  rationale: string;
+  draft_recommended_position: string | null;
+  draft_counter_language: string | null;
+  citations: string[] | null;
+  missing_benchmark: boolean;
+  model: string;
+  generated_at: string;
+  confirmed: boolean;
+}
+
+// The result of confirming: the draft (or the operator's edited text) was copied into
+// the issue's exported fields (DD-68).
+export interface RecommendationConfirmResult {
+  issue_id: string;
+  confirmed: boolean;
+  recommended_position: string | null;
+  donna_counter_language: string | null;
+}
+
+// Optional [Edit] payload — the operator-adjusted language to confirm instead of the
+// stored draft. Omitted entirely on a plain [Use].
+export interface RecommendationEdit {
+  edited_recommended_position?: string | null;
+  edited_counter_language?: string | null;
+}
+
+const _recPath = (contractId: string, issueId: string): string =>
+  `/contracts/${contractId}/issues/${issueId}/recommendation`;
+
+// Generate (or regenerate) the draft. Regenerating replaces the prior draft and resets
+// confirmed — async, may take a few seconds at the capable tier.
+export const generateRecommendation = (
+  contractId: string,
+  issueId: string,
+): Promise<StoredRecommendation> => postJson(_recPath(contractId, issueId), {});
+
+// The current draft, or null when none exists yet (the 404 the backend returns for a
+// never-generated issue is a normal "not yet", not an error).
+export async function getRecommendation(
+  contractId: string,
+  issueId: string,
+): Promise<StoredRecommendation | null> {
+  try {
+    return await getJson<StoredRecommendation>(_recPath(contractId, issueId));
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return null;
+    throw e;
+  }
+}
+
+// [Use Donna's language]: copy the draft (or the operator's edited language) into the
+// issue's exported fields. `edit` carries the edited text; omit it for a verbatim copy.
+// A plain Use sends NO body (undefined → no request body) so the backend copies the
+// stored draft as-is; sending `{}` would be read as an edit that clears both fields.
+export const confirmRecommendation = (
+  contractId: string,
+  issueId: string,
+  edit?: RecommendationEdit,
+): Promise<RecommendationConfirmResult> =>
+  postJson(`${_recPath(contractId, issueId)}/confirm`, edit);
+
 // Conceptual clause search (F-jump): the AI fallback the cockpit fires on Enter
 // when an exact keyword query has zero literal matches. Returns the best-matching
 // node (or null) so the jump bar can navigate to it and flag it as non-literal.
@@ -434,6 +504,25 @@ export const editNode = (
 
 export const createNode = (contractId: string, payload: NodeCreate): Promise<StoredNode> =>
   postJson(`/contracts/${contractId}/nodes`, payload);
+
+// F08d "Draft with Donna": a grounded clause draft to pre-fill the insert editor. The
+// draft is transient — the operator reviews/edits it and commits via createNode (it is
+// never persisted by this call). `body` is the clause language; `heading` an optional
+// short title (null for a plain operative clause); empty `body` = Donna couldn't draft.
+export interface ClauseDraft {
+  heading: string | null;
+  body: string;
+  citations: string[];
+}
+export interface ClauseDraftRequest {
+  description: string;
+  anchor_node_id: string | null;
+  mode: "below" | "sub" | "above";
+}
+export const draftClause = (
+  contractId: string,
+  payload: ClauseDraftRequest,
+): Promise<ClauseDraft> => postJson(`/contracts/${contractId}/nodes/draft`, payload);
 
 // Soft-delete a node and its whole sub-tree (cockpit ⋮ menu). Mirrors backend/
 // models/nodes.py NodeDeleteResponse — returns every removed id (the node plus
@@ -561,29 +650,51 @@ export const exportRedline = (contractId: string): Promise<void> =>
     snapshot_id: null,
   });
 
-// --- Donna tab: single-contract grounded Q&A (F10, SPEC §9) ----------------
-// Read-and-explain only — Donna locates / explains / status-briefs over THIS
-// contract's nodes + issue ledger; she never advises (DD-14). `citations` are
-// node ids (and may include issue ids) the answer drew from; the cockpit resolves
-// each to a clickable clause chip. `kind` drives the answer treatment: a normal
-// `answer`, an honest `not_found`, or a `deflected` (out-of-scope) reply.
+// --- Donna tab: context-aware grounded chat (F10b, SPEC §9) ----------------
+// `kind` is the PERSISTED answer-treatment carried on stored thread messages
+// (F10 persistence): a normal `answer`, an honest `not_found`, or a `deflected`
+// (out-of-scope) reply. Live asks now return the richer `mode` below; `kind`
+// stays the rehydration vocabulary for reloaded turns.
 export type DonnaAnswerKind = "answer" | "not_found" | "deflected";
 
-export interface DonnaAnswer {
-  answer: string;
-  citations: string[];
-  kind: DonnaAnswerKind;
-  deflected: boolean;
+// Live ask result (F10b): Donna is context-aware. With a clause/issue in context
+// she advises / drafts grounded on it; without context she's read-and-explain.
+//   explain        = read-and-explain answer (the old F10 behaviour)
+//   advise         = a positional recommendation
+//   draft          = `draft_language` carries clause language to apply
+//   legal_referral = "get a lawyer" — Donna will NOT opine
+//   need_context   = a soft nudge to select a clause / open an issue first
+export type DonnaChatMode = "explain" | "advise" | "draft" | "legal_referral" | "need_context";
+
+// The active context sent with an ask: the clause node(s) and/or the issue Donna
+// should ground on. Optional — absent = open read-and-explain. An issue in context
+// auto-includes its clause (the cockpit fills `node_ids`).
+export interface DonnaAskContext {
+  node_ids: string[];
+  issue_id?: string | null;
 }
 
-// Persistent per-contract thread (DD-40). Stored messages carry only role + text;
-// citation chips + `kind` styling are live on a fresh ask, so loaded history
-// renders as plain grounded answers.
+// Live ask response (REPLACES the old {answer,citations,deflected,kind} shape).
+// `citations` are node ids (and may include issue ids); the cockpit resolves each
+// to a clickable clause chip. `draft_language` is non-null only on `mode === "draft"`.
+export interface DonnaChatResponse {
+  reply: string;
+  mode: DonnaChatMode;
+  citations: string[];
+  draft_language: string | null;
+}
+
+// Persistent per-contract thread (DD-40). Assistant turns persist their answer
+// treatment (`kind`) + cited ids (`citations`), so loaded history rehydrates the same
+// chips + kind styling a fresh ask renders. User turns / pre-migration rows carry
+// neither (null) and render as plain grounded answers.
 export type DonnaMessageRole = "user" | "assistant";
 
 export interface DonnaThreadMessage {
   role: DonnaMessageRole;
   content: string;
+  kind?: DonnaAnswerKind | null;
+  citations?: string[] | null;
 }
 
 export interface DonnaThread {
@@ -595,8 +706,14 @@ export interface DonnaThread {
 export const getDonnaThread = (contractId: string): Promise<DonnaThread> =>
   getJson(`/contracts/${contractId}/donna/thread`);
 
-export const askDonna = (contractId: string, question: string): Promise<DonnaAnswer> =>
-  postJson(`/contracts/${contractId}/donna/ask`, { question });
+// Context is optional: omitted when there's no active selection (JSON.stringify
+// drops the undefined key), so an open ask sends just `{ question }`.
+export const askDonna = (
+  contractId: string,
+  question: string,
+  context?: DonnaAskContext,
+): Promise<DonnaChatResponse> =>
+  postJson(`/contracts/${contractId}/donna/ask`, { question, context });
 
 // Map an ask/thread failure to an operator-facing line. A 429 (rate limit) gets a
 // friendly "catching her breath" message; everything else surfaces the backend

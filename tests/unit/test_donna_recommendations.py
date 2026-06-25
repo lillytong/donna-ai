@@ -18,7 +18,7 @@ from backend.models.issues import StoredIssue
 from backend.models.recommendations import RecommendationDraft
 from backend.services.donna import recommendation_repo
 from backend.services.donna.grounding import build_issue_focus, build_label_map
-from backend.services.donna.recommendations import finalize_draft, parse_draft
+from backend.services.donna.recommendations import _clean, finalize_draft, parse_draft
 
 # --- parse_draft -----------------------------------------------------------
 
@@ -120,6 +120,16 @@ def test_issue_focus_marks_free_floating_and_propose_stance() -> None:
     assert "proposing" in block
 
 
+# --- edited-confirm coercion (_clean) --------------------------------------
+
+
+def test_clean_coerces_blank_edit_to_none() -> None:
+    assert _clean(None) is None
+    assert _clean("   ") is None
+    assert _clean("") is None
+    assert _clean("  Hold the cap.  ") == "Hold the cap."
+
+
 # --- confirm-copy transaction (draft -> issues.*, DD-68) -------------------
 
 
@@ -148,6 +158,7 @@ class _FakeConn:
         self._fetches = 0
         self.in_txn = False
         self.executes: list[tuple[str, bool]] = []
+        self.exec_args: list[tuple[Any, ...]] = []
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[None]:
@@ -162,8 +173,9 @@ class _FakeConn:
         self._fetches += 1
         return row
 
-    async def execute(self, sql: str, *_args: Any) -> str:
+    async def execute(self, sql: str, *args: Any) -> str:
         self.executes.append((sql, self.in_txn))
+        self.exec_args.append(args)
         return "UPDATE 1"
 
 
@@ -208,6 +220,24 @@ async def test_confirm_returns_none_when_no_draft() -> None:
     conn = _FakeConn([None])
     assert await recommendation_repo.confirm(conn, "i-missing") is None
     assert conn.executes == []  # nothing written when there is no draft
+
+
+async def test_confirm_with_edit_overwrites_draft_before_copy(monkeypatch: Any) -> None:
+    """Operator [Edit]: the edited language overwrites the draft row inside the txn and
+    BEFORE the draft->issues copy, so the export reflects exactly what was confirmed."""
+    monkeypatch.setattr(recommendation_repo, "record_event", _stub_record({}))
+    conn = _FakeConn([_rec_row(), _rec_row(confirmed=True)])
+
+    edited = ("Hold at the 12-month cap.", "Liability shall not exceed 100% of fees.")
+    result = await recommendation_repo.confirm(conn, "i1", edited)
+
+    assert result is not None and result.confirmed is True
+    sqls = [s for s, _ in conn.executes]
+    edit_idx = next(i for i, s in enumerate(sqls) if "draft_recommended_position = $2" in s)
+    copy_idx = next(i for i, s in enumerate(sqls) if "UPDATE issues" in s)
+    assert edit_idx < copy_idx  # edit lands before the copy
+    assert all(in_txn for _, in_txn in conn.executes)  # all inside the transaction
+    assert conn.exec_args[edit_idx] == ("i1", edited[0], edited[1])  # edited values passed through
 
 
 # --- upsert / get round-trip ----------------------------------------------

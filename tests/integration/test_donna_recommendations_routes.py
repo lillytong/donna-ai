@@ -91,10 +91,13 @@ def test_get_404_when_no_draft(monkeypatch: Any) -> None:
 
 
 def test_confirm_returns_copied_fields(monkeypatch: Any) -> None:
-    seen: dict[str, str] = {}
+    seen: dict[str, Any] = {}
 
-    async def fake_confirm(iid: str) -> RecommendationConfirmResponse | None:
+    async def fake_confirm(
+        iid: str, edit: Any = None
+    ) -> RecommendationConfirmResponse | None:
         seen["iid"] = iid
+        seen["edit"] = edit
         return RecommendationConfirmResponse(
             issue_id=iid,
             confirmed=True,
@@ -106,13 +109,44 @@ def test_confirm_returns_copied_fields(monkeypatch: Any) -> None:
     resp = client.post(_PATH + "/confirm")
     assert resp.status_code == 200
     assert seen["iid"] == "i1"
+    assert seen["edit"] is None  # plain [Use], no body -> copy the stored draft verbatim
     body = resp.json()
     assert body["confirmed"] is True
     assert body["recommended_position"] == "Keep the twelve-month cap."
 
 
+def test_confirm_passes_edited_language_through(monkeypatch: Any) -> None:
+    """Operator [Edit] before [Use]: the edited body reaches the service."""
+    seen: dict[str, Any] = {}
+
+    async def fake_confirm(
+        iid: str, edit: Any = None
+    ) -> RecommendationConfirmResponse | None:
+        seen["edit"] = edit
+        return RecommendationConfirmResponse(
+            issue_id=iid,
+            confirmed=True,
+            recommended_position=edit.edited_recommended_position if edit else None,
+            donna_counter_language=edit.edited_counter_language if edit else None,
+        )
+
+    monkeypatch.setattr(rec_api, "confirm_recommendation", fake_confirm)
+    resp = client.post(
+        _PATH + "/confirm",
+        json={
+            "edited_recommended_position": "Hold at the 12-month cap.",
+            "edited_counter_language": "Liability shall not exceed 100% of fees.",
+        },
+    )
+    assert resp.status_code == 200
+    assert seen["edit"].edited_recommended_position == "Hold at the 12-month cap."
+    assert resp.json()["recommended_position"] == "Hold at the 12-month cap."
+
+
 def test_confirm_404_when_no_draft(monkeypatch: Any) -> None:
-    async def fake_confirm(_iid: str) -> RecommendationConfirmResponse | None:
+    async def fake_confirm(
+        _iid: str, _edit: Any = None
+    ) -> RecommendationConfirmResponse | None:
         return None
 
     monkeypatch.setattr(rec_api, "confirm_recommendation", fake_confirm)

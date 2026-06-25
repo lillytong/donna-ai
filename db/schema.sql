@@ -312,11 +312,18 @@ CREATE TABLE donna_conversations (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- `kind` + `citations` persist the assistant turn's F10 answer treatment so a thread
+-- reloaded from the DB rehydrates the same citation chips + kind styling a fresh ask
+-- renders (without them a reloaded answer falls back to plain grounded text). Both are
+-- nullable and set on assistant turns only — user messages leave them NULL. `citations`
+-- is JSONB (node/issue ids), as F10's DonnaAskResponse.citations.
 CREATE TABLE donna_messages (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     conversation_id UUID NOT NULL REFERENCES donna_conversations(id),
     role            TEXT NOT NULL CHECK (role IN ('user','assistant')),
     content         TEXT NOT NULL,
+    kind            TEXT CHECK (kind IN ('answer','not_found','deflected')),
+    citations       JSONB,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -385,4 +392,5 @@ INSERT INTO schema_migrations (version) VALUES
     ('0000_baseline'),
     ('0001_issue_status_binary'),
     ('0002_drop_issue_comments'),
-    ('0003_donna_recommendations');
+    ('0003_donna_recommendations'),
+    ('0004_donna_message_meta');

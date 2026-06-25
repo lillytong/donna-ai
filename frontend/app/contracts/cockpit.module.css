@@ -798,6 +798,78 @@
   color: #1d4ed8;
 }
 
+/* ---- F08d "Draft with Donna" — the drafting affordance above the insert editor.
+   The violet mark/buttons reuse the advanced-Donna identity (.recMark/.recBtn*). ---- */
+.insertBody {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.draftWithDonnaBtn {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #6d5bd0;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px dashed #c5bdf0;
+  border-radius: 8px;
+  padding: 6px 11px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.draftWithDonnaBtn:hover {
+  background: #efeafc;
+}
+.draftPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px;
+  border: 1px solid #d6cef4;
+  border-radius: 10px;
+  background:
+    radial-gradient(120% 80% at 0% 0%, #f3f0fe 0%, rgba(243, 240, 254, 0) 60%),
+    linear-gradient(180deg, #faf9ff 0%, #f6f4fd 100%);
+}
+.draftPanelHead {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6d5bd0;
+}
+.draftDesc {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #2c2a3a;
+  background: #fff;
+  border: 1px solid #d6cef4;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.draftDesc:focus-visible {
+  outline: 2px solid #7c66e0;
+  outline-offset: 1px;
+}
+.draftBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
 /* count of issues already anchored to this clause */
 .rowIssues {
   flex-shrink: 0;
@@ -1278,6 +1350,13 @@
   align-items: center;
   gap: 8px;
   margin-bottom: 5px;
+}
+.issueNum {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  font-weight: 800;
+  color: #3f4754;
 }
 .issueAnchor {
   flex-shrink: 0;
@@ -2574,23 +2653,28 @@
   gap: 10px;
 }
 
-/* ---- F11 resolution slot (Phase 2 placeholder) — the single bespoke surface.
-   A reserved, clearly-labeled bay for advanced Donna: a soft violet wash + dashed
-   frame say "designed-in, not yet active" without reading as a broken empty state.
-   Violet is used nowhere else, so it reads as the advanced-Donna zone. ---- */
-.donnaSlot {
+/* ---- F11 resolution card (live) — Donna's issue recommendation. The single
+   bespoke surface: a soft violet wash + frame mark the advanced-Donna zone (violet
+   is used nowhere else). Holds the rationale, cited chips, recommended position /
+   counter-language, the market-gap flag, and the confirm/edit/refresh controls. ---- */
+.recCard {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   padding: 16px;
-  border: 1px dashed #c5bdf0;
+  border: 1px solid #d6cef4;
   border-radius: 12px;
   background:
     radial-gradient(120% 80% at 0% 0%, #f3f0fe 0%, rgba(243, 240, 254, 0) 60%),
     linear-gradient(180deg, #faf9ff 0%, #f6f4fd 100%);
 }
-.donnaSlotEyebrow {
+.recHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.recEyebrow {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2600,52 +2684,323 @@
   letter-spacing: 0.06em;
   color: #6d5bd0;
 }
-.donnaSlotMark {
+.recMark {
   font-size: 13px;
   line-height: 1;
   color: #7c66e0;
 }
-.donnaSlotPhase {
+.recApplied {
   margin-left: auto;
-  font-size: 9.5px;
+  font-size: 10.5px;
   font-weight: 700;
-  letter-spacing: 0.05em;
-  color: #6d5bd0;
-  background: #ece7fb;
+  letter-spacing: 0.03em;
+  color: #1f7a4d;
+  background: #e3f6ec;
+  border: 1px solid #b8e6cd;
   border-radius: 999px;
-  padding: 2px 8px;
+  padding: 2px 9px;
 }
-.donnaSlotTitle {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 600;
+.recRationale {
+  font-size: 13px;
+  line-height: 1.55;
+  color: #34324a;
+}
+.recRationale p {
+  margin: 0 0 6px;
+}
+.recRationale p:last-child {
+  margin-bottom: 0;
+}
+/* counter-language reads as draftable clause text — monospace-ish, set apart */
+.recLanguage {
+  white-space: pre-wrap;
+  font-family: "SF Mono", "JetBrains Mono", ui-monospace, "Cascadia Code", monospace;
+  font-size: 12px;
+  line-height: 1.5;
   color: #2c2a3a;
+  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid #e2dcf6;
+  border-radius: 8px;
+  padding: 8px 10px;
 }
-.donnaSlotLead {
+.recGap {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #8a5a17;
+  background: #fdf4e6;
+  border: 1px solid #f0dcb8;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.recLoading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
   margin: 0;
   font-size: 12.5px;
-  line-height: 1.5;
   color: #6b6880;
 }
-/* ghosted preview of the actions F11 will bring — non-interactive on purpose */
-.donnaSlotChips {
+.recSpinner {
+  width: 13px;
+  height: 13px;
+  border: 2px solid #d6cef4;
+  border-top-color: #7c66e0;
+  border-radius: 50%;
+  animation: recSpin 0.7s linear infinite;
+}
+@keyframes recSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.recError {
+  margin: 0;
+  font-size: 12.5px;
+  color: #b3261e;
+}
+.recInlineError {
+  font-size: 12px;
+  color: #b3261e;
+}
+.recEditForm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.recActions {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  align-items: center;
+  gap: 8px;
   margin-top: 2px;
 }
-.donnaSlotChip {
-  font-size: 11.5px;
+.recBtnPrimary {
+  font-size: 12.5px;
   font-weight: 600;
-  color: #8b85a8;
-  background: rgba(255, 255, 255, 0.7);
-  border: 1px solid #ded8f3;
-  border-radius: 7px;
-  padding: 4px 10px;
+  color: #fff;
+  background: #6d5bd0;
+  border: 1px solid #5e4cc4;
+  border-radius: 8px;
+  padding: 7px 13px;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    opacity 0.12s ease;
 }
-.donnaSlotNote {
+.recBtnPrimary:hover:not(:disabled) {
+  background: #5e4cc4;
+}
+.recBtnGhost {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #6d5bd0;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid #d6cef4;
+  border-radius: 8px;
+  padding: 7px 13px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.recBtnGhost:hover:not(:disabled) {
+  background: #efeafc;
+}
+.recBtnPrimary:disabled,
+.recBtnGhost:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.recBtnPrimary:focus-visible,
+.recBtnGhost:focus-visible {
+  outline: 2px solid #7c66e0;
+  outline-offset: 2px;
+}
+.recDisclaimer {
   margin: 2px 0 0;
   font-size: 11px;
   font-style: italic;
   color: #9a95b3;
+}
+
+/* "Brainstorm with Donna ↗" — leaves the card for a primed conversation. Carries the
+   advanced-Donna violet identity (outlined) so it reads as the same Donna who wrote the
+   recommendation, distinct from the blue read-and-explain affordances. */
+.brainstormBtn {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #6d5bd0;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px dashed #c5baf0;
+  border-radius: 8px;
+  padding: 7px 13px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.brainstormBtn:hover:not(:disabled) {
+  background: #efeafc;
+  border-color: #7c66e0;
+}
+.brainstormBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.brainstormBtn:focus-visible {
+  outline: 2px solid #7c66e0;
+  outline-offset: 2px;
+}
+
+/* ============================================================================
+   F10b — context-aware Donna chat (context chip, mode tags, draft turn, "ask
+   Donna about this clause"). Blue = Donna's read/explain identity; violet =
+   advise/draft (the advanced-Donna zone, shared with the rec card).
+   ============================================================================ */
+
+/* "Ask Donna about this clause" — the motivating affordance on the Current Clause
+   inspector. Donna's blue identity, full-width, sits under the clause preview. */
+.askClauseBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  align-self: flex-start;
+  margin-top: 10px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #1d4ed8;
+  background: #eef4ff;
+  border: 1px solid #dbe6fb;
+  border-radius: 8px;
+  padding: 7px 12px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.askClauseBtn svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+.askClauseBtn:hover {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+.askClauseBtn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
+}
+
+/* mode tags in Donna's eyebrow — small pills that name the live treatment */
+.adviseTag,
+.draftTag {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: #5e4cc4;
+  background: #efeafc;
+  border: 1px solid #ddd3f6;
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+.needTag {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: #1d4ed8;
+  background: #eef4ff;
+  border: 1px solid #dbe6fb;
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+
+/* need_context — a gentle nudge, never an error. Soft blue spine, calm wash. */
+.bubbleNeedContext {
+  border-left-color: #93b4f2;
+  background: #f6f9ff;
+}
+
+/* draft turn — the clause language Donna proposes, set apart inside the bubble with a
+   label + an apply/copy bar. The text itself reuses .recLanguage (mono, framed). */
+.draftTurn {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed #e2dcf6;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.draftTurnLabel {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6d5bd0;
+}
+.draftTurnBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.draftHint {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: #8a85a0;
+}
+
+/* context chip — sticky between the thread and composer; the clause/issue Donna is
+   grounded on. [×] clears it back to open questions. */
+.ctxChip {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 14px;
+  padding: 7px 8px 7px 11px;
+  font-size: 12px;
+  color: #1f2328;
+  background: #eef4ff;
+  border: 1px solid #dbe6fb;
+  border-radius: 9px;
+}
+.ctxChipLabel {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #1d4ed8;
+}
+.ctxChipBody {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ctxChipClear {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  line-height: 1;
+  color: #5d6470;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.ctxChipClear:hover {
+  background: #dbe6fb;
+  color: #1d4ed8;
+}
+.ctxChipClear:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
 }

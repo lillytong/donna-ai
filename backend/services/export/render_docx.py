@@ -332,6 +332,14 @@ def render_contract_docx(nodes: list[StoredNode], style_config: dict[str, Any]) 
             _run(paragraph, text, style.font, style.body_font_size_pt, bold=True, caps=caps)
             continue
 
+        # Contract title (front matter): centred + larger + bold, mirroring the
+        # appendix-title alignment but WITHOUT a page break — it is the first block
+        # in the document. Display-only: the stored text is unchanged.
+        if node.role == "title":
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            _run(paragraph, text, style.font, style.title_font_size_pt, bold=True, caps=False)
+            continue
+
         is_clause = node.role == "clause" and number is not None
         auto_number = is_clause and not _carries_enumerator(text, number or "")
 

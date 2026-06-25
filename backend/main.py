@@ -9,7 +9,9 @@ from fastapi.responses import JSONResponse
 
 from backend.api import (
     audit,
+    clause_draft,
     clause_search,
+    cross_references,
     defined_terms,
     donna,
     donna_recommendations,
@@ -60,6 +62,10 @@ app.add_middleware(
     allow_origins=[DEV_ORIGIN],
     allow_methods=["*"],
     allow_headers=["*"],
+    # Cross-origin JS can't read a response header unless it's explicitly exposed. The
+    # .docx export routes carry the real filename in Content-Disposition; without this the
+    # browser hides it and the frontend falls back to a generic name ("contract.docx").
+    expose_headers=["Content-Disposition"],
 )
 app.add_exception_handler(Exception, _unhandled_exception_handler)
 
@@ -76,3 +82,5 @@ app.include_router(issue_export.router)
 app.include_router(redline.router)
 app.include_router(donna.router)
 app.include_router(donna_recommendations.router)
+app.include_router(clause_draft.router)
+app.include_router(cross_references.router)

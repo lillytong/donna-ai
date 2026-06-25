@@ -26,6 +26,7 @@ from backend.config.settings import get_settings
 from backend.db import acquire
 from backend.models.issues import StoredIssue
 from backend.models.recommendations import (
+    RecommendationConfirmRequest,
     RecommendationConfirmResponse,
     RecommendationDraft,
     StoredRecommendation,
@@ -150,10 +151,27 @@ async def get_recommendation(issue_id: str) -> StoredRecommendation | None:
         return await recommendation_repo.get_by_issue(conn, issue_id)
 
 
-async def confirm_recommendation(issue_id: str) -> RecommendationConfirmResponse | None:
-    """[Use Donna's language]: copy the draft into the issue's exported fields (DD-68)."""
+def _clean(value: str | None) -> str | None:
+    """Empty / whitespace-only edited text means "no language", stored as NULL."""
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+async def confirm_recommendation(
+    issue_id: str, edit: RecommendationConfirmRequest | None = None
+) -> RecommendationConfirmResponse | None:
+    """[Use Donna's language]: copy the draft into the issue's exported fields (DD-68). When
+    the operator edited the language first ([Edit]), `edit` carries the edited values; both
+    overwrite the draft before the copy so the export reflects exactly what was confirmed."""
+    edited = (
+        (_clean(edit.edited_recommended_position), _clean(edit.edited_counter_language))
+        if edit is not None
+        else None
+    )
     async with acquire() as conn:
-        confirmed = await recommendation_repo.confirm(conn, issue_id)
+        confirmed = await recommendation_repo.confirm(conn, issue_id, edited)
     if confirmed is None:
         return None
     return RecommendationConfirmResponse(

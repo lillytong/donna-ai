@@ -153,7 +153,14 @@ async def ask(contract_id: str, question: str) -> DonnaAskResponse:
 
     async with acquire() as conn:
         await append_message(conn, conversation.id, "user", question)
-        await append_message(conn, conversation.id, "assistant", answer_text)
+        await append_message(
+            conn,
+            conversation.id,
+            "assistant",
+            answer_text,
+            kind=answer.kind,
+            citations=citations,
+        )
         turns_after = [*turns, DonnaTurn(question=question, answer=answer_text)]
         await _update_rolling_summary(conn, conversation.id, prior_summary, turns_after)
 

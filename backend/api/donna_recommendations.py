@@ -10,9 +10,12 @@ services/donna/. A provider rate limit maps to a clean 429 (mirrors the Q&A rout
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from typing import Annotated
+
+from fastapi import APIRouter, Body, HTTPException
 
 from backend.models.recommendations import (
+    RecommendationConfirmRequest,
     RecommendationConfirmResponse,
     StoredRecommendation,
 )
@@ -55,8 +58,12 @@ async def read_recommendation(contract_id: str, issue_id: str) -> StoredRecommen
     "/contracts/{contract_id}/issues/{issue_id}/recommendation/confirm",
     response_model=RecommendationConfirmResponse,
 )
-async def confirm(contract_id: str, issue_id: str) -> RecommendationConfirmResponse:
-    result = await confirm_recommendation(issue_id)
+async def confirm(
+    contract_id: str,
+    issue_id: str,
+    edit: Annotated[RecommendationConfirmRequest | None, Body()] = None,
+) -> RecommendationConfirmResponse:
+    result = await confirm_recommendation(issue_id, edit)
     if result is None:
         raise HTTPException(status_code=404, detail="no recommendation for this issue")
     return result
