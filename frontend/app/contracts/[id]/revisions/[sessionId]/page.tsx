@@ -66,46 +66,9 @@ type Phase = "structure" | "content";
 // distils nothing to persist (no issue to attach to). See the report's follow-up.
 const NIL_ISSUE_ID = "00000000-0000-0000-0000-000000000000";
 
-// One node of an inline word-diff. `split(/(\s+)/)` keeps whitespace tokens so the
-// rendered markup preserves spacing; the LCS walk classifies each token.
+// One node of an inline diff segment. ins/del carry a hunkId so the renderer can make
+// them click targets for the hunk menu. "same" segments are never interactive.
 type DiffSeg = { type: "same" | "ins" | "del"; text: string; hunkId?: string };
-
-function wordDiff(a: string | null, b: string | null): DiffSeg[] {
-  const aw = (a ?? "").length ? (a ?? "").split(/(\s+)/) : [];
-  const bw = (b ?? "").length ? (b ?? "").split(/(\s+)/) : [];
-  const n = aw.length;
-  const m = bw.length;
-  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
-  for (let i = n - 1; i >= 0; i--) {
-    for (let j = m - 1; j >= 0; j--) {
-      dp[i][j] = aw[i] === bw[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    }
-  }
-  const out: DiffSeg[] = [];
-  const push = (type: DiffSeg["type"], text: string) => {
-    const last = out[out.length - 1];
-    if (last && last.type === type) last.text += text;
-    else out.push({ type, text });
-  };
-  let i = 0;
-  let j = 0;
-  while (i < n && j < m) {
-    if (aw[i] === bw[j]) {
-      push("same", aw[i]);
-      i++;
-      j++;
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      push("del", aw[i]);
-      i++;
-    } else {
-      push("ins", bw[j]);
-      j++;
-    }
-  }
-  while (i < n) push("del", aw[i++]);
-  while (j < m) push("ins", bw[j++]);
-  return out;
-}
 
 function pct(conf: number | null): string {
   return conf == null ? "—" : `${Math.round(conf * 100)}%`;
@@ -158,12 +121,6 @@ function donnaPrettyVerdict(v: string | null): string {
   if (!v) return "";
   const key = v.trim().toLowerCase();
   return DONNA_VERDICT_LABEL[key] ?? (v.charAt(0).toUpperCase() + v.slice(1));
-}
-
-// Clause identity ("4.2 — Payment Terms"); number alone, heading alone, or both.
-function clauseIdentity(ctx: ChangeContextSide | undefined): string {
-  if (!ctx) return "";
-  return [ctx.number, ctx.heading].filter(Boolean).join(" — ");
 }
 
 // The side that carries a content change's identity: their incoming clause for a new
@@ -1493,11 +1450,6 @@ export default function RevisionReview({
         : null;
     return (
       <>
-        {/* For edited clauses: the clause number is already shown on the row, so the
-            identity+breadcrumb line from renderCardContext is a duplicate — suppress it.
-            For new/deleted clauses the neighbour-placement context (After:/Before:) is
-            still useful, so renderCardContext is kept for those kinds only. */}
-        {c.change_kind !== "edited" && renderCardContext(c, c.node_id ? canonicalNumberByNodeId.get(c.node_id) : undefined)}
         {c.change_kind === "edited" ? (
           // The redline is already rendered in the row body (inlineRedline prop) — no
           // duplicate here. The expand panel contributes only the inline hunk menu when
@@ -1787,45 +1739,6 @@ function segClass(type: DiffSeg["type"]): string {
   return styles.diffSame;
 }
 
-// A content change's header context (every kind): clause identity + the breadcrumb of
-// the section it sits in, plus the flanking-clause note for adds/removals.
-// overrideNumber: pass the canonical clause number from the document view when available,
-// so the card identity stays in sync with the right pane. Falls back to s.number when
-// undefined (new clauses have no baseline node to look up).
-function renderCardContext(c: ReviewChange, overrideNumber?: string) {
-  const s = primarySide(c);
-  if (!s || !s.found) return null;
-  const number = overrideNumber !== undefined ? overrideNumber : (s.number ?? null);
-  const identity = [number, s.heading].filter(Boolean).join(" — ");
-  const path = s.breadcrumb.join(" › ");
-  const showNeighbours = c.change_kind === "new" || c.change_kind === "deleted";
-  if (!identity && !path && !(showNeighbours && (s.prev_label || s.next_label))) return null;
-  return (
-    <div className={styles.cardCtx}>
-      {(identity || path) && (
-        <p className={styles.cardCtxLine}>
-          {identity && <span className={styles.cardId}>{identity}</span>}
-          {path && <span className={styles.cardCrumb}>{path}</span>}
-        </p>
-      )}
-      {showNeighbours && (s.prev_label || s.next_label) && (
-        <p className={styles.neighbour}>
-          {s.prev_label && (
-            <span>
-              After: <em>{s.prev_label}</em>
-            </span>
-          )}
-          {s.next_label && (
-            <span>
-              Before: <em>{s.next_label}</em>
-            </span>
-          )}
-        </p>
-      )}
-    </div>
-  );
-}
-
 // Splice an edited clause's hunks back into its full baseline body so the diff reads
 // IN PLACE, with the surrounding sentences visible.
 // Each ins/del segment now carries the id of the hunk it comes from so the renderer
@@ -1847,9 +1760,11 @@ function inContextSegs(body: string, hunks: ReviewHunk[]): DiffSeg[] {
     const pos = h.position_in_body ?? 0;
     if (pos > cursor) push("same", body.slice(cursor, pos));
     const orig = h.original_text ?? "";
-    for (const seg of wordDiff(orig, h.proposed_text)) {
-      push(seg.type, seg.text, seg.type !== "same" ? h.id : undefined);
-    }
+    // Bundled emit: the entire removed text struck through, then the entire new text —
+    // never word-interleaved. Pure-insertion hunks (no original) emit only the ins;
+    // pure-deletion hunks (no proposed) emit only the del.
+    if (orig) push("del", orig, h.id);
+    if (h.proposed_text) push("ins", h.proposed_text, h.id);
     cursor = Math.max(cursor, pos + orig.length);
   }
   if (cursor < body.length) push("same", body.slice(cursor));
