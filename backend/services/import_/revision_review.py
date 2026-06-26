@@ -54,6 +54,7 @@ from backend.models.revision_review import (
     DocumentNode,
     HunkDecideRequest,
     NodeDecideRequest,
+    NodeRoleOverrideResult,
     ReviewChange,
     ReviewHunk,
     ReviewPayload,
@@ -267,6 +268,23 @@ INSERT INTO issues
      counterparty_revision_session_id, opened_in_snapshot_id)
 VALUES ($1, $2, $3, $4, 'counterparty_proposed_edit', 'counterparty', $5, $6)
 RETURNING id
+"""
+
+# Mode B classification editing (Phase 1) — the session-scoped revised-node role
+# override store. A row WINS over render-time inheritance for its (synthetic) node_id;
+# a NULL/absent role CLEARS it (DELETE) so the node reverts to auto-classification.
+_SELECT_ROLE_OVERRIDES = """
+SELECT node_id, role FROM counterparty_revision_node_overrides WHERE session_id = $1
+"""
+
+_UPSERT_ROLE_OVERRIDE = """
+INSERT INTO counterparty_revision_node_overrides (session_id, node_id, role)
+VALUES ($1, $2, $3)
+ON CONFLICT (session_id, node_id) DO UPDATE SET role = EXCLUDED.role
+"""
+
+_DELETE_ROLE_OVERRIDE = """
+DELETE FROM counterparty_revision_node_overrides WHERE session_id = $1 AND node_id = $2
 """
 
 
@@ -737,6 +755,44 @@ async def _inherit_revised_roles(
         inherit(ab.incoming_index, ab.best_baseline_id)
 
 
+async def fetch_role_overrides(conn: Any, session_id: str) -> dict[str, Role]:
+    """All operator role overrides for a session: revised synthetic node_id -> role
+    (one batched query, no N+1). A row with NULL role cannot exist (the clear path
+    DELETEs), so every returned value is a concrete role."""
+    rows = await conn.fetch(_SELECT_ROLE_OVERRIDES, session_id)
+    return {str(r["node_id"]): cast(Role, r["role"]) for r in rows if r["role"] is not None}
+
+
+def _apply_role_overrides(revised: list[DocumentNode], overrides: dict[str, Role]) -> None:
+    """Replace each revised node's render-time role with the operator override (Phase 1).
+    Applied AFTER `_inherit_revised_roles` and BEFORE `_assign_clause_numbers`, so a
+    re-type to/from `clause` correctly changes the role-aware numbering. In place."""
+    if not overrides:
+        return
+    for n in revised:
+        role = overrides.get(n.node_id)
+        if role is not None:
+            n.role = role
+
+
+async def set_node_role_override(
+    conn: Any, contract_id: str, session_id: str, node_id: str, role: Role | None
+) -> NodeRoleOverrideResult:
+    """Upsert (role set) or clear (role None -> DELETE) a revised node's role override.
+    Validates the session exists and belongs to the contract (mismatch -> 404 via
+    SessionNotFound). `role` is already `Role`-validated at the route (request model)."""
+    session_row = await conn.fetchrow(_SELECT_SESSION, session_id)
+    if session_row is None:
+        raise SessionNotFound(session_id)
+    if str(session_row["contract_id"]) != contract_id:
+        raise SessionNotFound(session_id)
+    if role is None:
+        await conn.execute(_DELETE_ROLE_OVERRIDE, session_id, node_id)
+    else:
+        await conn.execute(_UPSERT_ROLE_OVERRIDE, session_id, node_id, role)
+    return NodeRoleOverrideResult(node_id=node_id, role=role)
+
+
 def _flatten_document(tree: ContractTreeResponse | None) -> list[DocumentNode]:
     """Flatten a nested snapshot tree to reading-order `DocumentNode`s carrying depth
     only — `clause_number` is left None here and stamped ROLE-AWARE by
@@ -872,8 +928,12 @@ async def get_document_view(conn: Any, contract_id: str, session_id: str) -> Rev
         baseline,
         revised,
     )
-    # Re-derive role-aware numbers on the revised side AFTER `_inherit_revised_roles`
-    # has fixed its roles (it runs after flatten, which left numbers None).
+    # Mode B classification editing (Phase 1): operator role overrides WIN over the
+    # render-time inheritance for their node_id. Applied before numbering so a re-type
+    # to/from `clause` correctly changes the role-aware numbers. One batched fetch.
+    _apply_role_overrides(revised, await fetch_role_overrides(conn, session_id))
+    # Re-derive role-aware numbers on the revised side AFTER inheritance + overrides
+    # have fixed its roles (flatten left numbers None).
     _assign_clause_numbers(revised)
 
     change_rows = await conn.fetch(_SELECT_CHANGES, session_id)

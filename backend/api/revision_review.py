@@ -5,6 +5,9 @@ Read:
   GET  /contracts/{contract_id}/revisions/sessions      → open/recent sessions
   GET  /revisions/sessions/{session_id}                 → full two-phase payload
   GET  /contracts/{cid}/revisions/sessions/{sid}/document → two-pane doc view (F03c)
+Edit:
+  PATCH /contracts/{cid}/revisions/sessions/{sid}/nodes/{nid}/role → revised-node
+                                                          role override (Mode B Phase 1)
 Decision:
   POST /revisions/changes/{change_id}/confirm-match     → 6b abstain resolution
   POST /revisions/hunks/{hunk_id}/decide                → DD-27 four-action verdict
@@ -23,6 +26,8 @@ from backend.models.revision_review import (
     ConfirmMatchRequest,
     HunkDecideRequest,
     NodeDecideRequest,
+    NodeRoleOverrideRequest,
+    NodeRoleOverrideResult,
     ReviewChange,
     ReviewPayload,
     RevisionDocumentView,
@@ -58,6 +63,22 @@ async def get_document(contract_id: str, session_id: str) -> RevisionDocumentVie
     async with acquire() as conn:
         try:
             return await svc.get_document_view(conn, contract_id, session_id)
+        except svc.RevisionReviewError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.patch(
+    "/contracts/{contract_id}/revisions/sessions/{session_id}/nodes/{node_id}/role",
+    response_model=NodeRoleOverrideResult,
+)
+async def set_node_role(
+    contract_id: str, session_id: str, node_id: str, payload: NodeRoleOverrideRequest
+) -> NodeRoleOverrideResult:
+    async with acquire() as conn:
+        try:
+            return await svc.set_node_role_override(
+                conn, contract_id, session_id, node_id, payload.role
+            )
         except svc.RevisionReviewError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 

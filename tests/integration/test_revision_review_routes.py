@@ -88,6 +88,7 @@ class FakeConn:
         snapshots: dict[str, dict[str, Any]] | None = None,
         received_snapshot_id: str | None = None,
         node_roles: dict[str, str] | None = None,
+        overrides: dict[str, str] | None = None,
     ) -> None:
         self.changes = changes or []
         self.hunks = hunks or []
@@ -96,6 +97,7 @@ class FakeConn:
         self.snapshots = snapshots or {}
         self.received_snapshot_id = received_snapshot_id
         self.node_roles = node_roles or {}
+        self.overrides = overrides or {}  # revised node_id -> role (Mode B Phase 1)
         self.executes: list[tuple[str, tuple[Any, ...]]] = []
         self.issues: list[tuple[Any, ...]] = []
 
@@ -116,6 +118,8 @@ class FakeConn:
             return [
                 {"id": nid, "role": role} for nid, role in self.node_roles.items() if nid in ids
             ]
+        if "FROM counterparty_revision_node_overrides" in sql:
+            return [{"node_id": nid, "role": role} for nid, role in self.overrides.items()]
         if "order_index FROM nodes" in sql:
             return self.nodes
         return []
@@ -147,6 +151,10 @@ class FakeConn:
 
     async def execute(self, sql: str, *args: Any) -> str:
         self.executes.append((sql, args))
+        if "INSERT INTO counterparty_revision_node_overrides" in sql:
+            self.overrides[args[1]] = args[2]
+        elif "DELETE FROM counterparty_revision_node_overrides" in sql:
+            self.overrides.pop(args[1], None)
         return "OK"
 
 
@@ -546,3 +554,67 @@ def test_document_view_contract_mismatch_404(monkeypatch: pytest.MonkeyPatch) ->
     _install(monkeypatch, conn)
     resp = client.get("/contracts/other/revisions/sessions/s1/document")
     assert resp.status_code == 404
+
+
+# --- Mode B Phase 1: revised-node role override -----------------------------
+
+_NODE0_ROLE = "/contracts/c1/revisions/sessions/s1/nodes/0/role"
+_DOC_URL = "/contracts/c1/revisions/sessions/s1/document"
+
+
+def test_role_override_round_trips_through_document_view(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Override WINS over the render-time classification, the role-aware numbering
+    reacts to it (clause->recital loses its number; the siblings renumber), and
+    clearing restores the inherited/default role AND its number."""
+    conn = _document_fixture()
+    _install(monkeypatch, conn)
+
+    # Baseline: revised node "0" defaults to `clause` and is numbered "1".
+    r0 = {n["node_id"]: n for n in client.get(_DOC_URL).json()["revised"]}
+    assert r0["0"]["role"] == "clause" and r0["0"]["clause_number"] == "1"
+    assert r0["1"]["clause_number"] == "2"
+
+    # Override clause -> recital: the operator role REPLACES the inherited one, and
+    # since numbering counts only clause-role nodes, "0" loses its number and the rest
+    # renumber from 1.
+    set_resp = client.patch(_NODE0_ROLE, json={"role": "recital"})
+    assert set_resp.status_code == 200
+    assert set_resp.json() == {"node_id": "0", "role": "recital"}
+    assert conn.overrides["0"] == "recital"
+    assert any(
+        "INSERT INTO counterparty_revision_node_overrides" in sql for sql, _ in conn.executes
+    )
+    r1 = {n["node_id"]: n for n in client.get(_DOC_URL).json()["revised"]}
+    assert r1["0"]["role"] == "recital" and r1["0"]["clause_number"] is None
+    assert r1["1"]["clause_number"] == "1"  # re-typing "0" out of clause renumbered "1"->"1"
+    assert r1["2"]["clause_number"] == "2"
+
+    # Clear (role=null) -> DELETE the row -> node reverts to the auto-classification
+    # (`clause`) and regains its number.
+    clr_resp = client.patch(_NODE0_ROLE, json={"role": None})
+    assert clr_resp.status_code == 200
+    assert clr_resp.json() == {"node_id": "0", "role": None}
+    assert "0" not in conn.overrides
+    assert any(
+        "DELETE FROM counterparty_revision_node_overrides" in sql for sql, _ in conn.executes
+    )
+    r2 = {n["node_id"]: n for n in client.get(_DOC_URL).json()["revised"]}
+    assert r2["0"]["role"] == "clause" and r2["0"]["clause_number"] == "1"
+
+
+def test_role_override_contract_mismatch_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _document_fixture()
+    _install(monkeypatch, conn)
+    resp = client.patch(
+        "/contracts/other/revisions/sessions/s1/nodes/0/role", json={"role": "recital"}
+    )
+    assert resp.status_code == 404
+    assert not conn.overrides
+
+
+def test_role_override_invalid_role_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _document_fixture()
+    _install(monkeypatch, conn)
+    resp = client.patch(_NODE0_ROLE, json={"role": "not_a_role"})
+    assert resp.status_code == 422
+    assert not conn.overrides

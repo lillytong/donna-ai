@@ -249,3 +249,21 @@ class RevisionDocumentView(BaseModel):
     revised: list[DocumentNode]
     changes: list[DocumentChange]
     abstain_matches: list[AbstainMatch]
+
+
+class NodeRoleOverrideRequest(BaseModel):
+    """Operator override of a REVISED-side node's classification (Mode B Phase 1).
+
+    `role` is validated against the DD-54 `Role` taxonomy by Pydantic (a bad value
+    is a 422). `None` CLEARS the override, reverting the node to the render-time
+    auto-classification (matched-node inheritance / new-node default)."""
+
+    role: Role | None = None
+
+
+class NodeRoleOverrideResult(BaseModel):
+    """The resolved override after an upsert/clear: `role` is the persisted override
+    (None = cleared, node falls back to auto-classification)."""
+
+    node_id: str
+    role: Role | None

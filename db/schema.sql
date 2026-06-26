@@ -268,6 +268,20 @@ CREATE TABLE counterparty_revision_hunks (
     decided_at       TIMESTAMPTZ
 );
 
+-- Mode B classification editing, Phase 1 (DD: session-scoped override store). The
+-- REVISED side's role is derived at render time (matched nodes inherit the baseline
+-- role; new nodes default 'clause'); the as_received snapshot carries no role and has
+-- synthetic ids. An override row WINS over that inheritance for its node_id and is
+-- reversible (clearing = DELETE). node_id is the synthetic as_received id (TEXT), not
+-- a live nodes.id, so no FK to nodes. Role-only now; designed to grow parent/order
+-- columns in the later indent/reparent phase.
+CREATE TABLE counterparty_revision_node_overrides (
+    session_id UUID NOT NULL REFERENCES counterparty_revision_sessions(id),
+    node_id    TEXT NOT NULL,         -- synthetic as_received node id (revised side)
+    role       TEXT,                  -- operator role override (nullable; null = cleared)
+    PRIMARY KEY (session_id, node_id)
+);
+
 -- An open negotiation point. decision/auto_flag/donna_research_citations JSONB
 -- shapes are documented in SPEC §6.
 CREATE TABLE issues (

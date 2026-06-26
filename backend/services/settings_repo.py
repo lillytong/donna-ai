@@ -411,6 +411,13 @@ async def delete_contract(conn: Any, contract_id: str) -> ContractDeletion | Non
             "(SELECT id FROM counterparty_revision_sessions WHERE contract_id = $1)",
             contract_id,
         )
+        # Mode B Phase-1 role overrides FK sessions, so clear before the session wipe.
+        await _exec_count(
+            conn,
+            "DELETE FROM counterparty_revision_node_overrides WHERE session_id IN "
+            "(SELECT id FROM counterparty_revision_sessions WHERE contract_id = $1)",
+            contract_id,
+        )
         await _exec_count(
             conn, "DELETE FROM counterparty_revision_sessions WHERE contract_id = $1", contract_id
         )
