@@ -35,6 +35,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+import structlog
 from pydantic import ValidationError
 
 from backend.config.settings import get_settings
@@ -55,6 +56,8 @@ from backend.services.donna.grounding import (
 from backend.services.donna.qa import scrub_leaked_ids
 from backend.services.llm import complete
 from backend.services.settings_repo import get_contract, get_contract_type
+
+log = structlog.get_logger()
 
 ChangeKind = Literal["edited", "new", "deleted", "abstain"]
 
@@ -310,3 +313,35 @@ async def _hunks_for(conn: Any, change_ids: list[str]) -> dict[str, list[Any]]:
     for r in rows:
         out.setdefault(str(r["change_id"]), []).append(r)
     return out
+
+
+async def recommend_on_import(session_id: str, changes_count: int) -> None:
+    """FAILURE-ISOLATED background entry fired post-commit from the Mode B import route (F03c
+    auto-run). Pre-analyses the freshly staged changes so the two-pane review opens with Donna's
+    advisory verdict / counter-language already populated and "Use Donna's" works without an
+    operator round-trip. `recommend_session` acquires its OWN connection and the whole body
+    swallows every error (logged) — a recommendation failure must NEVER fail or roll back the
+    import, which has already committed (mirrors F30's distill_on_issue_close).
+
+    Cost guard (~1 Opus call per hunk): auto-run is skipped above the configured staged-change
+    ceiling. The skip is logged, never silent — the operator can still trigger the recommend
+    endpoint manually for an oversized revision."""
+    ceiling = get_settings().llm.revision_recommend_auto_max_changes
+    if changes_count > ceiling:
+        log.info(
+            "revision_recommend.auto_skip_oversized",
+            session_id=session_id,
+            changes_count=changes_count,
+            ceiling=ceiling,
+        )
+        return
+    try:
+        summary = await recommend_session(session_id)
+        log.info(
+            "revision_recommend.auto_done",
+            session_id=session_id,
+            changes_analyzed=summary.changes_analyzed,
+            hunks_analyzed=summary.hunks_analyzed,
+        )
+    except Exception:
+        log.warning("revision_recommend.auto_failed", session_id=session_id, exc_info=True)

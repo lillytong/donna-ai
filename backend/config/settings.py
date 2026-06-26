@@ -72,6 +72,11 @@ class LlmSettings(BaseSettings):
     # surfaces truncate at the 1024 default → JSON parse failure.
     revision_recommend_max_tokens: int = 4096
     revision_recommend_temperature: float = 1.0
+    # F03c auto-run-at-import cost guard (~1 Opus call per hunk): the import route fires
+    # Donna's per-change recommendation in the background, but only for reasonably-sized
+    # diffs. Above this staged-change ceiling the auto-run is skipped (logged — no silent
+    # cap; the operator can still trigger POST .../recommend manually). Not hardcoded (DD-35).
+    revision_recommend_auto_max_changes: int = 50
 
 
 class DistillationSettings(BaseSettings):

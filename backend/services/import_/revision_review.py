@@ -41,6 +41,7 @@ from backend.models.audit import (
 from backend.models.contract_tree import Role
 from backend.models.imports import ContractTreeResponse, NodeTreeItem
 from backend.models.revision_import import StoredRevisionSession
+from backend.models.revision_match import ClauseNode
 from backend.models.revision_review import (
     AbstainMatch,
     ApplyResult,
@@ -60,10 +61,12 @@ from backend.models.revision_review import (
     RevisionDocumentView,
     StoredHunkVerdict,
 )
+from backend.models.snapshots import SnapshotNode
 from backend.services import node_create, node_delete, node_edit
 from backend.services.audit_repo import record_event
-from backend.services.import_.revision_import import extract_hunks
-from backend.services.snapshot import get_snapshot_tree
+from backend.services.import_.revision_import import baseline_to_clause_nodes, extract_hunks
+from backend.services.import_.revision_match import match_revision
+from backend.services.snapshot import get_snapshot, get_snapshot_tree
 
 log = structlog.get_logger()
 
@@ -653,6 +656,85 @@ async def _roles_for(conn: Any, node_ids: list[str]) -> dict[str, Role]:
     return {str(r["id"]): cast(Role, r["role"]) for r in rows}
 
 
+def _revised_to_incoming_clause_nodes(tree: list[SnapshotNode]) -> list[ClauseNode]:
+    """Adapt the as_received snapshot (the REVISED side) back to matcher INCOMING
+    `ClauseNode`s, reconstructing the exact import-time incoming shape so the match
+    map reproduces F03b's import run. `incoming_to_snapshot_nodes` froze each node's
+    flat document-order index as the snapshot id (`str(index)`) and its parent's index
+    as `parent_id`, so `order = int(id)` and `parent = int(parent_id)` recover the
+    `incoming_to_clause_nodes` keying byte-for-byte (`id=None`, body=canonical text)."""
+    out: list[ClauseNode] = []
+    for n in tree:
+        if n.is_deleted:
+            continue
+        out.append(
+            ClauseNode(
+                id=None,
+                parent=int(n.parent_id) if n.parent_id is not None else None,
+                order=int(n.id),
+                heading="",
+                body=(n.body or "").strip(),
+                role="clause",
+            )
+        )
+    return out
+
+
+async def _inherit_revised_roles(
+    conn: Any,
+    baseline_snapshot_id: str,
+    revised_snapshot_id: str | None,
+    baseline: list[DocumentNode],
+    revised: list[DocumentNode],
+) -> None:
+    """DD-28/DD-54 classification inheritance at render time: a revision is a DIFF, not
+    a fresh import, so every revised node that MATCHES a baseline node inherits that
+    baseline node's operator-confirmed `role` — unchanged, reworded, AND moved alike;
+    only genuinely-NEW revised nodes keep the snapshot default `clause`.
+
+    Without this the revised (as_received) side — whose synthetic ids do NOT join live
+    `nodes` — renders EVERY clause, recital, note and front/back-matter line as a
+    generic `clause` (Lilly's 51-vs-20-clauses bug). Reuses the de-risked pure matcher
+    `match_revision` on the SAME adapter inputs F03b's import used (baseline snapshot
+    tree + the as_received tree reconstructed to its import-time incoming shape), so the
+    map reproduces import exactly. One in-memory pass — the baseline roles are already
+    enriched in `baseline`; no per-node query."""
+    if not revised or revised_snapshot_id is None:
+        return
+    baseline_snapshot = await get_snapshot(conn, baseline_snapshot_id)
+    revised_snapshot = await get_snapshot(conn, revised_snapshot_id)
+    if (
+        baseline_snapshot is None
+        or baseline_snapshot.tree is None
+        or revised_snapshot is None
+        or revised_snapshot.tree is None
+    ):
+        return
+
+    result = match_revision(
+        baseline_to_clause_nodes(baseline_snapshot.tree),
+        _revised_to_incoming_clause_nodes(revised_snapshot.tree),
+    )
+
+    role_by_baseline_id = {n.node_id: n.role for n in baseline}
+    revised_by_id = {n.node_id: n for n in revised}
+
+    def inherit(incoming_index: int, baseline_id: str | None) -> None:
+        if baseline_id is None:
+            return
+        role = role_by_baseline_id.get(baseline_id)
+        node = revised_by_id.get(str(incoming_index))
+        if role is not None and node is not None:
+            node.role = role
+
+    # Matched (incl. reworded/moved) inherit; abstains adopt their best candidate's role
+    # (still a corresponding baseline node, surfaced for operator confirm). NEW keep default.
+    for m in result.matches:
+        inherit(m.incoming_index, m.baseline_id)
+    for ab in result.abstains:
+        inherit(ab.incoming_index, ab.best_baseline_id)
+
+
 def _flatten_document(tree: ContractTreeResponse | None) -> list[DocumentNode]:
     """Flatten a nested snapshot tree to reading-order `DocumentNode`s, deriving the
     dotted clause number (1-based sibling path) and depth — the same numbering scheme
@@ -732,14 +814,24 @@ async def get_document_view(conn: Any, contract_id: str, session_id: str) -> Rev
     baseline = _flatten_document(baseline_tree)
     # Recover the operator-confirmed DD-54 role the snapshot shape drops: baseline node
     # ids are real live `nodes` ids, so they join. The revised (as_received) tree carries
-    # synthetic ids that do NOT join, and genuinely new clauses are unclassified — both
-    # keep the snapshot default `clause` (the frontend falls back to a generic label).
+    # synthetic ids that do NOT join — its matched nodes instead INHERIT the baseline
+    # role via `_inherit_revised_roles` below (DD-28); only genuinely-new clauses keep
+    # the snapshot default `clause` (the frontend falls back to a generic label).
     role_by_id = await _roles_for(conn, [n.node_id for n in baseline])
     for n in baseline:
         role = role_by_id.get(n.node_id)
         if role is not None:
             n.role = role
     revised = _flatten_document(revised_tree)
+    # DD-28/DD-54: a revision is a diff — matched revised nodes INHERIT the baseline's
+    # operator-confirmed role instead of all falling back to the snapshot default.
+    await _inherit_revised_roles(
+        conn,
+        session.baseline_snapshot_id,
+        str(received_id) if received_id is not None else None,
+        baseline,
+        revised,
+    )
 
     change_rows = await conn.fetch(_SELECT_CHANGES, session_id)
     hunks_by_change = await _hunks_for(conn, [str(r["id"]) for r in change_rows])

@@ -136,7 +136,16 @@ def _install(
     async def _noop(_conn: Any, _event: Any) -> None:
         return None
 
+    # F03c auto-run fires recommend_on_import as a FastAPI BackgroundTask, which TestClient
+    # executes after the response — stub it to a sync recorder so the test never hits the real
+    # recommend engine / DB. The recorder captures the scheduled (session_id, changes_count).
+    auto_runs: list[tuple[str, int]] = []
+
+    def _fake_recommend_on_import(session_id: str, changes_count: int) -> None:
+        auto_runs.append((session_id, changes_count))
+
     monkeypatch.setattr(api, "acquire", _fake_acquire)
+    monkeypatch.setattr(api, "recommend_on_import", _fake_recommend_on_import)
     monkeypatch.setattr(svc, "count_tracked_changes", lambda _p: (0, 0))
     monkeypatch.setattr(svc, "read_docx", lambda _p: object())
     monkeypatch.setattr(svc, "build_tree", lambda _doc: _INCOMING)
@@ -145,6 +154,7 @@ def _install(
     monkeypatch.setattr(svc, "snapshot_tree", _fake_snapshot_tree)
     monkeypatch.setattr(svc, "record_event", _noop)
     conn.pointer_set = pointer_set  # type: ignore[attr-defined]
+    conn.auto_runs = auto_runs  # type: ignore[attr-defined]
     return conn
 
 
@@ -184,6 +194,10 @@ def test_clean_import_stages_all_buckets(monkeypatch: pytest.MonkeyPatch) -> Non
     pointer = conn.pointer_set["pointer"]  # type: ignore[attr-defined]
     assert pointer.party == "counterparty" and pointer.direction == "received"
     assert conn.pointer_set["origin"] == "as_received"  # type: ignore[attr-defined]
+
+    # F03c auto-run: exactly one recommend_on_import scheduled post-commit, carrying the new
+    # session id + staged-change count (the cost guard / recommend engine live in the task).
+    assert conn.auto_runs == [(body["session_id"], 4)]  # type: ignore[attr-defined]
 
 
 def test_legal_source_maps_to_legal_team(monkeypatch: pytest.MonkeyPatch) -> None:

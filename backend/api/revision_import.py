@@ -17,7 +17,7 @@ import asyncio
 import os
 import tempfile
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
 from backend.db import acquire
 from backend.models.revision_import import (
@@ -25,6 +25,7 @@ from backend.models.revision_import import (
     RevisionImportResponse,
     RevisionSource,
 )
+from backend.services.donna.revision_recommend import recommend_on_import
 from backend.services.import_.revision_import import RevisionImportError, import_revision
 
 router = APIRouter()
@@ -44,6 +45,7 @@ async def import_revision_route(
     contract_id: str,
     source: RevisionSource,
     request: Request,
+    background: BackgroundTasks,
     filename: str | None = None,
 ) -> RevisionImportResponse:
     data = await request.body()
@@ -52,7 +54,7 @@ async def import_revision_route(
     path = await asyncio.to_thread(_write_temp, data)
     try:
         async with acquire() as conn:
-            return await import_revision(
+            response = await import_revision(
                 conn,
                 contract_id,
                 path,
@@ -62,3 +64,10 @@ async def import_revision_route(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     finally:
         await asyncio.to_thread(os.unlink, path)
+    # F03c auto-run: now that the import has committed, pre-analyse the freshly staged changes
+    # in the background so the two-pane review opens with Donna's verdict / counter-language
+    # already populated. Post-commit, non-blocking, failure-isolated (mirrors F30's
+    # distill_on_issue_close) — a recommendation error can never fail the already-successful
+    # import, and the cost guard inside the task skips oversized diffs.
+    background.add_task(recommend_on_import, response.session_id, response.changes_count)
+    return response

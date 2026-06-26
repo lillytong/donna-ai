@@ -1298,8 +1298,10 @@ export default function RevisionReview({
         {renderCardContext(c)}
         {c.change_kind === "edited" ? (
           <>
-            {renderEditedInContext(c)}
-            {c.hunks.map((h) => renderHunk(c, h))}
+            {renderInlineTrackedClause(c)}
+            <div className={styles.hunkList}>
+              {c.hunks.map((h, idx) => renderHunkControls(c, h, idx))}
+            </div>
           </>
         ) : (
           renderWholeNode(c)
@@ -1313,18 +1315,17 @@ export default function RevisionReview({
     );
   }
 
-  function renderHunk(c: ReviewChange, h: ReviewHunk) {
+  // Per-hunk decision controls for an edited clause — the diff is shown ONCE above
+  // (renderInlineTrackedClause); these are the action rows only, one per hunk.
+  function renderHunkControls(c: ReviewChange, h: ReviewHunk, idx: number) {
     const editing = editKey === h.id;
     const decided = h.verdict !== "pending";
+    const showLabel = c.hunks.length > 1;
     return (
-      <div key={h.id} className={styles.hunk}>
-        <p className={styles.diff}>
-          {wordDiff(h.original_text, h.proposed_text).map((seg, i) => (
-            <span key={i} className={segClass(seg.type)}>
-              {seg.text}
-            </span>
-          ))}
-        </p>
+      <div key={h.id} className={styles.hunkControls}>
+        {showLabel && (
+          <span className={styles.hunkLabel}>Change {idx + 1}</span>
+        )}
         {(h.donna_verdict || h.donna_counter_text) && (
           <div className={styles.donna}>
             <span className={styles.donnaMark} aria-hidden>
@@ -1332,7 +1333,7 @@ export default function RevisionReview({
             </span>
             <div className={styles.donnaBody}>
               {h.donna_verdict && <p className={styles.donnaVerdict}>{h.donna_verdict}</p>}
-              {h.donna_counter_text && <p className={styles.donnaCounter}>“{h.donna_counter_text}”</p>}
+              {h.donna_counter_text && <p className={styles.donnaCounter}>"{h.donna_counter_text}"</p>}
             </div>
           </div>
         )}
@@ -1418,7 +1419,7 @@ export default function RevisionReview({
                   {wholeNodeVerdictLabel(h.donna_verdict, c.change_kind)}
                 </p>
               )}
-              {h.donna_counter_text && <p className={styles.donnaCounter}>“{h.donna_counter_text}”</p>}
+              {h.donna_counter_text && <p className={styles.donnaCounter}>"{h.donna_counter_text}"</p>}
             </div>
           </div>
         )}
@@ -1598,23 +1599,19 @@ function inContextSegs(body: string, hunks: ReviewHunk[]): DiffSeg[] {
   return out;
 }
 
-const CTX_EQUAL_KEEP = 140;
-function collapseSame(text: string): string {
-  if (text.length <= CTX_EQUAL_KEEP * 2 + 5) return text;
-  return `${text.slice(0, CTX_EQUAL_KEEP)} … ${text.slice(-CTX_EQUAL_KEEP)}`;
-}
-
-function renderEditedInContext(c: ReviewChange) {
+// Full-clause inline tracked-changes view (no collapse — Lilly reads the whole clause).
+// Insertions: green underline (.diffIns). Deletions: red strikethrough (.diffDel).
+// This is the primary reading element for an edited clause; per-hunk controls follow.
+function renderInlineTrackedClause(c: ReviewChange) {
   const body = c.context?.baseline?.body;
   if (!body) return null;
   const segs = inContextSegs(body, c.hunks);
   return (
-    <div className={styles.inContext}>
-      <span className={styles.ctxLabel}>In context</span>
-      <p className={styles.inContextBody}>
+    <div className={styles.inlineClause}>
+      <p className={styles.inlineClauseBody}>
         {segs.map((seg, i) => (
           <span key={i} className={segClass(seg.type)}>
-            {seg.type === "same" ? collapseSame(seg.text) : seg.text}
+            {seg.text}
           </span>
         ))}
       </p>
