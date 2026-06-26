@@ -1092,6 +1092,58 @@ export const listRevisionSessions = (contractId: string): Promise<StoredRevision
 export const getRevisionReview = (sessionId: string): Promise<ReviewPayload> =>
   getJson(`/revisions/sessions/${sessionId}`);
 
+// --- F03c two-pane document view --------------------------------------------
+// Mirrors backend/models/revision_review.py RevisionDocumentView. The light read
+// spine for rendering the full document with changed clauses highlighted (no hunk
+// redline text — that's fetched on click via getRevisionReview). `changes` joins to
+// the BASELINE tree (node_id = baseline node for modified/deleted, null for added +
+// proposed_parent_id the baseline parent); `abstain_matches` pairs each abstain's
+// baseline candidate with its recovered incoming node for the before/after overlay.
+
+// Node-level overlay classification. "shifted" is in the legend but never emitted today.
+export type DocumentChangeKind = "added" | "deleted" | "modified" | "shifted";
+
+// One node flattened to reading order. `clause_number` is the derived dotted sibling
+// path ("4.2"); `depth` is nesting (roots = 0); `role` is the DD-54 classification
+// (recovered on the baseline side, default `clause` on the revised/new side).
+export interface DocumentNode {
+  node_id: string;
+  clause_number: string | null;
+  role: Role;
+  depth: number;
+  text: string | null;
+}
+
+export interface DocumentChange {
+  change_id: string;
+  node_id: string | null;
+  proposed_parent_id: string | null;
+  kinds: DocumentChangeKind[];
+  decided: boolean;
+  hunk_count: number;
+  hunks_decided: number;
+}
+
+export interface AbstainMatch {
+  change_id: string;
+  baseline_node_id: string | null;
+  proposed_received_node_id: string | null;
+  confidence: number | null;
+}
+
+export interface RevisionDocumentView {
+  baseline: DocumentNode[];
+  revised: DocumentNode[];
+  changes: DocumentChange[];
+  abstain_matches: AbstainMatch[];
+}
+
+export const getRevisionDocument = (
+  contractId: string,
+  sessionId: string,
+): Promise<RevisionDocumentView> =>
+  getJson(`/contracts/${contractId}/revisions/sessions/${sessionId}/document`);
+
 // 6b abstain resolution. `rematch` carries the operator-chosen `baseline_node_id`;
 // returns the reclassified change (resolving one abstain can churn the stream, so the
 // caller re-fetches the payload).

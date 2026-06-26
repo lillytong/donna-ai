@@ -7,9 +7,12 @@ negotiation management — built for founders and business-development leads who
 run their own legal work without in-house counsel.
 
 It replaces the degrading "Word + tracked changes + comments + email" workflow:
-contracts are imported as **structured data**, issues are tracked **per clause**,
-an AI assistant (**Donna**) brainstorms and explains **grounded in the actual
-text**, and clean redlines are exported back to Word on demand.
+contracts are imported as **structured data** and issues are tracked **per clause**.
+When the counterparty sends back a revised file, donna.ai diffs it against the last
+version you sent and walks you through the changes one at a time. **Donna**, the
+built-in assistant, explains the contract **grounded in the actual text** and reviews
+each proposed change — a verdict plus exact counter-language — with every claim cited
+to a clause. Clean redlines export back to Word on demand.
 
 ![The donna.ai negotiation cockpit's issues list: every open issue tracked per clause, tagged by who raised it and moved through its status lifecycle, alongside the structured clause tree.](docs/assets/cockpit-issueslist.png)
 
@@ -19,19 +22,24 @@ text**, and clean redlines are exported back to Word on demand.
 
 > Status: working local build. Architecture and data model are locked (`SPEC.md`,
 > `DESIGN_DECISIONS.md`). What runs today: the **import spine** (parse → classify
-> roles → review-and-correct → commit) with its review UI, a **home** screen of
-> recent contracts, a **negotiation cockpit** for navigating and **directly editing**
-> clauses (edit / insert / delete / drag-rearrange), tracking issues, and
-> **hover-to-define** defined terms, **`.docx` export** (clean copy, tracked-changes
-> redline, issue-list — verified round-trip content fidelity), and **Settings** for
-> clients, deals, and contract types, and **Donna** — grounded **single-contract Q&A**
-> in the cockpit, answering only from the contract with clickable clause citations,
-> read-and-explain (never legal advice). Donna's advanced surfaces (issue
-> recommendations, proactive flagging) are next.
+> roles → review-and-correct → commit) with its review UI; a **home** screen of
+> recent contracts; a **negotiation cockpit** for navigating and **directly editing**
+> clauses (edit / insert / delete / drag-rearrange), tracking issues per clause, and
+> **hover-to-define** defined terms; the **redline workflow** — import a counterparty's
+> revised file, diff it against the last version you sent, and review the tracked
+> changes in a two-pane document view; **`.docx` export** (clean copy, tracked-changes
+> redline, issue-list — verified round-trip content fidelity); **Settings** for clients,
+> deals, and contract types; and **Donna**'s intelligence layer — grounded Q&A, a
+> verdict and counter-language on each proposed change, clause-grounded advice and
+> drafting, and an ephemeral brainstorm panel that distils a summary on close. Every
+> Donna claim is cited to a document node; she explains and recommends, never gives
+> legal advice.
 
 ## What it does
 
-You move through donna.ai in five beats:
+You move through donna.ai in a handful of beats. A contract moves through a lifecycle
+as you go — working copy → sent → revision under review → your move — and the cockpit
+always shows where it stands.
 
 - **Import** a `.docx`. It's parsed into a structured clause tree — front-matter,
   operative clauses, and appendices, each detected and numbered — then you review
@@ -41,18 +49,26 @@ You move through donna.ai in five beats:
   cards, each with a status badge, open-issue count, and last activity.
 - **Negotiate in the cockpit.** Open a contract, jump to any clause by number or
   keyword, **edit / insert / delete / drag-rearrange** clauses directly, and raise
-  issues against them — tagged by who raised them (us or the counterparty), moved
-  through a status lifecycle, and discussed in per-issue comment threads. Hover a
-  defined term to see its definition.
+  issues against them — tagged by who raised them (us or the counterparty) and moved
+  through a status lifecycle. Hover a defined term to see its definition.
+- **Review a counterparty revision.** When the other side sends back a revised
+  `.docx`, import it from the cockpit. Donna diffs it against the last version you
+  sent, matches clauses — abstaining rather than guessing when a match is unclear —
+  and opens a two-pane review: a navigable list of tracked changes on one side, the
+  document with those changes highlighted on the other. Work through them one at a
+  time — accept theirs, take Donna's counter, edit it, or keep your original — then
+  apply the decisions to your working copy.
 - **Export to Word.** From the cockpit's Export menu: a clean `.docx`, a
   counterparty-ready **redline** (tracked changes vs the last version you sent), or
   an **issue-list** briefing — all regenerated from the database through the
   contract's style config, with verified round-trip content fidelity.
 - **Ask Donna.** Open the cockpit's Donna tab and ask grounded questions about the
   contract — "what's still open?", "what does clause 12 say?" — and get cited answers
-  that jump to the clause. Read-and-explain only: she explains the contract, never
-  gives legal advice. *(Advanced surfaces — position recommendations, proactive
-  flagging — are next.)*
+  that jump to the clause. Point her at a clause or issue and she advises and drafts
+  language anchored to it; on a proposed change she returns a verdict (accept /
+  counter / keep) with one-line reasoning and exact counter-language you can adopt.
+  Brainstorm in a side panel that distils a short summary when you close it. She
+  explains and recommends, but never gives legal advice.
 
 ## Architecture
 

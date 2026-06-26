@@ -1,34 +1,70 @@
 "use client";
 
-// F03c — Mode B revision-review surface (DD-78). A two-phase review of a staged
-// counterparty/legal revision: a structural-foundation pass (6a tree triage — empty
-// for now — + 6b abstain match-confirm queue) that must clear before the content
-// pass, which is ONE document-ordered stream of type-appropriate cards (edited /
-// added / deleted) on the DD-26 inline-tracked-markup + DD-27 four-action pattern.
-// On apply, decisions land on the working copy and rejections seed issues.
+// F03c — Mode B revision review, reworked as a TWO-PANE DOCUMENT VIEW (DD-78). The
+// counterparty/legal revision is read in document context, not as a stream of floating
+// cards: a far-left tracked-changes list that is BOTH a navigator and a to-do tracker,
+// and a main reading pane that switches by phase.
+//
+//   Phase 1 (structure): a BEFORE / AFTER of the two documents side by side, each
+//   abstained clause + Donna's proposed match highlighted in both, with confirm /
+//   not-a-match / re-match controls (the existing confirm-match endpoint) and bulk
+//   confirm/new actions (a client-side loop over the same endpoint). Clears before
+//   Phase 2 (the existing gate).
+//
+//   Phase 2 (content): the document in reading order (the baseline spine reconstructed
+//   as the revised reading — see note below), changed clauses neutrally highlighted.
+//   Clicking a changed clause expands it inline to its redline + Donna's verdict and
+//   adoptable counter-language + Accept theirs / Use Donna's / Edit / Keep (the
+//   existing decide endpoints), with a "Brainstorm with Donna" escalation.
+//
+// Data wiring REUSED: getRevisionReview (hunk redline + decisions, both phases) +
+// getRevisionDocument (the light baseline/revised node lists + abstain pairs). The
+// change overlay joins on BASELINE node ids (the payload carries no change->revised-node
+// linkage), so Phase 2 renders the baseline spine with the changes overlaid in place —
+// a deletion strikes where it was, an edit highlights its clause, an addition inserts
+// under its proposed parent. This is robust under renumbering (ids, not numbers).
 
 import Link from "next/link";
-import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import styles from "./review.module.css";
+import bs from "../../../cockpit.module.css";
 import {
   ApiError,
   applyRevisionSession,
+  brainstormTurn,
+  closeBrainstorm,
   confirmMatch,
   decideHunk,
   decideNode,
+  donnaErrorMessage,
+  getRevisionDocument,
   getRevisionReview,
   getSnapshotTree,
-  type ChangeContextSide,
+  type AbstainMatch,
   type ApplyResult,
+  type BrainstormTurn,
+  type ChangeContextSide,
+  type DocumentChange,
+  type DocumentChangeKind,
+  type DocumentNode,
   type HunkDecisionAction,
   type NodeDecisionAction,
   type NodeTreeItem,
   type ReviewChange,
   type ReviewHunk,
   type ReviewPayload,
+  type RevisionDocumentView,
+  type Role,
 } from "../../../../lib/api";
 
 type Phase = "structure" | "content";
+
+// A staged issue is required by the brainstorm endpoints, but an undecided revision
+// change has none yet (issues are seeded only on apply, for rejects). The nil UUID
+// passes the backend's uuid cast and makes get_issue return null → Donna brainstorms
+// grounded on the contract + the seeded transcript, with no issue anchor; close then
+// distils nothing to persist (no issue to attach to). See the report's follow-up.
+const NIL_ISSUE_ID = "00000000-0000-0000-0000-000000000000";
 
 // One node of an inline word-diff. `split(/(\s+)/)` keeps whitespace tokens so the
 // rendered markup preserves spacing; the LCS walk classifies each token.
@@ -71,26 +107,43 @@ function wordDiff(a: string | null, b: string | null): DiffSeg[] {
   return out;
 }
 
-// A hunk reads as a "large rewrite" when its text is long or it carries many edits —
-// the DD-78 escape-hatch affordance is a visual flag only (no separate endpoint).
-function isLargeChange(c: ReviewChange): boolean {
-  const chars = c.hunks.reduce(
-    (sum, h) => sum + (h.original_text?.length ?? 0) + (h.proposed_text?.length ?? 0),
-    0,
-  );
-  return chars > 1400 || c.hunk_count >= 5;
-}
-
 function pct(conf: number | null): string {
   return conf == null ? "—" : `${Math.round(conf * 100)}%`;
 }
 
-const KIND_LABEL: Record<ReviewChange["change_kind"], string> = {
-  edited: "Edit",
-  new: "They added",
-  deleted: "They removed",
-  abstain: "Uncertain match",
+// DD-54 structural roles → the role-based fallback anchor label used when a change's
+// clause has neither a derived number nor a heading (e.g. a recital, an appendix title).
+const ROLE_LABEL: Record<Role, string> = {
+  title: "Title",
+  date: "Date",
+  parties: "Parties",
+  recital: "Recital",
+  agreement_statement: "Agreement statement",
+  clause: "New clause",
+  appendix: "Appendix",
+  appendix_title: "Appendix title",
+  signature_block: "Signature block",
+  drafting_note: "Draft note",
 };
+
+const TAG: Record<Exclude<DocumentChangeKind, "shifted">, { label: string; cls: string }> = {
+  added: { label: "Added", cls: "tagAdded" },
+  deleted: { label: "Deleted", cls: "tagDeleted" },
+  modified: { label: "Modified", cls: "tagModified" },
+};
+
+// Clause identity ("4.2 — Payment Terms"); number alone, heading alone, or both.
+function clauseIdentity(ctx: ChangeContextSide | undefined): string {
+  if (!ctx) return "";
+  return [ctx.number, ctx.heading].filter(Boolean).join(" — ");
+}
+
+// The side that carries a content change's identity: their incoming clause for a new
+// node, the baseline clause for an edit/deletion.
+function primarySide(c: ReviewChange): ChangeContextSide | undefined {
+  if (!c.context) return undefined;
+  return c.change_kind === "new" ? c.context.their : c.context.baseline;
+}
 
 // Flatten the baseline snapshot tree into a pick-list for the Re-match action.
 interface FlatBaseline {
@@ -112,6 +165,308 @@ function flattenBaseline(nodes: NodeTreeItem[], depth = 0): FlatBaseline[] {
   return out;
 }
 
+// ---- a memoized document row (perf: only changed/toggled rows re-render) -------------
+
+interface RowProps {
+  node: DocumentNode;
+  added: boolean;
+  kinds: DocumentChangeKind[];
+  changeId: string | null;
+  active: boolean;
+  decided: boolean;
+  onSelect: (changeId: string) => void;
+  registerRef: (changeId: string, el: HTMLDivElement | null) => void;
+  children: React.ReactNode; // the inline expand panel, null unless expanded
+}
+
+const DocRow = memo(function DocRow({
+  node,
+  added,
+  kinds,
+  changeId,
+  active,
+  decided,
+  onSelect,
+  registerRef,
+  children,
+}: RowProps) {
+  const changed = changeId !== null;
+  const deleted = kinds.includes("deleted");
+  const indent = 10 + node.depth * 18 + (added ? 18 : 0);
+  const cls = [
+    styles.docRow,
+    changed ? styles.docRowChanged : "",
+    added ? styles.docRowAdded : "",
+    deleted ? styles.docRowDeleted : "",
+    active ? styles.docRowActive : "",
+    decided ? styles.docRowDecided : "",
+  ].join(" ");
+  return (
+    <div
+      ref={changeId ? (el) => registerRef(changeId, el) : undefined}
+      className={cls}
+      style={{ paddingLeft: indent }}
+      onClick={changed ? () => onSelect(changeId as string) : undefined}
+      role={changed ? "button" : undefined}
+      tabIndex={changed ? 0 : undefined}
+      onKeyDown={
+        changed
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onSelect(changeId as string);
+              }
+            }
+          : undefined
+      }
+    >
+      <div className={styles.docRowLine}>
+        {node.clause_number && <span className={styles.docNum}>{node.clause_number}</span>}
+        <span className={styles.docText}>{node.text ?? "(empty clause)"}</span>
+        {changed && (
+          <span className={styles.docTags} aria-hidden>
+            {kinds
+              .filter((k): k is Exclude<DocumentChangeKind, "shifted"> => k !== "shifted")
+              .map((k) => (
+                <span key={k} className={[styles.tag, styles[TAG[k].cls]].join(" ")}>
+                  {TAG[k].label}
+                </span>
+              ))}
+          </span>
+        )}
+      </div>
+      {children}
+    </div>
+  );
+});
+
+// ---- the brainstorm overlay (reuses the existing endpoints + the cockpit overlay
+//      skin via cockpit.module.css; ephemeral by construction — nothing persists) -----
+
+type BsMsg = { role: "user" | "donna"; content: string };
+
+function transcriptToTurns(transcript: BsMsg[]): BrainstormTurn[] {
+  const turns: BrainstormTurn[] = [];
+  let pending: string | null = null;
+  for (const m of transcript) {
+    if (m.role === "user") pending = m.content;
+    else {
+      turns.push({ question: pending ?? "", answer: m.content });
+      pending = null;
+    }
+  }
+  return turns;
+}
+
+const BrainstormOverlay = memo(function BrainstormOverlay({
+  contractId,
+  anchor,
+  seed,
+  onClose,
+}: {
+  contractId: string;
+  anchor: string;
+  seed: string;
+  onClose: () => void;
+}) {
+  const [transcript, setTranscript] = useState<BsMsg[]>([{ role: "donna", content: seed }]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [transcript, busy]);
+
+  async function send(raw: string) {
+    const message = raw.trim();
+    if (!message || busy || closing) return;
+    const turns = transcriptToTurns(transcript);
+    setInput("");
+    setError(null);
+    setTranscript((t) => [...t, { role: "user", content: message }]);
+    setBusy(true);
+    try {
+      const res = await brainstormTurn(contractId, { issue_id: NIL_ISSUE_ID, turns, message });
+      setTranscript((t) => [...t, { role: "donna", content: res.reply }]);
+    } catch (e) {
+      setError(donnaErrorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function close() {
+    if (closing) return;
+    setClosing(true);
+    setError(null);
+    try {
+      await closeBrainstorm(contractId, {
+        issue_id: NIL_ISSUE_ID,
+        turns: transcriptToTurns(transcript),
+      });
+    } catch {
+      // close is best-effort here (no issue to persist onto) — never block the operator.
+    } finally {
+      onClose();
+    }
+  }
+
+  return (
+    <div className={bs.bsScrim}>
+      <section className={bs.bsPanel} role="dialog" aria-modal="true" aria-label="Brainstorm with Donna">
+        <header className={bs.bsHead}>
+          <div className={bs.bsHeadTitle}>
+            <span className={bs.bsHeadMark} aria-hidden>
+              ✦
+            </span>
+            <span>
+              Brainstorm
+              <span className={bs.bsHeadIssue}>{anchor}</span>
+            </span>
+          </div>
+          <button
+            type="button"
+            className={bs.bsHeadClose}
+            aria-label="Close brainstorm"
+            disabled={closing}
+            onClick={() => void close()}
+          >
+            ×
+          </button>
+        </header>
+
+        <div className={bs.bsScroll} ref={scrollRef}>
+          {transcript.map((m, i) =>
+            m.role === "user" ? (
+              <div key={i} className={[bs.msg, bs.msgUser].join(" ")}>
+                <div className={bs.bubbleUser}>{m.content}</div>
+              </div>
+            ) : (
+              <div key={i} className={[bs.msg, bs.msgDonna].join(" ")}>
+                <span className={bs.donnaEyebrow}>Donna</span>
+                <div className={bs.bubble}>
+                  <div className={bs.bubbleText} style={{ whiteSpace: "pre-wrap" }}>
+                    {m.content}
+                  </div>
+                </div>
+              </div>
+            ),
+          )}
+          {busy && (
+            <div className={[bs.msg, bs.msgDonna].join(" ")}>
+              <span className={bs.donnaEyebrow}>Donna</span>
+              <div className={[bs.bubble, bs.bubbleThinking].join(" ")}>
+                <span className={bs.thinkingDots} aria-hidden>
+                  <i />
+                  <i />
+                  <i />
+                </span>
+                <span className={bs.thinkingLabel}>Donna&apos;s thinking it through…</span>
+              </div>
+            </div>
+          )}
+          {error && <p className={bs.askError}>{error}</p>}
+        </div>
+
+        <form
+          className={bs.composer}
+          onSubmit={(e) => {
+            e.preventDefault();
+            void send(input);
+          }}
+        >
+          <input
+            ref={inputRef}
+            className={bs.composerInput}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Push back, ask for a sharper line, try another angle…"
+            aria-label="Brainstorm with Donna"
+            disabled={closing}
+          />
+          <button
+            type="submit"
+            className={bs.composerSend}
+            aria-label="Send"
+            disabled={!input.trim() || busy || closing}
+          >
+            ↵
+          </button>
+        </form>
+
+        <div className={bs.bsFoot}>
+          {closing ? (
+            <div className={bs.bsClosing}>
+              <div className={styles.progressTrack} role="progressbar" aria-label="Closing">
+                <div className={styles.progressBar} />
+              </div>
+              <span className={bs.bsClosingLabel}>Closing…</span>
+            </div>
+          ) : (
+            <>
+              <button type="button" className={bs.bsCloseBtn} onClick={() => void close()}>
+                Close brainstorm
+              </button>
+              <p className={bs.bsFootNote}>
+                This conversation is scratch — it isn&apos;t saved. Apply your decision below to
+                carry it forward.
+              </p>
+            </>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+});
+
+// ---- the inline editor (perf: local draft state so typing never re-renders the doc) --
+
+const InlineEditor = memo(function InlineEditor({
+  seed,
+  busy,
+  onSave,
+  onCancel,
+}: {
+  seed: string;
+  busy: boolean;
+  onSave: (text: string) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState(seed);
+  return (
+    <div className={styles.editor}>
+      <textarea
+        className={styles.editorArea}
+        value={draft}
+        autoFocus
+        onChange={(e) => setDraft(e.target.value)}
+        rows={4}
+      />
+      <div className={styles.editorBar}>
+        <button
+          type="button"
+          className={styles.btnPrimary}
+          disabled={!draft.trim() || busy}
+          onClick={() => onSave(draft)}
+        >
+          {busy ? "Saving…" : "Save this language"}
+        </button>
+        <button type="button" className={styles.btnText} onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+});
+
 export default function RevisionReview({
   params,
 }: {
@@ -119,70 +474,197 @@ export default function RevisionReview({
 }) {
   const { id, sessionId } = use(params);
 
-  const [payload, setPayload] = useState<ReviewPayload | null>(null);
+  const [review, setReview] = useState<ReviewPayload | null>(null);
+  const [doc, setDoc] = useState<RevisionDocumentView | null>(null);
   const [state, setState] = useState<{ kind: "loading" | "ready" | "error"; message?: string }>({
     kind: "loading",
   });
   const [phase, setPhase] = useState<Phase>("structure");
 
-  // Per-target action in flight (hunk id, change id, or "apply"), and the last error.
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  // Single open inline editor, keyed by hunk/change id, with its draft text.
+  // The selected change (highlighted in both panes) and the inline editor target.
+  const [activeChangeId, setActiveChangeId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editKey, setEditKey] = useState<string | null>(null);
-  const [editDraft, setEditDraft] = useState("");
 
-  // Re-match: the abstain whose baseline picker is open, plus the lazily-loaded
-  // baseline tree (shared across abstains once fetched).
-  const [rematchFor, setRematchFor] = useState<string | null>(null);
+  // Re-match picker (Phase 1) — lazily-loaded baseline tree, shared across abstains.
   const [baseline, setBaseline] = useState<{
     loading: boolean;
     error: string | null;
     nodes: FlatBaseline[];
   } | null>(null);
+  const [rematchOpen, setRematchOpen] = useState(false);
 
   const [applied, setApplied] = useState<ApplyResult | null>(null);
+  const [brainstormSeed, setBrainstormSeed] = useState<{ anchor: string; seed: string } | null>(null);
+
+  // change-id → row element, for the rail-click scroll + the scroll spy.
+  const rowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const docPaneRef = useRef<HTMLDivElement | null>(null);
 
   const load = useCallback(async () => {
     setState({ kind: "loading" });
     try {
-      const p = await getRevisionReview(sessionId);
-      setPayload(p);
-      setPhase(p.phase1.abstains.length > 0 ? "structure" : "content");
+      const [r, d] = await Promise.all([
+        getRevisionReview(sessionId),
+        getRevisionDocument(id, sessionId),
+      ]);
+      setReview(r);
+      setDoc(d);
+      setPhase(r.phase1.abstains.length > 0 ? "structure" : "content");
       setState({ kind: "ready" });
     } catch (e) {
       setState({ kind: "error", message: e instanceof Error ? e.message : "Couldn't load review" });
     }
-  }, [sessionId]);
+  }, [id, sessionId]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const abstains = payload?.phase1.abstains ?? [];
-  const anomalies = payload?.phase1.tree_anomalies ?? [];
-  const stream = payload?.phase2 ?? [];
+  const abstains = review?.phase1.abstains ?? [];
+  const stream = review?.phase2 ?? [];
   const structureCleared = abstains.length === 0;
-  const decided = stream.filter((c) => c.status === "complete").length;
-  const allDecided = structureCleared && stream.length > 0 && decided === stream.length;
+  const pending = stream.filter((c) => c.status !== "complete").length;
+  const allDecided = structureCleared && stream.length > 0 && pending === 0;
   const nothingToDo = structureCleared && stream.length === 0;
 
-  // Replace one change in the Phase-2 stream after an in-place decision (no churn).
-  function patchChange(updated: ReviewChange) {
-    setPayload((p) =>
-      p ? { ...p, phase2: p.phase2.map((c) => (c.id === updated.id ? updated : c)) } : p,
+  const changeById = useMemo(() => {
+    const m = new Map<string, ReviewChange>();
+    for (const c of stream) m.set(c.id, c);
+    for (const c of abstains) m.set(c.id, c);
+    return m;
+  }, [stream, abstains]);
+
+  const docChangeById = useMemo(() => {
+    const m = new Map<string, DocumentChange>();
+    for (const c of doc?.changes ?? []) m.set(c.change_id, c);
+    return m;
+  }, [doc]);
+
+  const baselineNodeById = useMemo(() => {
+    const m = new Map<string, DocumentNode>();
+    for (const n of doc?.baseline ?? []) m.set(n.node_id, n);
+    return m;
+  }, [doc]);
+
+  // The Phase-2 document spine: baseline nodes in reading order, each carrying its
+  // edited/deleted change; added changes inserted right after their proposed parent.
+  type RenderItem =
+    | { key: string; kind: "node"; node: DocumentNode; change: ReviewChange | null }
+    | { key: string; kind: "added"; node: DocumentNode; change: ReviewChange };
+
+  const renderItems = useMemo<RenderItem[]>(() => {
+    if (!doc) return [];
+    const editedDeleted = new Map<string, ReviewChange>();
+    const addedByParent = new Map<string, ReviewChange[]>();
+    for (const c of stream) {
+      if (c.change_kind === "new") {
+        const key = c.proposed_parent_id ?? "__root__";
+        (addedByParent.get(key) ?? addedByParent.set(key, []).get(key)!).push(c);
+      } else if (c.node_id) {
+        editedDeleted.set(c.node_id, c);
+      }
+    }
+    for (const arr of addedByParent.values()) {
+      arr.sort((a, b) => (a.proposed_order_index ?? 0) - (b.proposed_order_index ?? 0));
+    }
+    // Synthesize a DocumentNode for an added change from its incoming-side context.
+    const addedNode = (c: ReviewChange, depth: number): DocumentNode => ({
+      node_id: `added-${c.id}`,
+      clause_number: c.context?.their?.number ?? null,
+      role: "clause",
+      depth,
+      text: c.context?.their?.body ?? c.hunks[0]?.proposed_text ?? null,
+    });
+
+    const items: RenderItem[] = [];
+    for (const c of addedByParent.get("__root__") ?? []) {
+      items.push({ key: `added-${c.id}`, kind: "added", node: addedNode(c, 0), change: c });
+    }
+    for (const node of doc.baseline) {
+      items.push({
+        key: node.node_id,
+        kind: "node",
+        node,
+        change: editedDeleted.get(node.node_id) ?? null,
+      });
+      for (const c of addedByParent.get(node.node_id) ?? []) {
+        items.push({
+          key: `added-${c.id}`,
+          kind: "added",
+          node: addedNode(c, node.depth + 1),
+          change: c,
+        });
+      }
+    }
+    // Any added change whose parent isn't in the baseline (defensive — shouldn't happen).
+    const placed = new Set(items.filter((i) => i.kind === "added").map((i) => i.change.id));
+    for (const c of stream) {
+      if (c.change_kind === "new" && !placed.has(c.id)) {
+        items.push({ key: `added-${c.id}`, kind: "added", node: addedNode(c, 0), change: c });
+      }
+    }
+    return items;
+  }, [doc, stream]);
+
+  // Document-order change list for the far-left rail (review.phase2 is already ordered).
+  const railChanges = stream;
+
+  const registerRef = useCallback((changeId: string, el: HTMLDivElement | null) => {
+    if (el) rowRefs.current.set(changeId, el);
+    else rowRefs.current.delete(changeId);
+  }, []);
+
+  // Scroll spy: keep the rail's active row in sync as the operator scrolls the document.
+  useEffect(() => {
+    if (phase !== "content") return;
+    const root = docPaneRef.current;
+    if (!root) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        const top = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+        if (top) {
+          for (const [cid, el] of rowRefs.current) {
+            if (el === top.target) {
+              setActiveChangeId(cid);
+              break;
+            }
+          }
+        }
+      },
+      { root, rootMargin: "-10% 0px -75% 0px", threshold: 0 },
     );
+    for (const el of rowRefs.current.values()) obs.observe(el);
+    return () => obs.disconnect();
+  }, [phase, renderItems]);
+
+  function selectChange(changeId: string) {
+    setActiveChangeId(changeId);
+    setExpandedId(changeId);
+    setEditKey(null);
+    rowRefs.current.get(changeId)?.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
-  function startEdit(key: string, seed: string) {
-    setEditKey(key);
-    setEditDraft(seed);
-    setActionError(null);
+  // Phase 1: selecting an abstain scrolls BOTH columns to its proposed pair.
+  function selectAbstain(changeId: string) {
+    setActiveChangeId(changeId);
+    setRematchOpen(false);
+    const m = doc?.abstain_matches.find((x) => x.change_id === changeId);
+    const opts: ScrollIntoViewOptions = { behavior: "smooth", block: "center" };
+    if (m?.baseline_node_id) document.getElementById(`cmp-b-${m.baseline_node_id}`)?.scrollIntoView(opts);
+    if (m?.proposed_received_node_id)
+      document.getElementById(`cmp-r-${m.proposed_received_node_id}`)?.scrollIntoView(opts);
   }
-  function cancelEdit() {
-    setEditKey(null);
-    setEditDraft("");
+
+  function patchChange(updated: ReviewChange) {
+    setReview((p) =>
+      p ? { ...p, phase2: p.phase2.map((c) => (c.id === updated.id ? updated : c)) } : p,
+    );
   }
 
   async function runHunk(hunk: ReviewHunk, verdict: HunkDecisionAction, finalText?: string) {
@@ -191,7 +673,7 @@ export default function RevisionReview({
     try {
       const updated = await decideHunk(hunk.id, { verdict, final_text: finalText ?? null });
       patchChange(updated);
-      cancelEdit();
+      setEditKey(null);
     } catch (e) {
       setActionError(
         e instanceof ApiError && e.status === 422
@@ -211,7 +693,7 @@ export default function RevisionReview({
     try {
       const updated = await decideNode(change.id, { verdict, final_text: finalText ?? null });
       patchChange(updated);
-      cancelEdit();
+      setEditKey(null);
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Couldn't record that decision.");
     } finally {
@@ -225,7 +707,7 @@ export default function RevisionReview({
     setActionError(null);
     try {
       await confirmMatch(change.id, { action, baseline_node_id: baselineNodeId ?? null });
-      setRematchFor(null);
+      setRematchOpen(false);
       await load();
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Couldn't update that match.");
@@ -238,7 +720,7 @@ export default function RevisionReview({
     setActionError(null);
     try {
       await confirmMatch(change.id, { action: "rematch", baseline_node_id: baselineNodeId });
-      setRematchFor(null);
+      setRematchOpen(false);
       await load();
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Couldn't re-match that clause.");
@@ -247,12 +729,30 @@ export default function RevisionReview({
     }
   }
 
+  // Bulk: there's no server-side bulk endpoint, so loop the existing confirm-match over
+  // every still-abstained change. Re-fetch once at the end (each call can reclassify).
+  async function runBulk(action: "confirm" | "new") {
+    setBusy("bulk");
+    setActionError(null);
+    try {
+      for (const c of abstains) {
+        await confirmMatch(c.id, { action, baseline_node_id: null });
+      }
+      await load();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Couldn't resolve the remaining matches.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function openRematch(change: ReviewChange) {
-    setRematchFor(change.id);
-    if (baseline || !payload) return;
+    setActiveChangeId(change.id);
+    setRematchOpen(true);
+    if (baseline || !review) return;
     setBaseline({ loading: true, error: null, nodes: [] });
     try {
-      const tree = await getSnapshotTree(id, payload.session.baseline_snapshot_id);
+      const tree = await getSnapshotTree(id, review.session.baseline_snapshot_id);
       setBaseline({ loading: false, error: null, nodes: flattenBaseline(tree.nodes) });
     } catch (e) {
       setBaseline({
@@ -282,14 +782,45 @@ export default function RevisionReview({
     }
   }
 
-  function scrollTo(changeId: string) {
-    document.getElementById(`change-${changeId}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  function openBrainstorm(c: ReviewChange) {
+    setBrainstormSeed({ anchor: anchorLabel(c) || "this change", seed: composeSeed(c) });
   }
 
   const sourceLabel = useMemo(() => {
-    const s = payload?.session.source ?? "";
+    const s = review?.session.source ?? "";
     return s === "legal" || s === "legal_team" ? "legal" : "counterparty";
-  }, [payload]);
+  }, [review]);
+
+  // The anchor label for a change: clause number/heading, else a role-based fallback.
+  function anchorLabel(c: ReviewChange): string {
+    const identity = clauseIdentity(primarySide(c));
+    if (identity) return identity;
+    if (c.change_kind === "new") return "New clause";
+    const node = c.node_id ? baselineNodeById.get(c.node_id) : undefined;
+    return node ? ROLE_LABEL[node.role] : "Clause";
+  }
+
+  // Seed the brainstorm opening turn with this change's before/after + Donna's read.
+  function composeSeed(c: ReviewChange): string {
+    const id = anchorLabel(c);
+    const lines: string[] = [`Let's work through ${id}.`];
+    if (c.change_kind === "new") {
+      lines.push(`They added:\n${c.hunks[0]?.proposed_text ?? c.context?.their?.body ?? "(new clause)"}`);
+    } else if (c.change_kind === "deleted") {
+      lines.push(`They deleted:\n${c.hunks[0]?.original_text ?? c.context?.baseline?.body ?? "(clause)"}`);
+    } else {
+      const edits = c.hunks
+        .map((h) => `• "${h.original_text ?? ""}" → "${h.proposed_text ?? ""}"`)
+        .join("\n");
+      lines.push(`Their edits:\n${edits}`);
+    }
+    const verdict = c.hunks.find((h) => h.donna_verdict)?.donna_verdict;
+    const counter = c.hunks.find((h) => h.donna_counter_text)?.donna_counter_text;
+    if (verdict) lines.push(`My read: ${verdict}`);
+    if (counter) lines.push(`My counter-language:\n${counter}`);
+    lines.push("Tell me to push harder, soften it, or take a different angle.");
+    return lines.join("\n\n");
+  }
 
   // ---- render ------------------------------------------------------------
 
@@ -302,11 +833,11 @@ export default function RevisionReview({
         <span className={styles.crumb}>Revision review</span>
       </div>
       <div className={styles.topMeta}>
-        {payload && (
+        {review && (
           <span className={styles.sourceTag}>
             From {sourceLabel}
             <span className={styles.sourceCount}>
-              {payload.session.changes_count} change{payload.session.changes_count === 1 ? "" : "s"}
+              {review.session.changes_count} change{review.session.changes_count === 1 ? "" : "s"}
             </span>
           </span>
         )}
@@ -320,11 +851,7 @@ export default function RevisionReview({
             type="button"
             className={styles.applyBtn}
             disabled={!allDecided || busy === "apply"}
-            title={
-              allDecided
-                ? "Apply every decision to the working copy"
-                : "Decide every change first"
-            }
+            title={allDecided ? "Apply every decision to the working copy" : "Decide every change first"}
             onClick={() => void runApply()}
           >
             {busy === "apply" ? "Applying…" : "Apply to working copy"}
@@ -342,13 +869,13 @@ export default function RevisionReview({
           <div className={styles.progressTrack} role="progressbar" aria-label="Loading review">
             <div className={styles.progressBar} />
           </div>
-          <p className={styles.phaseHint}>Loading their changes…</p>
+          <p className={styles.phaseHint}>Opening their revision…</p>
         </div>
       </div>
     );
   }
 
-  if (state.kind === "error" || !payload) {
+  if (state.kind === "error" || !review || !doc) {
     return (
       <div className={styles.screen}>
         {topbar}
@@ -414,8 +941,7 @@ export default function RevisionReview({
       <div className={styles.body}>
         <aside className={styles.rail}>
           {/* The phase spine — the required DD-78 order. Content is locked until the
-              abstain queue clears, because a content card has no diff to show until
-              its match is confirmed. */}
+              abstain queue clears (a content card has no diff until its match is set). */}
           <nav className={styles.spine} aria-label="Review phases">
             <button
               type="button"
@@ -439,10 +965,31 @@ export default function RevisionReview({
               <span className={styles.spineIndex}>2</span>
               <span className={styles.spineLabel}>Content</span>
               <span className={styles.spineMeta}>
-                {structureCleared ? `${decided}/${stream.length} decided` : "locked"}
+                {structureCleared ? `${stream.length - pending}/${stream.length} decided` : "locked"}
               </span>
             </button>
           </nav>
+
+          {/* The to-do tracker: how many changes remain, at a glance. */}
+          <div className={styles.tracker}>
+            {phase === "structure" ? (
+              <>
+                <span className={styles.trackerN}>{abstains.length}</span>
+                <span className={styles.trackerLabel}>
+                  match{abstains.length === 1 ? "" : "es"} to confirm
+                </span>
+              </>
+            ) : (
+              <>
+                <span className={styles.trackerN} data-done={pending === 0 ? "" : undefined}>
+                  {pending}
+                </span>
+                <span className={styles.trackerLabel}>
+                  {pending === 0 ? "all decided" : `pending of ${stream.length}`}
+                </span>
+              </>
+            )}
+          </div>
 
           <div className={styles.railList}>
             {phase === "structure"
@@ -450,136 +997,189 @@ export default function RevisionReview({
                   <button
                     key={c.id}
                     type="button"
-                    className={styles.railItem}
-                    onClick={() => scrollTo(c.id)}
+                    className={[
+                      styles.railItem,
+                      activeChangeId === c.id ? styles.railItemActive : "",
+                    ].join(" ")}
+                    onClick={() => selectAbstain(c.id)}
                   >
                     <span className={styles.railTick} data-tone="pending">
                       ○
                     </span>
-                    <span className={styles.railText}>Uncertain match {idx + 1}</span>
+                    <span className={styles.railText}>{anchorLabel(c) || `Uncertain match ${idx + 1}`}</span>
                     <span className={styles.railConf}>{pct(c.match_confidence)}</span>
                   </button>
                 ))
-              : stream.map((c, idx) => (
-                  <button
-                    key={c.id}
-                    type="button"
-                    className={styles.railItem}
-                    onClick={() => scrollTo(c.id)}
-                  >
-                    <span
-                      className={styles.railTick}
-                      data-tone={
-                        c.status === "complete"
-                          ? "done"
-                          : c.status === "partial"
-                            ? "partial"
-                            : "pending"
-                      }
+              : railChanges.map((c) => {
+                  const dc = docChangeById.get(c.id);
+                  const kinds = dc?.kinds ?? [];
+                  const done = c.status === "complete";
+                  return (
+                    <button
+                      key={c.id}
+                      type="button"
+                      className={[
+                        styles.railItem,
+                        activeChangeId === c.id ? styles.railItemActive : "",
+                        done ? styles.railItemDone : "",
+                      ].join(" ")}
+                      onClick={() => selectChange(c.id)}
                     >
-                      {c.status === "complete" ? "✓" : c.status === "partial" ? "◐" : "○"}
-                    </span>
-                    <span className={styles.railText}>
-                      {idx + 1}. {KIND_LABEL[c.change_kind]}
-                    </span>
-                  </button>
-                ))}
+                      <span
+                        className={styles.railTick}
+                        data-tone={done ? "done" : c.status === "partial" ? "partial" : "pending"}
+                      >
+                        {done ? "✓" : c.status === "partial" ? "◐" : "○"}
+                      </span>
+                      <span className={styles.railBody}>
+                        <span className={styles.railText}>{anchorLabel(c)}</span>
+                        <span className={styles.railTagRow}>
+                          {kinds
+                            .filter((k): k is Exclude<DocumentChangeKind, "shifted"> => k !== "shifted")
+                            .map((k) => (
+                              <span key={k} className={[styles.tag, styles[TAG[k].cls]].join(" ")}>
+                                {TAG[k].label}
+                              </span>
+                            ))}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
           </div>
         </aside>
 
-        <main className={styles.stream}>
-          {phase === "structure" ? (
-            <>
-              {/* 6a — tree-shape triage (no staged source yet → always clear). */}
-              <section className={styles.subhead}>
-                <h2 className={styles.subheadTitle}>Tree shape</h2>
-                <p className={styles.subheadHint}>
-                  Donna auto-corrected the hierarchy on import. These are anything she couldn&apos;t.
-                </p>
-              </section>
-              {anomalies.length === 0 ? (
-                <div className={styles.cleared}>Structure looks right — nothing to fix.</div>
-              ) : (
-                anomalies.map((a) => (
-                  <div key={a.node_id} className={styles.anomaly}>
-                    {a.reason}
-                  </div>
-                ))
-              )}
-
-              {/* 6b — abstain match-confirm queue, most-uncertain first. */}
-              <section className={styles.subhead}>
-                <h2 className={styles.subheadTitle}>Confirm the matches</h2>
-                <p className={styles.subheadHint}>
-                  Donna wasn&apos;t sure these clauses line up. Confirm each before reviewing content.
-                </p>
-              </section>
-              {abstains.length === 0 ? (
-                <div className={styles.cleared}>
-                  Every match confirmed. Move on to{" "}
-                  <button type="button" className={styles.inlineLink} onClick={() => setPhase("content")}>
-                    content review →
-                  </button>
-                </div>
-              ) : (
-                abstains.map((c) => renderAbstain(c))
-              )}
-            </>
-          ) : nothingToDo ? (
-            <div className={styles.cleared}>No content changes to review in this revision.</div>
-          ) : (
-            <>
-              <section className={styles.subhead}>
-                <h2 className={styles.subheadTitle}>What they changed</h2>
-                <p className={styles.subheadHint}>
-                  Top-to-bottom in document order. Judge Donna&apos;s read on each.
-                </p>
-              </section>
-              {stream.map((c) => renderContentCard(c))}
-            </>
-          )}
-          {actionError && (
-            <p className={styles.streamError} role="alert">
-              {actionError}
-            </p>
-          )}
-        </main>
+        {phase === "structure"
+          ? renderStructure()
+          : nothingToDo
+            ? (
+                <main className={styles.docPane}>
+                  <div className={styles.cleared}>No content changes to review in this revision.</div>
+                </main>
+              )
+            : renderContent()}
       </div>
+
+      {brainstormSeed && (
+        <BrainstormOverlay
+          contractId={id}
+          anchor={brainstormSeed.anchor}
+          seed={brainstormSeed.seed}
+          onClose={() => setBrainstormSeed(null)}
+        />
+      )}
     </div>
   );
 
-  // ---- card renderers (closures over handlers/state) ----------------------
+  // ---- Phase 1: before / after with abstain match-confirm -----------------
 
-  function renderAbstain(c: ReviewChange) {
-    const h = c.hunks[0];
-    const theirs = h?.proposed_text ?? "";
-    const candidate = h?.original_text ?? "";
-    const isRematch = rematchFor === c.id;
+  function renderStructure() {
+    const active = abstains.find((c) => c.id === activeChangeId) ?? abstains[0] ?? null;
+    const match = doc!.abstain_matches.find((m) => m.change_id === active?.id);
+    const baselineHi = new Set(
+      doc!.abstain_matches.map((m) => m.baseline_node_id).filter((x): x is string => !!x),
+    );
+    const revisedHi = new Set(
+      doc!.abstain_matches
+        .map((m) => m.proposed_received_node_id)
+        .filter((x): x is string => !!x),
+    );
     return (
-      <article key={c.id} id={`change-${c.id}`} className={styles.card}>
-        <header className={styles.cardHead}>
-          <span className={[styles.kindChip, styles.kindAbstain].join(" ")}>Uncertain match</span>
-          <span className={styles.confChip} title="Donna's match confidence">
-            {pct(c.match_confidence)} sure
-          </span>
-        </header>
-        <div className={styles.pair}>
-          <div className={styles.pairBlock}>
-            <span className={styles.pairLabel}>Their clause</span>
-            <p className={styles.clause}>{theirs || "(no text)"}</p>
-            {renderSideContext(c.context?.their)}
+      <main className={styles.structure}>
+        <div className={styles.structureHead}>
+          <div>
+            <h2 className={styles.subheadTitle}>Confirm the matches</h2>
+            <p className={styles.subheadHint}>
+              Donna wasn&apos;t sure these clauses line up. Judge each in context, then confirm.
+            </p>
           </div>
-          <div className={styles.pairBlock}>
-            <span className={styles.pairLabel}>Closest in your draft</span>
-            <p className={styles.clause}>{candidate || "(no candidate)"}</p>
-            {renderSideContext(c.context?.baseline)}
-          </div>
+          {abstains.length > 0 && (
+            <div className={styles.bulkBar}>
+              <button
+                type="button"
+                className={styles.btnGhost}
+                disabled={busy === "bulk"}
+                onClick={() => void runBulk("confirm")}
+              >
+                {busy === "bulk" ? "Working…" : "Confirm all remaining"}
+              </button>
+              <button
+                type="button"
+                className={styles.btnGhost}
+                disabled={busy === "bulk"}
+                onClick={() => void runBulk("new")}
+              >
+                Mark rest as new
+              </button>
+            </div>
+          )}
         </div>
-        {isRematch ? (
+
+        {abstains.length === 0 ? (
+          <div className={styles.cleared}>
+            Every match confirmed. Move on to{" "}
+            <button type="button" className={styles.inlineLink} onClick={() => setPhase("content")}>
+              content review →
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className={styles.compare}>
+              <section className={styles.compareCol}>
+                <header className={styles.compareHead}>Your draft</header>
+                <div className={styles.compareBody}>
+                  {doc!.baseline.map((n) => (
+                    <CompareRow
+                      key={n.node_id}
+                      domId={`cmp-b-${n.node_id}`}
+                      node={n}
+                      flagged={baselineHi.has(n.node_id)}
+                      active={!!match && match.baseline_node_id === n.node_id}
+                    />
+                  ))}
+                </div>
+              </section>
+              <section className={styles.compareCol}>
+                <header className={styles.compareHead}>Their version</header>
+                <div className={styles.compareBody}>
+                  {doc!.revised.map((n) => (
+                    <CompareRow
+                      key={n.node_id}
+                      domId={`cmp-r-${n.node_id}`}
+                      node={n}
+                      flagged={revisedHi.has(n.node_id)}
+                      active={!!match && match.proposed_received_node_id === n.node_id}
+                    />
+                  ))}
+                </div>
+              </section>
+            </div>
+
+            {active && renderAbstainControls(active)}
+          </>
+        )}
+        {actionError && (
+          <p className={styles.streamError} role="alert">
+            {actionError}
+          </p>
+        )}
+      </main>
+    );
+  }
+
+  function renderAbstainControls(c: ReviewChange) {
+    return (
+      <div className={styles.abstainBar}>
+        <div className={styles.abstainWho}>
+          <span className={[styles.kindChip, styles.kindAbstain].join(" ")}>Uncertain match</span>
+          <span className={styles.abstainName}>{anchorLabel(c)}</span>
+          <span className={styles.confChip}>{pct(c.match_confidence)} sure</span>
+        </div>
+        {rematchOpen ? (
           <div className={styles.rematch}>
             <div className={styles.rematchHead}>
               <span>Pick the clause it matches</span>
-              <button type="button" className={styles.linkBtn} onClick={() => setRematchFor(null)}>
+              <button type="button" className={styles.linkBtn} onClick={() => setRematchOpen(false)}>
                 Cancel
               </button>
             </div>
@@ -625,7 +1225,7 @@ export default function RevisionReview({
               disabled={busy === c.id}
               onClick={() => void runConfirm(c, "new")}
             >
-              It&apos;s new
+              Not a match — it&apos;s new
             </button>
             <button
               type="button"
@@ -633,33 +1233,68 @@ export default function RevisionReview({
               disabled={busy === c.id}
               onClick={() => void openRematch(c)}
             >
-              Re-match…
+              Match to a different clause…
             </button>
           </div>
         )}
-      </article>
+      </div>
     );
   }
 
-  function renderContentCard(c: ReviewChange) {
-    const large = isLargeChange(c);
+  // ---- Phase 2: the document with changes in place ------------------------
+
+  function renderContent() {
     return (
-      <article
-        key={c.id}
-        id={`change-${c.id}`}
-        className={[styles.card, c.status === "complete" ? styles.cardDone : "", large ? styles.cardLarge : ""].join(
-          " ",
+      <main className={styles.docPane} ref={docPaneRef}>
+        <div className={styles.docHead}>
+          <h2 className={styles.subheadTitle}>Their revision, in your document</h2>
+          <p className={styles.subheadHint}>
+            Changed clauses are highlighted. Open one to see the redline and Donna&apos;s read.
+          </p>
+        </div>
+        <div className={styles.docScroll}>
+          {renderItems.map((item) => {
+            const c = item.change;
+            const dc = c ? docChangeById.get(c.id) : undefined;
+            const kinds: DocumentChangeKind[] = dc
+              ? dc.kinds
+              : item.kind === "added"
+                ? ["added"]
+                : [];
+            const expanded = c != null && expandedId === c.id;
+            return (
+              <DocRow
+                key={item.key}
+                node={item.node}
+                added={item.kind === "added"}
+                kinds={kinds}
+                changeId={c?.id ?? null}
+                active={c != null && activeChangeId === c.id}
+                decided={c?.status === "complete"}
+                onSelect={selectChange}
+                registerRef={registerRef}
+              >
+                {expanded && c ? (
+                  <div className={styles.expand} onClick={(e) => e.stopPropagation()}>
+                    {renderExpand(c)}
+                  </div>
+                ) : null}
+              </DocRow>
+            );
+          })}
+        </div>
+        {actionError && (
+          <p className={styles.streamError} role="alert">
+            {actionError}
+          </p>
         )}
-      >
-        <header className={styles.cardHead}>
-          <span className={[styles.kindChip, kindClass(c.change_kind)].join(" ")}>
-            {KIND_LABEL[c.change_kind]}
-          </span>
-          {large && <span className={styles.rewriteChip}>Large rewrite</span>}
-          <span className={styles.rollup}>
-            {c.hunks_decided}/{c.hunk_count} decided
-          </span>
-        </header>
+      </main>
+    );
+  }
+
+  function renderExpand(c: ReviewChange) {
+    return (
+      <>
         {renderCardContext(c)}
         {c.change_kind === "edited" ? (
           <>
@@ -669,7 +1304,12 @@ export default function RevisionReview({
         ) : (
           renderWholeNode(c)
         )}
-      </article>
+        <div className={styles.escalate}>
+          <button type="button" className={styles.btnDonna} onClick={() => openBrainstorm(c)}>
+            Brainstorm with Donna ↗
+          </button>
+        </div>
+      </>
     );
   }
 
@@ -692,9 +1332,7 @@ export default function RevisionReview({
             </span>
             <div className={styles.donnaBody}>
               {h.donna_verdict && <p className={styles.donnaVerdict}>{h.donna_verdict}</p>}
-              {h.donna_counter_text && (
-                <p className={styles.donnaCounter}>“{h.donna_counter_text}”</p>
-              )}
+              {h.donna_counter_text && <p className={styles.donnaCounter}>“{h.donna_counter_text}”</p>}
             </div>
           </div>
         )}
@@ -709,28 +1347,12 @@ export default function RevisionReview({
           </div>
         )}
         {editing ? (
-          <div className={styles.editor}>
-            <textarea
-              className={styles.editorArea}
-              value={editDraft}
-              autoFocus
-              onChange={(e) => setEditDraft(e.target.value)}
-              rows={4}
-            />
-            <div className={styles.editorBar}>
-              <button
-                type="button"
-                className={styles.btnPrimary}
-                disabled={!editDraft.trim() || busy === h.id}
-                onClick={() => void runHunk(h, "edit", editDraft)}
-              >
-                {busy === h.id ? "Saving…" : "Save this language"}
-              </button>
-              <button type="button" className={styles.btnText} onClick={cancelEdit}>
-                Cancel
-              </button>
-            </div>
-          </div>
+          <InlineEditor
+            seed={h.donna_counter_text ?? h.proposed_text ?? ""}
+            busy={busy === h.id}
+            onSave={(text) => void runHunk(h, "edit", text)}
+            onCancel={() => setEditKey(null)}
+          />
         ) : (
           <div className={styles.actions}>
             <button
@@ -748,13 +1370,13 @@ export default function RevisionReview({
               title={h.donna_counter_text ? undefined : "Donna hasn't staged counter-language here"}
               onClick={() => void runHunk(h, "counter")}
             >
-              Use Donna&apos;s counter
+              Use Donna&apos;s
             </button>
             <button
               type="button"
               className={styles.btnGhost}
               disabled={busy === h.id}
-              onClick={() => startEdit(h.id, h.donna_counter_text ?? h.proposed_text ?? "")}
+              onClick={() => setEditKey(h.id)}
             >
               Edit
             </button>
@@ -764,7 +1386,7 @@ export default function RevisionReview({
               disabled={busy === h.id}
               onClick={() => void runHunk(h, "keep")}
             >
-              Keep original
+              Keep
             </button>
           </div>
         )}
@@ -792,9 +1414,7 @@ export default function RevisionReview({
             </span>
             <div className={styles.donnaBody}>
               {h.donna_verdict && <p className={styles.donnaVerdict}>{h.donna_verdict}</p>}
-              {h.donna_counter_text && (
-                <p className={styles.donnaCounter}>“{h.donna_counter_text}”</p>
-              )}
+              {h.donna_counter_text && <p className={styles.donnaCounter}>“{h.donna_counter_text}”</p>}
             </div>
           </div>
         )}
@@ -809,28 +1429,12 @@ export default function RevisionReview({
           </div>
         )}
         {editing ? (
-          <div className={styles.editor}>
-            <textarea
-              className={styles.editorArea}
-              value={editDraft}
-              autoFocus
-              onChange={(e) => setEditDraft(e.target.value)}
-              rows={4}
-            />
-            <div className={styles.editorBar}>
-              <button
-                type="button"
-                className={styles.btnPrimary}
-                disabled={!editDraft.trim() || busy === c.id}
-                onClick={() => void runNode(c, "edit", editDraft)}
-              >
-                {busy === c.id ? "Saving…" : "Save this language"}
-              </button>
-              <button type="button" className={styles.btnText} onClick={cancelEdit}>
-                Cancel
-              </button>
-            </div>
-          </div>
+          <InlineEditor
+            seed={h?.donna_counter_text ?? text}
+            busy={busy === c.id}
+            onSave={(t) => void runNode(c, "edit", t)}
+            onCancel={() => setEditKey(null)}
+          />
         ) : (
           <div className={styles.actions}>
             <button
@@ -841,6 +1445,16 @@ export default function RevisionReview({
             >
               {acceptLabel}
             </button>
+            {h?.donna_counter_text && (
+              <button
+                type="button"
+                className={styles.btnDonna}
+                disabled={busy === c.id}
+                onClick={() => void runNode(c, "edit", h.donna_counter_text ?? "")}
+              >
+                Use Donna&apos;s
+              </button>
+            )}
             <button
               type="button"
               className={styles.btnGhost}
@@ -853,7 +1467,7 @@ export default function RevisionReview({
               type="button"
               className={styles.btnGhost}
               disabled={busy === c.id}
-              onClick={() => startEdit(c.id, text)}
+              onClick={() => setEditKey(c.id)}
             >
               Edit
             </button>
@@ -863,6 +1477,32 @@ export default function RevisionReview({
     );
   }
 }
+
+// ---- a compare-pane row (Phase 1) -------------------------------------------
+
+const CompareRow = memo(function CompareRow({
+  node,
+  flagged,
+  active,
+  domId,
+}: {
+  node: DocumentNode;
+  flagged: boolean;
+  active: boolean;
+  domId: string;
+}) {
+  const cls = [
+    styles.cmpRow,
+    flagged ? styles.cmpFlagged : "",
+    active ? styles.cmpActive : "",
+  ].join(" ");
+  return (
+    <div id={domId} className={cls} style={{ paddingLeft: 8 + node.depth * 16 }}>
+      {node.clause_number && <span className={styles.cmpNum}>{node.clause_number}</span>}
+      <span className={styles.cmpText}>{node.text ?? "(empty clause)"}</span>
+    </div>
+  );
+});
 
 const VERDICT_LABEL: Record<ReviewHunk["verdict"], string> = {
   pending: "Pending",
@@ -878,67 +1518,14 @@ function verdictTone(v: ReviewHunk["verdict"]): string {
   return "pending";
 }
 
-function kindClass(kind: ReviewChange["change_kind"]): string {
-  if (kind === "new") return styles.kindNew;
-  if (kind === "deleted") return styles.kindDeleted;
-  return styles.kindEdited;
-}
-
 function segClass(type: DiffSeg["type"]): string {
   if (type === "ins") return styles.diffIns;
   if (type === "del") return styles.diffDel;
   return styles.diffSame;
 }
 
-// Clause identity ("4.2 — Payment Terms"); number alone, heading alone, or both.
-function clauseIdentity(ctx: ChangeContextSide): string {
-  return [ctx.number, ctx.heading].filter(Boolean).join(" — ");
-}
-
-// The side that carries a content card's identity: their incoming clause for a new
-// node, the baseline clause for an edit/deletion.
-function primarySide(c: ReviewChange): ChangeContextSide | undefined {
-  if (!c.context) return undefined;
-  return c.change_kind === "new" ? c.context.their : c.context.baseline;
-}
-
-// Structural context under one side of an abstain card — its identity + ancestor
-// breadcrumb ("Services › Performance") and a preview of what sits under it. This is
-// what lets the operator judge a bare-heading match. Nothing renders when the side
-// has no resolvable context (e.g. the "(no candidate)" baseline side).
-function renderSideContext(ctx: ChangeContextSide | null | undefined) {
-  if (!ctx || !ctx.found) return null;
-  const identity = clauseIdentity(ctx);
-  const path = ctx.breadcrumb.join(" › ");
-  const hasMeta = Boolean(identity) || Boolean(path);
-  if (!hasMeta && ctx.children_preview.length === 0) return null;
-  return (
-    <div className={styles.context}>
-      {hasMeta && (
-        <p className={styles.ctxMeta}>
-          {identity && <span className={styles.ctxNum}>{identity}</span>}
-          {path && <span className={styles.ctxPath}>{path}</span>}
-        </p>
-      )}
-      {ctx.children_preview.length > 0 && (
-        <>
-          <span className={styles.ctxLabel}>Contains</span>
-          <ul className={styles.ctxChildren}>
-            {ctx.children_preview.map((child, i) => (
-              <li key={i} className={styles.ctxChild}>
-                {child}
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-    </div>
-  );
-}
-
-// A content card's header context (every kind): clause identity + the breadcrumb of
-// the section it sits in, plus the flanking-clause note for adds/removals (where the
-// change lands). Read-only — decision actions are untouched.
+// A content change's header context (every kind): clause identity + the breadcrumb of
+// the section it sits in, plus the flanking-clause note for adds/removals.
 function renderCardContext(c: ReviewChange) {
   const s = primarySide(c);
   if (!s || !s.found) return null;
@@ -973,14 +1560,9 @@ function renderCardContext(c: ReviewChange) {
 }
 
 // Splice an edited clause's hunks back into its full baseline body so the diff reads
-// IN PLACE, with the surrounding sentences visible. Hunk `position_in_body` offsets
-// index into `body` (the same string F03b diffed); within each hunk a word-level diff
-// gives fine ins/del granularity. Long unchanged runs are collapsed so a huge clause
-// still shows context around each change without dumping the whole document.
+// IN PLACE, with the surrounding sentences visible.
 function inContextSegs(body: string, hunks: ReviewHunk[]): DiffSeg[] {
-  const sorted = [...hunks].sort(
-    (a, b) => (a.position_in_body ?? 0) - (b.position_in_body ?? 0),
-  );
+  const sorted = [...hunks].sort((a, b) => (a.position_in_body ?? 0) - (b.position_in_body ?? 0));
   const out: DiffSeg[] = [];
   const push = (type: DiffSeg["type"], text: string) => {
     if (!text) return;
@@ -1000,7 +1582,6 @@ function inContextSegs(body: string, hunks: ReviewHunk[]): DiffSeg[] {
   return out;
 }
 
-// Collapse the middle of a long unchanged run, keeping context on each side of edits.
 const CTX_EQUAL_KEEP = 140;
 function collapseSame(text: string): string {
   if (text.length <= CTX_EQUAL_KEEP * 2 + 5) return text;
