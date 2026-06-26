@@ -211,6 +211,9 @@ interface RowProps {
   isParent: boolean;
   collapsed: boolean;
   onToggleCollapse: (key: string) => void;
+  // For edited clauses only: the inline tracked-changes redline rendered in the row body
+  // in place of the plain node.text baseline. Undefined for unchanged/added/deleted rows.
+  inlineRedline?: React.ReactNode;
 }
 
 const DocRow = memo(function DocRow({
@@ -227,6 +230,7 @@ const DocRow = memo(function DocRow({
   isParent,
   collapsed,
   onToggleCollapse,
+  inlineRedline,
 }: RowProps) {
   const changed = changeId !== null;
   const deleted = kinds.includes("deleted");
@@ -283,7 +287,12 @@ const DocRow = memo(function DocRow({
         ) : (
           <span className={styles.docCat}>{CATEGORY_LABEL[node.role]}</span>
         )}
-        <span className={styles.docText}>{node.text ?? "(empty clause)"}</span>
+        {/* When an inlineRedline is provided (edited clauses), suppress node.text so the
+            plain baseline does not show alongside the tracked-changes body. The span is kept
+            as an empty flex-1 spacer so the tags stay right-aligned in docRowLine. */}
+        <span className={styles.docText}>
+          {inlineRedline != null ? "" : (node.text ?? "(empty clause)")}
+        </span>
         {changed && (
           <span className={styles.docTags} aria-hidden>
             {kinds
@@ -296,6 +305,10 @@ const DocRow = memo(function DocRow({
           </span>
         )}
       </div>
+      {/* Inline tracked-changes redline for edited clauses — rendered once here in the row
+          body so the operator sees the "after with tracked changes" without needing to
+          expand. The expand panel contributes context + hunk menu + brainstorm only. */}
+      {inlineRedline}
       {children}
     </div>
   );
@@ -1409,6 +1422,33 @@ export default function RevisionReview({
                 ? ["added"]
                 : [];
             const expanded = c != null && expandedId === c.id;
+
+            // For edited clauses: compute the inline tracked-changes redline that will be
+            // rendered in the row body instead of plain node.text.
+            //   - expanded row:     pass the live selectedHunkId so the selected fragment
+            //     is highlighted; fragments are interactive (stopPropagation + handler).
+            //   - non-expanded row: pass null for selectedHunkId (no selection shown);
+            //     clicking a fragment expands the row and immediately selects the hunk via
+            //     React 18 state batching (setExpandedId then setSelectedHunkId wins last).
+            const inlineRedline =
+              c?.change_kind === "edited"
+                ? renderInlineTrackedClause(
+                    c,
+                    expanded ? selectedHunkId : null,
+                    (hunkId) => {
+                      if (!expanded) {
+                        setActiveChangeId(c.id);
+                        setExpandedId(c.id);
+                        setEditKey(null);
+                        rowRefs.current
+                          .get(c.id)
+                          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+                      }
+                      setSelectedHunkId(hunkId);
+                    },
+                  )
+                : undefined;
+
             return (
               <DocRow
                 key={item.key}
@@ -1424,6 +1464,7 @@ export default function RevisionReview({
                 isParent={docNodeParents.has(item.key)}
                 collapsed={collapsedDocNodes.has(item.key)}
                 onToggleCollapse={toggleDocNode}
+                inlineRedline={inlineRedline}
               >
                 {expanded && c ? (
                   <div className={styles.expand} onClick={(e) => e.stopPropagation()}>
@@ -1454,12 +1495,10 @@ export default function RevisionReview({
       <>
         {renderCardContext(c, c.node_id ? canonicalNumberByNodeId.get(c.node_id) : undefined)}
         {c.change_kind === "edited" ? (
-          <>
-            {renderInlineTrackedClause(c, selectedHunkId, (id) =>
-              setSelectedHunkId(selectedHunkId === id ? null : id),
-            )}
-            {selectedHunk !== null && renderHunkMenu(c, selectedHunk)}
-          </>
+          // The redline is already rendered in the row body (inlineRedline prop) — no
+          // duplicate here. The expand panel contributes only the inline hunk menu when
+          // the operator has selected a change fragment by clicking it in the row.
+          selectedHunk !== null ? renderHunkMenu(c, selectedHunk) : null
         ) : (
           renderWholeNode(c)
         )}
@@ -1841,10 +1880,14 @@ function renderInlineTrackedClause(
                 role="button"
                 tabIndex={0}
                 aria-pressed={isSelected}
-                onClick={() => onSelectHunk(isSelected ? null : seg.hunkId!)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelectHunk(isSelected ? null : seg.hunkId!);
+                }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
+                    e.stopPropagation();
                     onSelectHunk(isSelected ? null : seg.hunkId!);
                   }
                 }}
