@@ -838,21 +838,26 @@ export default function RevisionReview({
     return s === "legal" || s === "legal_team" ? "legal" : "counterparty";
   }, [review]);
 
-  // The anchor label for a change: clause number/heading, else a role-based fallback.
-  // For edited/deleted changes (have a node_id) the number is sourced from the
-  // document view's canonicalNumberByNodeId map (role-aware, correct after renumbering)
-  // so the rail and the right pane always agree. Falls back to the context number when
-  // the node isn't in the map (shouldn't happen; defensive only).
+  // The anchor label for a change: canonical clause number (from the document view,
+  // role-aware, correct after renumbering) + heading if present; ELSE the CATEGORY_LABEL
+  // the DocRow chip shows for non-clause roles (Recital, Parties, Appendix, etc.).
+  // NEVER falls back to the stale import-time side?.number so the rail and right pane
+  // always show identical labels.
   function anchorLabel(c: ReviewChange): string {
-    const side = primarySide(c);
     const canonicalNum = c.node_id ? (canonicalNumberByNodeId.get(c.node_id) ?? null) : null;
-    const number = canonicalNum ?? side?.number ?? null;
-    const heading = side?.heading ?? null;
-    const identity = [number, heading].filter(Boolean).join(" — ");
-    if (identity) return identity;
-    if (c.change_kind === "new") return "New clause";
+    if (canonicalNum !== null) {
+      const heading = primarySide(c)?.heading ?? null;
+      return [canonicalNum, heading].filter(Boolean).join(" — ");
+    }
+    // New clause: no baseline node; use incoming side heading if available.
+    if (c.change_kind === "new") {
+      const side = primarySide(c);
+      return side?.heading ?? "New clause";
+    }
+    // Non-clause role (recital, parties, appendix, etc.): use the category label
+    // the DocRow chip shows -- never the stale positional side?.number.
     const node = c.node_id ? baselineNodeById.get(c.node_id) : undefined;
-    return node ? ROLE_LABEL[node.role] : "Clause";
+    return node ? CATEGORY_LABEL[node.role] : "Clause";
   }
 
   // Seed the brainstorm opening turn with this change's before/after + Donna's read.
@@ -1518,6 +1523,11 @@ export default function RevisionReview({
                   )}
                 </div>
               </div>
+            )}
+            {recommended !== null && h.donna_rationale && (
+              <p className={styles.donnaRationaleHint}>
+                Donna recommends {wholeNodeVerdictLabel(h.donna_verdict ?? "", c.change_kind)} &mdash; &ldquo;{h.donna_rationale}&rdquo;
+              </p>
             )}
             {decided && !editing && (
               <div className={styles.decided}>
