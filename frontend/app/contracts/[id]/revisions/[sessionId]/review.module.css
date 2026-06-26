@@ -1137,6 +1137,19 @@
   font-variant-numeric: tabular-nums;
   color: #8a929c;
 }
+/* role category chip for a non-clause (unnumbered) node — front/back-matter */
+.docCat {
+  flex-shrink: 0;
+  align-self: center;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #9aa1ab;
+  background: #eceef2;
+  border-radius: 4px;
+  padding: 2px 6px;
+}
 .docText {
   flex: 1;
   min-width: 0;
@@ -1274,6 +1287,18 @@
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: #9aa1ab;
+}
+.cmpCat {
+  flex-shrink: 0;
+  align-self: center;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #9aa1ab;
+  background: #f0f1f4;
+  border-radius: 4px;
+  padding: 1px 5px;
 }
 .cmpText {
   flex: 1;

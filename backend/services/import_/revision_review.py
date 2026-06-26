@@ -38,7 +38,7 @@ from backend.models.audit import (
     EVENT_REVISION_SESSION_APPLIED,
     AuditEvent,
 )
-from backend.models.contract_tree import Role
+from backend.models.contract_tree import ParsedTree, Role, TreeNode
 from backend.models.imports import ContractTreeResponse, NodeTreeItem
 from backend.models.revision_import import StoredRevisionSession
 from backend.models.revision_match import ClauseNode
@@ -64,6 +64,7 @@ from backend.models.revision_review import (
 from backend.models.snapshots import SnapshotNode
 from backend.services import node_create, node_delete, node_edit
 from backend.services.audit_repo import record_event
+from backend.services.import_.numbering import derive_numbers
 from backend.services.import_.revision_import import baseline_to_clause_nodes, extract_hunks
 from backend.services.import_.revision_match import match_revision
 from backend.services.snapshot import get_snapshot, get_snapshot_tree
@@ -736,29 +737,64 @@ async def _inherit_revised_roles(
 
 
 def _flatten_document(tree: ContractTreeResponse | None) -> list[DocumentNode]:
-    """Flatten a nested snapshot tree to reading-order `DocumentNode`s, deriving the
-    dotted clause number (1-based sibling path) and depth — the same numbering scheme
-    `_locate` uses. Text is the node's canonical body (`heading or body`, the exact
-    string the hunk offsets index into). None tree -> empty list."""
+    """Flatten a nested snapshot tree to reading-order `DocumentNode`s carrying depth
+    only — `clause_number` is left None here and stamped ROLE-AWARE by
+    `_assign_clause_numbers` AFTER roles are resolved on each side (the snapshot does
+    not carry role, so positional numbering at flatten time would number front/back-
+    matter as if it were operative clauses — DD-02/DD-43, Lilly's "51 clauses" bug).
+    Text is the node's canonical body (`heading or body`, the exact string the hunk
+    offsets index into). None tree -> empty list."""
     out: list[DocumentNode] = []
 
-    def walk(items: list[NodeTreeItem], prefix: str, depth: int) -> None:
-        for pos, item in enumerate(items, start=1):
-            number = f"{prefix}.{pos}" if prefix else str(pos)
+    def walk(items: list[NodeTreeItem], depth: int) -> None:
+        for item in items:
             out.append(
                 DocumentNode(
                     node_id=item.id,
-                    clause_number=number,
+                    clause_number=None,
                     role=item.role,
                     depth=depth,
                     text=(item.heading or item.body or "").strip() or None,
                 )
             )
-            walk(item.children, number, depth + 1)
+            walk(item.children, depth + 1)
 
     if tree is not None:
-        walk(tree.nodes, "", 0)
+        walk(tree.nodes, 0)
     return out
+
+
+def _assign_clause_numbers(nodes: list[DocumentNode]) -> None:
+    """Stamp the canonical DD-02/DD-43 clause number onto a resolved-role flat document
+    IN PLACE: only `role == "clause"` nodes get a dotted decimal number (counting only
+    clause-role siblings within each parent), every non-clause node gets None.
+
+    REUSES the single numbering source — `import_.numbering.derive_numbers`, the same
+    function `export.render_docx._plan` / `cross_references.build_number_map` route
+    through — so these numbers MATCH Mode A and export. `derive_numbers` needs a
+    `ParsedTree`; the flat list is in pre-order DFS, so each node's parent is the
+    nearest preceding node at `depth - 1` and `order_index = list position` preserves
+    sibling order. Must run AFTER role resolution (`_roles_for` / `_inherit_revised_roles`)
+    so the role-aware skip is correct."""
+    last_at_depth: dict[int, int] = {}
+    tree_nodes: list[TreeNode] = []
+    for i, n in enumerate(nodes):
+        parent_index = last_at_depth.get(n.depth - 1) if n.depth > 0 else None
+        last_at_depth[n.depth] = i
+        tree_nodes.append(
+            TreeNode(
+                index=i,
+                parent_index=parent_index,
+                depth=n.depth,
+                order_index=i,
+                kind="prose",
+                text=n.text or "",
+                role=n.role,
+            )
+        )
+    numbers = derive_numbers(ParsedTree(nodes=tree_nodes))
+    for i, n in enumerate(nodes):
+        n.clause_number = numbers.get(i)
 
 
 async def _abstain_match(
@@ -822,6 +858,9 @@ async def get_document_view(conn: Any, contract_id: str, session_id: str) -> Rev
         role = role_by_id.get(n.node_id)
         if role is not None:
             n.role = role
+    # Numbers are role-aware (DD-02/DD-43): stamped only after the baseline roles are
+    # resolved so front/back-matter is excluded from the clause count.
+    _assign_clause_numbers(baseline)
     revised = _flatten_document(revised_tree)
     # DD-28/DD-54: a revision is a diff — matched revised nodes INHERIT the baseline's
     # operator-confirmed role instead of all falling back to the snapshot default.
@@ -832,6 +871,9 @@ async def get_document_view(conn: Any, contract_id: str, session_id: str) -> Rev
         baseline,
         revised,
     )
+    # Re-derive role-aware numbers on the revised side AFTER `_inherit_revised_roles`
+    # has fixed its roles (it runs after flatten, which left numbers None).
+    _assign_clause_numbers(revised)
 
     change_rows = await conn.fetch(_SELECT_CHANGES, session_id)
     hunks_by_change = await _hunks_for(conn, [str(r["id"]) for r in change_rows])

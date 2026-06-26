@@ -126,6 +126,22 @@ const ROLE_LABEL: Record<Role, string> = {
   drafting_note: "Draft note",
 };
 
+// A non-clause node carries no clause number; show a human-readable role category
+// chip instead so front/back-matter (title, parties, recitals, appendices, signature,
+// drafting notes) reads as such and is never mistaken for a numbered clause.
+const CATEGORY_LABEL: Record<Role, string> = {
+  title: "Title",
+  date: "Date",
+  parties: "Parties",
+  recital: "Recital",
+  agreement_statement: "Statement",
+  clause: "Clause",
+  appendix: "Appendix",
+  appendix_title: "Appendix",
+  signature_block: "Signature",
+  drafting_note: "Drafting note",
+};
+
 const TAG: Record<Exclude<DocumentChangeKind, "shifted">, { label: string; cls: string }> = {
   added: { label: "Added", cls: "tagAdded" },
   deleted: { label: "Deleted", cls: "tagDeleted" },
@@ -221,7 +237,11 @@ const DocRow = memo(function DocRow({
       }
     >
       <div className={styles.docRowLine}>
-        {node.clause_number && <span className={styles.docNum}>{node.clause_number}</span>}
+        {node.clause_number ? (
+          <span className={styles.docNum}>{node.clause_number}</span>
+        ) : (
+          <span className={styles.docCat}>{CATEGORY_LABEL[node.role]}</span>
+        )}
         <span className={styles.docText}>{node.text ?? "(empty clause)"}</span>
         {changed && (
           <span className={styles.docTags} aria-hidden>
@@ -1503,7 +1523,11 @@ const CompareRow = memo(function CompareRow({
   ].join(" ");
   return (
     <div id={domId} className={cls} style={{ paddingLeft: 8 + node.depth * 16 }}>
-      {node.clause_number && <span className={styles.cmpNum}>{node.clause_number}</span>}
+      {node.clause_number ? (
+        <span className={styles.cmpNum}>{node.clause_number}</span>
+      ) : (
+        <span className={styles.cmpCat}>{CATEGORY_LABEL[node.role]}</span>
+      )}
       <span className={styles.cmpText}>{node.text ?? "(empty clause)"}</span>
     </div>
   );
