@@ -164,13 +164,17 @@ async def test_engine_analyzes_edited_new_deleted_and_skips_decided(monkeypatch:
     assert "h-done" not in written and "h-abstain" not in written
 
     for sql, args in conn.executes:
-        # advisory columns + significance ONLY — never the applied verdict/final_text (DD-64)
+        # advisory columns + significance + rationale ONLY — never the applied
+        # verdict/final_text (DD-64)
         assert "donna_verdict" in sql and "donna_counter_text" in sql and "significance" in sql
+        assert "donna_rationale" in sql
         assert "final_text" not in sql
-        _hid, verdict, counter, significance = args
+        _hid, verdict, counter, significance, rationale = args
         # counter-language present IFF verdict == counter
         assert (counter is not None) == (verdict == "counter")
         assert significance in ("trivial", "substantive")
+        # the one-line rationale (Donna's reasoning) is persisted for every analyzed hunk
+        assert isinstance(rationale, str) and rationale
 
     # the counter hunk carries staged language; accept/keep carry none
     assert written["h-edit"][1][1] == "counter" and written["h-edit"][1][2] is not None

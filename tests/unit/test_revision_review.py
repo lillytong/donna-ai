@@ -46,6 +46,7 @@ def _hunk(**kw: Any) -> dict[str, Any]:
         proposed_text="new",
         donna_verdict=None,
         donna_counter_text=None,
+        donna_rationale=None,
         verdict="pending",
         final_text=None,
     )
@@ -391,6 +392,7 @@ def _ctx_hunk(original: str | None, proposed: str | None) -> ReviewHunk:
         proposed_text=proposed,
         donna_verdict=None,
         donna_counter_text=None,
+        donna_rationale=None,
         verdict="pending",
         final_text=None,
     )
@@ -601,16 +603,27 @@ def test_derive_kinds_abstain_is_empty() -> None:
 # --- two-pane document view: tree flattening (number / depth / order) --------
 
 
-def test_flatten_document_derives_number_depth_and_reading_order() -> None:
+def test_flatten_document_reading_order_then_role_aware_numbering() -> None:
     flat = svc._flatten_document(_edited_baseline_tree())
+    # _flatten_document gives reading-order + depth + text only; it no longer derives
+    # clause numbers (DD-43): numbering is role-aware and assigned AFTER role resolution
+    # by _assign_clause_numbers, so front/back-matter can never be numbered as clauses.
     assert [(n.node_id, n.clause_number, n.depth) for n in flat] == [
-        ("svc", "1", 0),
-        ("pay", "1.1", 1),
-        ("pterm", "1.1.1", 2),
-        ("plate", "1.1.2", 2),
+        ("svc", None, 0),
+        ("pay", None, 1),
+        ("pterm", None, 2),
+        ("plate", None, 2),
     ]
     # Body-only clause text is returned verbatim (offsets index into it downstream).
     assert flat[2].text == "The licensee shall pay within thirty days of invoice."
+    # The separate role-aware pass numbers the clause-role nodes via the canonical scheme.
+    svc._assign_clause_numbers(flat)
+    assert [(n.node_id, n.clause_number) for n in flat] == [
+        ("svc", "1"),
+        ("pay", "1.1"),
+        ("pterm", "1.1.1"),
+        ("plate", "1.1.2"),
+    ]
 
 
 def test_flatten_document_none_tree_is_empty() -> None:

@@ -159,7 +159,7 @@ WHERE id = $1
 
 _SELECT_HUNKS = """
 SELECT id, change_id, hunk_type, significance, position_in_body, original_text,
-       proposed_text, donna_verdict, donna_counter_text, verdict, final_text
+       proposed_text, donna_verdict, donna_counter_text, donna_rationale, verdict, final_text
 FROM counterparty_revision_hunks
 WHERE change_id = ANY($1::uuid[])
 ORDER BY change_id, position_in_body NULLS FIRST, id
@@ -293,6 +293,7 @@ def _to_hunk(row: Any) -> ReviewHunk:
         proposed_text=row["proposed_text"],
         donna_verdict=row["donna_verdict"],
         donna_counter_text=row["donna_counter_text"],
+        donna_rationale=row["donna_rationale"],
         verdict=row["verdict"],
         final_text=row["final_text"],
     )

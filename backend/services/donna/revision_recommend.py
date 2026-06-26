@@ -97,10 +97,12 @@ ORDER BY change_id, position_in_body NULLS FIRST, id
 """
 
 # Writes ONLY the advisory columns (+ Donna's significance call). NEVER verdict / final_text
-# (DD-64: the applied text is the deterministic diff, never Donna's suggestion).
+# (DD-64: the applied text is the deterministic diff, never Donna's suggestion). The rationale
+# is Donna's one-line reason for the verdict (her `reasoning` line) — her reasoning, never
+# invented clause text.
 _UPDATE_HUNK_ADVISORY = """
 UPDATE counterparty_revision_hunks
-SET donna_verdict = $2, donna_counter_text = $3, significance = $4
+SET donna_verdict = $2, donna_counter_text = $3, significance = $4, donna_rationale = $5
 WHERE id = $1
 """
 
@@ -271,7 +273,7 @@ async def recommend_session(session_id: str) -> RevisionRecommendSummary:
 
     tally = {"accept": 0, "counter": 0, "keep": 0}
     hunks_analyzed = 0
-    writes: list[tuple[str, str, str | None, str]] = []
+    writes: list[tuple[str, str, str | None, str, str]] = []
     for change, kind in targets:
         clause = build_clause_grounding(nodes, _grounding_root(kind, change), labels)
         for hunk in hunks_by_change.get(str(change["id"]), []):
@@ -285,16 +287,24 @@ async def recommend_session(session_id: str) -> RevisionRecommendSummary:
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
-            writes.append((str(hunk["id"]), rec.verdict, rec.counter_language, rec.significance))
+            writes.append(
+                (
+                    str(hunk["id"]),
+                    rec.verdict,
+                    rec.counter_language,
+                    rec.significance,
+                    rec.reasoning,
+                )
+            )
             tally[rec.verdict] += 1
             hunks_analyzed += 1
 
     if writes:
         async with acquire() as conn:
             async with conn.transaction():
-                for hunk_id, verdict, counter, significance in writes:
+                for hunk_id, verdict, counter, significance, rationale in writes:
                     await conn.execute(
-                        _UPDATE_HUNK_ADVISORY, hunk_id, verdict, counter, significance
+                        _UPDATE_HUNK_ADVISORY, hunk_id, verdict, counter, significance, rationale
                     )
 
     return RevisionRecommendSummary(

@@ -63,6 +63,7 @@ class ReviewHunk(BaseModel):
     proposed_text: str | None
     donna_verdict: str | None
     donna_counter_text: str | None
+    donna_rationale: str | None
     verdict: StoredHunkVerdict
     final_text: str | None
 

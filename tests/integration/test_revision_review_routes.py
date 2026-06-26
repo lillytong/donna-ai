@@ -63,6 +63,7 @@ def _hunk(**kw: Any) -> dict[str, Any]:
         proposed_text="theirs",
         donna_verdict=None,
         donna_counter_text=None,
+        donna_rationale=None,
         verdict="pending",
         final_text=None,
     )
@@ -506,10 +507,12 @@ def test_document_view_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resp.status_code == 200
     body = resp.json()
 
-    # baseline + revised trees flattened in reading order with derived numbers/depth
+    # baseline + revised trees flattened in reading order; clause numbers are ROLE-AWARE
+    # (DD-43): only clause-role nodes are numbered, so the recital (b1) gets None and the
+    # clause (b2) gets "1" — front/back-matter is never numbered as a clause.
     assert [(n["node_id"], n["clause_number"], n["depth"]) for n in body["baseline"]] == [
-        ("b1", "1", 0),
-        ("b2", "2", 0),
+        ("b1", None, 0),
+        ("b2", "1", 0),
     ]
     assert [n["node_id"] for n in body["revised"]] == ["0", "1", "2", "3"]
     assert body["baseline"][1]["text"] == "Payment due in thirty days."
