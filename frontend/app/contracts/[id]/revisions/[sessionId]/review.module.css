@@ -1110,6 +1110,70 @@
   border-bottom: 1px solid #e9ecf1;
   background: #fbfcfd;
 }
+/* flex row inside docHead: heading+hint on the left, collapse-all toggle on the right */
+.docHeadRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+/* "Collapse all" / "Expand all" toggle for the Phase-2 document pane */
+.docCollapseBtn {
+  flex-shrink: 0;
+  align-self: center;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: #6b7280;
+  background: none;
+  border: 1px solid #d4d9e0;
+  border-radius: 6px;
+  padding: 5px 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.12s ease, color 0.12s ease;
+}
+.docCollapseBtn:hover {
+  border-color: #2563eb;
+  color: #2563eb;
+}
+.docCollapseBtn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
+}
+/* per-node chevron: fixed-width slot before the clause number/cat so text never shifts */
+.docChevron {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  line-height: 1;
+  color: #9aa1ab;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: color 0.1s ease, background 0.1s ease;
+}
+.docChevron:hover {
+  color: #2563eb;
+  background: rgba(37, 99, 235, 0.08);
+}
+.docChevron:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
+}
+/* invisible placeholder keeps text alignment identical on non-parent rows */
+.docChevronPlaceholder {
+  flex-shrink: 0;
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+}
 .docScroll {
   flex: 1;
   overflow-y: auto;

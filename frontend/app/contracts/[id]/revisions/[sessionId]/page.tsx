@@ -205,6 +205,12 @@ interface RowProps {
   onSelect: (changeId: string) => void;
   registerRef: (changeId: string, el: HTMLDivElement | null) => void;
   children: React.ReactNode; // the inline expand panel, null unless expanded
+  // Collapse/expand — the node's flat-list key, whether it has children, current state,
+  // and the toggle callback (isolated from the change-select onClick via stopPropagation).
+  nodeKey: string;
+  isParent: boolean;
+  collapsed: boolean;
+  onToggleCollapse: (key: string) => void;
 }
 
 const DocRow = memo(function DocRow({
@@ -217,6 +223,10 @@ const DocRow = memo(function DocRow({
   onSelect,
   registerRef,
   children,
+  nodeKey,
+  isParent,
+  collapsed,
+  onToggleCollapse,
 }: RowProps) {
   const changed = changeId !== null;
   const deleted = kinds.includes("deleted");
@@ -249,6 +259,25 @@ const DocRow = memo(function DocRow({
       }
     >
       <div className={styles.docRowLine}>
+        {/* Collapse chevron — only on nodes that have children; click is isolated from
+            the row-level onSelect via stopPropagation so collapsing never also opens
+            the change-select expand panel. */}
+        {isParent ? (
+          <button
+            type="button"
+            aria-label={collapsed ? "Expand subtree" : "Collapse subtree"}
+            aria-expanded={!collapsed}
+            className={styles.docChevron}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleCollapse(nodeKey);
+            }}
+          >
+            {collapsed ? "▸" : "▾"}
+          </button>
+        ) : (
+          <span className={styles.docChevronPlaceholder} aria-hidden />
+        )}
         {node.clause_number ? (
           <span className={styles.docNum}>{node.clause_number}</span>
         ) : (
@@ -520,6 +549,9 @@ export default function RevisionReview({
   const [activeChangeId, setActiveChangeId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editKey, setEditKey] = useState<string | null>(null);
+  // Phase-2 document pane collapse state: Set of item keys whose subtrees are hidden.
+  // Ephemeral — client-side only, no DB/API (mirrors Mode A import view pattern).
+  const [collapsedDocNodes, setCollapsedDocNodes] = useState<Set<string>>(new Set());
   // The hunk (or whole-node) fragment the operator has clicked to reveal its inline menu.
   // One selection at a time; cleared when the operator switches to a different clause.
   const [selectedHunkId, setSelectedHunkId] = useState<string | null>(null);
@@ -656,6 +688,48 @@ export default function RevisionReview({
     return items;
   }, [doc, stream]);
 
+  // Keys of renderItems nodes that have at least one child in document order (the next
+  // item is strictly deeper). A node must be in this set to receive a collapse chevron.
+  const docNodeParents = useMemo<Set<string>>(() => {
+    const s = new Set<string>();
+    for (let i = 0; i < renderItems.length - 1; i++) {
+      if (renderItems[i + 1].node.depth > renderItems[i].node.depth) s.add(renderItems[i].key);
+    }
+    return s;
+  }, [renderItems]);
+
+  // Flat renderItems filtered to only the rows currently visible — a collapsed node hides
+  // every subsequent item with a strictly greater depth until depth returns to its own.
+  const visibleRenderItems = useMemo(() => {
+    if (collapsedDocNodes.size === 0) return renderItems;
+    const out: RenderItem[] = [];
+    let hideDeeperThan = Infinity;
+    for (const item of renderItems) {
+      if (item.node.depth > hideDeeperThan) continue;
+      hideDeeperThan = Infinity;
+      out.push(item);
+      if (collapsedDocNodes.has(item.key)) hideDeeperThan = item.node.depth;
+    }
+    return out;
+  }, [renderItems, collapsedDocNodes]);
+
+  const docAllExpanded = collapsedDocNodes.size === 0;
+
+  const toggleDocAll = useCallback(() => {
+    setCollapsedDocNodes((prev) =>
+      prev.size === 0 ? new Set(docNodeParents) : new Set(),
+    );
+  }, [docNodeParents]);
+
+  const toggleDocNode = useCallback((key: string) => {
+    setCollapsedDocNodes((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
   // Document-order change list for the far-left rail (review.phase2 is already ordered).
   const railChanges = stream;
 
@@ -687,7 +761,7 @@ export default function RevisionReview({
     );
     for (const el of rowRefs.current.values()) obs.observe(el);
     return () => obs.disconnect();
-  }, [phase, renderItems]);
+  }, [phase, renderItems, collapsedDocNodes]);
 
   function selectChange(changeId: string) {
     setActiveChangeId(changeId);
@@ -1307,13 +1381,26 @@ export default function RevisionReview({
     return (
       <main className={styles.docPane} ref={docPaneRef}>
         <div className={styles.docHead}>
-          <h2 className={styles.subheadTitle}>Their revision, in your document</h2>
-          <p className={styles.subheadHint}>
-            Changed clauses are highlighted. Open one to see the redline and Donna&apos;s read.
-          </p>
+          <div className={styles.docHeadRow}>
+            <div>
+              <h2 className={styles.subheadTitle}>Their revision, in your document</h2>
+              <p className={styles.subheadHint}>
+                Changed clauses are highlighted. Open one to see the redline and Donna&apos;s read.
+              </p>
+            </div>
+            {docNodeParents.size > 0 && (
+              <button
+                type="button"
+                className={styles.docCollapseBtn}
+                onClick={toggleDocAll}
+              >
+                {docAllExpanded ? "Collapse all" : "Expand all"}
+              </button>
+            )}
+          </div>
         </div>
         <div className={styles.docScroll}>
-          {renderItems.map((item) => {
+          {visibleRenderItems.map((item) => {
             const c = item.change;
             const dc = c ? docChangeById.get(c.id) : undefined;
             const kinds: DocumentChangeKind[] = dc
@@ -1333,6 +1420,10 @@ export default function RevisionReview({
                 decided={c?.status === "complete"}
                 onSelect={selectChange}
                 registerRef={registerRef}
+                nodeKey={item.key}
+                isParent={docNodeParents.has(item.key)}
+                collapsed={collapsedDocNodes.has(item.key)}
+                onToggleCollapse={toggleDocNode}
               >
                 {expanded && c ? (
                   <div className={styles.expand} onClick={(e) => e.stopPropagation()}>
