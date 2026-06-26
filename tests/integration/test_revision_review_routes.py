@@ -84,11 +84,17 @@ class FakeConn:
         hunks: list[dict[str, Any]] | None = None,
         nodes: list[dict[str, Any]] | None = None,
         session_status: str = "reviewing",
+        snapshots: dict[str, dict[str, Any]] | None = None,
+        received_snapshot_id: str | None = None,
+        node_roles: dict[str, str] | None = None,
     ) -> None:
         self.changes = changes or []
         self.hunks = hunks or []
         self.nodes = nodes or []
         self.session_status = session_status
+        self.snapshots = snapshots or {}
+        self.received_snapshot_id = received_snapshot_id
+        self.node_roles = node_roles or {}
         self.executes: list[tuple[str, tuple[Any, ...]]] = []
         self.issues: list[tuple[Any, ...]] = []
 
@@ -104,11 +110,18 @@ class FakeConn:
         if "FROM counterparty_revision_hunks" in sql and "ANY" in sql:
             ids = set(args[0])
             return [h for h in self.hunks if h["change_id"] in ids]
+        if "role FROM nodes" in sql:
+            ids = set(args[0])
+            return [
+                {"id": nid, "role": role} for nid, role in self.node_roles.items() if nid in ids
+            ]
         if "order_index FROM nodes" in sql:
             return self.nodes
         return []
 
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
+        if "FROM contract_snapshots" in sql:
+            return self.snapshots.get(args[0])
         if "FROM counterparty_revision_sessions" in sql:
             return {**_SESSION, "status": self.session_status}
         if "FROM counterparty_revision_changes" in sql and "id = $1" in sql:
@@ -124,6 +137,8 @@ class FakeConn:
         return None
 
     async def fetchval(self, sql: str, *args: Any) -> Any:
+        if "FROM snapshot_pointers" in sql:
+            return self.received_snapshot_id
         if "INSERT INTO issues" in sql:
             self.issues.append(args)
             return f"issue-{len(self.issues)}"
@@ -401,3 +416,130 @@ def test_resume_partially_decided_session(monkeypatch: pytest.MonkeyPatch) -> No
     assert change["status"] == "partial"
     verdicts = {h["id"]: h["verdict"] for h in change["hunks"]}
     assert verdicts == {"h1": "accepted", "h2": "pending"}
+
+
+# --- two-pane document view -------------------------------------------------
+
+
+def _snap(snapshot_id: str, tree: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "id": snapshot_id,
+        "contract_id": "c1",
+        "label": None,
+        "tree": tree,  # JSONB; get_snapshot validates SnapshotNode rows directly
+        "origin": "as_received",
+        "created_at": datetime(2026, 6, 25),
+    }
+
+
+def _sn(
+    nid: str, order: int, *, heading: str | None = None, body: str | None = None
+) -> dict[str, Any]:
+    return {
+        "id": nid,
+        "parent_id": None,
+        "order_index": order,
+        "content_type": "prose",
+        "heading": heading,
+        "body": body,
+        "is_deleted": False,
+    }
+
+
+def _document_fixture() -> FakeConn:
+    baseline = [_sn("b1", 0, heading="Term"), _sn("b2", 1, body="Payment due in thirty days.")]
+    revised = [
+        _sn("0", 0, heading="Term"),
+        _sn("1", 1, body="Payment due in forty five days."),
+        _sn("2", 2, body="New indemnity clause."),
+        _sn("3", 3, body="Confidentiality survives termination."),
+    ]
+    changes = [
+        _change(id="edit1", node_id="b2", match_confidence=0.9, status="complete"),
+        _change(
+            id="new1",
+            node_id=None,
+            proposed_order_index=2,
+            match_confidence=None,
+            status="pending",
+            hunks_decided=0,
+        ),
+        _change(
+            id="ab1",
+            proposed_parent_id="b1",
+            match_confidence=0.4,
+            status="pending",
+            hunks_decided=0,
+        ),
+    ]
+    hunks = [
+        _hunk(id="he", change_id="edit1", original_text="thirty", proposed_text="forty five"),
+        _hunk(
+            id="hn",
+            change_id="new1",
+            hunk_type="insertion",
+            original_text=None,
+            proposed_text="New indemnity clause.",
+        ),
+        _hunk(
+            id="ha",
+            change_id="ab1",
+            hunk_type="insertion",
+            original_text=None,
+            proposed_text="Confidentiality survives termination.",
+        ),
+    ]
+    return FakeConn(
+        changes=changes,
+        hunks=hunks,
+        snapshots={"snap-1": _snap("snap-1", baseline), "snap-2": _snap("snap-2", revised)},
+        received_snapshot_id="snap-2",
+        # Real live roles for the baseline node ids (snapshots don't store role).
+        node_roles={"b1": "recital", "b2": "clause"},
+    )
+
+
+def test_document_view_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _document_fixture()
+    _install(monkeypatch, conn)
+    resp = client.get("/contracts/c1/revisions/sessions/s1/document")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    # baseline + revised trees flattened in reading order with derived numbers/depth
+    assert [(n["node_id"], n["clause_number"], n["depth"]) for n in body["baseline"]] == [
+        ("b1", "1", 0),
+        ("b2", "2", 0),
+    ]
+    assert [n["node_id"] for n in body["revised"]] == ["0", "1", "2", "3"]
+    assert body["baseline"][1]["text"] == "Payment due in thirty days."
+    # baseline role recovered by joining the real node id to live `nodes.role` (the
+    # snapshot itself carries no role): b1 -> recital (NOT the default clause), b2 -> clause
+    assert body["baseline"][0]["role"] == "recital"
+    assert body["baseline"][1]["role"] == "clause"
+    # revised tree uses synthetic as_received ids that don't join -> default clause
+    assert {n["role"] for n in body["revised"]} == {"clause"}
+
+    # overlay excludes abstains; edited -> modified+decided, new -> added
+    overlay = {c["change_id"]: c for c in body["changes"]}
+    assert set(overlay) == {"edit1", "new1"}
+    assert overlay["edit1"]["kinds"] == ["modified"] and overlay["edit1"]["decided"] is True
+    assert overlay["edit1"]["node_id"] == "b2"
+    assert overlay["new1"]["kinds"] == ["added"] and overlay["new1"]["decided"] is False
+    # no change ever carries "shifted"
+    assert all("shifted" not in c["kinds"] for c in body["changes"])
+
+    # abstain match: both sides, received node recovered by body-match
+    assert len(body["abstain_matches"]) == 1
+    ab = body["abstain_matches"][0]
+    assert ab["change_id"] == "ab1"
+    assert ab["baseline_node_id"] == "b1"
+    assert ab["proposed_received_node_id"] == "3"
+    assert ab["confidence"] == 0.4
+
+
+def test_document_view_contract_mismatch_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _document_fixture()
+    _install(monkeypatch, conn)
+    resp = client.get("/contracts/other/revisions/sessions/s1/document")
+    assert resp.status_code == 404

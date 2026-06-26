@@ -38,20 +38,26 @@ from backend.models.audit import (
     EVENT_REVISION_SESSION_APPLIED,
     AuditEvent,
 )
+from backend.models.contract_tree import Role
 from backend.models.imports import ContractTreeResponse, NodeTreeItem
 from backend.models.revision_import import StoredRevisionSession
 from backend.models.revision_review import (
+    AbstainMatch,
     ApplyResult,
     ChangeContext,
     ChangeContextSide,
     ChangeKind,
     ConfirmMatchRequest,
+    DocumentChange,
+    DocumentChangeKind,
+    DocumentNode,
     HunkDecideRequest,
     NodeDecideRequest,
     ReviewChange,
     ReviewHunk,
     ReviewPayload,
     ReviewPhase1,
+    RevisionDocumentView,
     StoredHunkVerdict,
 )
 from backend.services import node_create, node_delete, node_edit
@@ -230,6 +236,12 @@ _LIVE_NODES = """
 SELECT id, parent_id, order_index FROM nodes
 WHERE contract_id = $1 AND is_deleted = false
 """
+
+# DD-54 role lookup for the document view. Baseline snapshot node ids ARE real live
+# node ids (snapshot.py dumps `nodes.id`), so this recovers the operator-confirmed F04
+# role the snapshot shape doesn't carry. is_deleted is NOT filtered — a baseline node
+# soft-deleted since the snapshot was cut still carries its role.
+_SELECT_NODE_ROLES = "SELECT id, role FROM nodes WHERE id = ANY($1::uuid[])"
 
 # The as_received snapshot of an active session is the one the `received` pointer for
 # the session's party points at — the import cut it and advanced the pointer in one
@@ -602,6 +614,161 @@ async def get_review_payload(conn: Any, session_id: str) -> ReviewPayload:
         session=session,
         phase1=ReviewPhase1(abstains=abstains, tree_anomalies=[]),
         phase2=phase2,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Two-pane document view (F03c rework) — read-only render data                  #
+# --------------------------------------------------------------------------- #
+
+
+def derive_document_change_kinds(change: ReviewChange) -> list[DocumentChangeKind]:
+    """Node-level overlay kinds for a settled change (pure; abstains excluded).
+
+    - new     -> ["added"]
+    - deleted -> ["deleted"]
+    - edited  -> ["modified"] (its hunks are intra-clause insertions/replacements/
+                 deletions — text changed WITHIN the node, which is a node-level
+                 "modified", never a node add/delete). [] if it carries no hunk.
+
+    "shifted" (a moved/reordered clause) is NEVER emitted: F03b stages no revised-side
+    position for a matched node and stages no change row at all for an unedited move, so
+    a position change is not a derivable signal. See the report / DEV_TODO follow-up."""
+    if change.change_kind == "new":
+        return ["added"]
+    if change.change_kind == "deleted":
+        return ["deleted"]
+    if change.change_kind == "edited":
+        return ["modified"] if change.hunks else []
+    return []
+
+
+async def _roles_for(conn: Any, node_ids: list[str]) -> dict[str, Role]:
+    """Map node_id -> live `nodes.role` for the given ids (one batched query, no N+1).
+    Ids absent from `nodes` (e.g. a non-joinable synthetic as_received id) are omitted,
+    so the caller falls back to the snapshot default."""
+    if not node_ids:
+        return {}
+    rows = await conn.fetch(_SELECT_NODE_ROLES, node_ids)
+    return {str(r["id"]): cast(Role, r["role"]) for r in rows}
+
+
+def _flatten_document(tree: ContractTreeResponse | None) -> list[DocumentNode]:
+    """Flatten a nested snapshot tree to reading-order `DocumentNode`s, deriving the
+    dotted clause number (1-based sibling path) and depth — the same numbering scheme
+    `_locate` uses. Text is the node's canonical body (`heading or body`, the exact
+    string the hunk offsets index into). None tree -> empty list."""
+    out: list[DocumentNode] = []
+
+    def walk(items: list[NodeTreeItem], prefix: str, depth: int) -> None:
+        for pos, item in enumerate(items, start=1):
+            number = f"{prefix}.{pos}" if prefix else str(pos)
+            out.append(
+                DocumentNode(
+                    node_id=item.id,
+                    clause_number=number,
+                    role=item.role,
+                    depth=depth,
+                    text=(item.heading or item.body or "").strip() or None,
+                )
+            )
+            walk(item.children, number, depth + 1)
+
+    if tree is not None:
+        walk(tree.nodes, "", 0)
+    return out
+
+
+async def _abstain_match(
+    conn: Any,
+    contract_id: str,
+    change: ReviewChange,
+    received_tree: ContractTreeResponse | None,
+) -> AbstainMatch:
+    """Both sides of an abstain's proposed match. `baseline_node_id` = the staged
+    baseline candidate (`proposed_parent_id`). The received node carries no stored
+    linkage (only the candidate is staged), so it is recovered by reconstructing the
+    incoming body and body-matching the as_received tree — exact where bodies are
+    unique, first-of-duplicates (logged) otherwise, NULL when unrecoverable."""
+    incoming_body = await _reconstruct_incoming(
+        conn, contract_id, change.proposed_parent_id, change.hunks
+    )
+    received_id, ambiguous = _find_incoming_id(
+        received_tree.nodes if received_tree is not None else [], incoming_body
+    )
+    if ambiguous:
+        log.warning(
+            "revision_review.abstain_incoming_ambiguous",
+            change_id=change.id,
+            contract_id=contract_id,
+        )
+    return AbstainMatch(
+        change_id=change.id,
+        baseline_node_id=change.proposed_parent_id,
+        proposed_received_node_id=received_id,
+        confidence=change.match_confidence,
+    )
+
+
+async def get_document_view(conn: Any, contract_id: str, session_id: str) -> RevisionDocumentView:
+    """The two-pane document payload (F03c rework): the baseline + revised document trees
+    as ordered nodes, the settled-change overlay keyed to the revised side, and the
+    abstain match-confirm pairs. Read-only; no hunk redline text (fetched on click)."""
+    session_row = await conn.fetchrow(_SELECT_SESSION, session_id)
+    if session_row is None:
+        raise SessionNotFound(session_id)
+    session = _to_session(session_row)
+    if session.contract_id != contract_id:
+        raise SessionNotFound(session_id)
+
+    baseline_tree = await get_snapshot_tree(conn, session.contract_id, session.baseline_snapshot_id)
+    received_id = await conn.fetchval(_FIND_RECEIVED_POINTER, session.contract_id, session.source)
+    revised_tree = (
+        await get_snapshot_tree(conn, session.contract_id, str(received_id))
+        if received_id is not None
+        else None
+    )
+
+    baseline = _flatten_document(baseline_tree)
+    # Recover the operator-confirmed DD-54 role the snapshot shape drops: baseline node
+    # ids are real live `nodes` ids, so they join. The revised (as_received) tree carries
+    # synthetic ids that do NOT join, and genuinely new clauses are unclassified — both
+    # keep the snapshot default `clause` (the frontend falls back to a generic label).
+    role_by_id = await _roles_for(conn, [n.node_id for n in baseline])
+    for n in baseline:
+        role = role_by_id.get(n.node_id)
+        if role is not None:
+            n.role = role
+    revised = _flatten_document(revised_tree)
+
+    change_rows = await conn.fetch(_SELECT_CHANGES, session_id)
+    hunks_by_change = await _hunks_for(conn, [str(r["id"]) for r in change_rows])
+    changes = [_to_change(r, hunks_by_change.get(str(r["id"]), [])) for r in change_rows]
+
+    overlay = [
+        DocumentChange(
+            change_id=c.id,
+            node_id=c.node_id,
+            proposed_parent_id=c.proposed_parent_id,
+            kinds=derive_document_change_kinds(c),
+            decided=c.status == "complete",
+            hunk_count=c.hunk_count,
+            hunks_decided=c.hunks_decided,
+        )
+        for c in changes
+        if c.change_kind != "abstain"
+    ]
+    abstain_matches = [
+        await _abstain_match(conn, session.contract_id, c, revised_tree)
+        for c in changes
+        if c.change_kind == "abstain"
+    ]
+
+    return RevisionDocumentView(
+        baseline=baseline,
+        revised=revised,
+        changes=overlay,
+        abstain_matches=abstain_matches,
     )
 
 

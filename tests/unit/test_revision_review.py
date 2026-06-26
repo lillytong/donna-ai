@@ -547,3 +547,71 @@ async def test_abstain_context_no_candidate_degrades_gracefully() -> None:
     assert pair.baseline.breadcrumb == [] and pair.baseline.children_preview == []
     assert pair.their.found is True
     assert pair.their.children_preview == ["System uptime", "Latency"]
+
+
+# --- two-pane document view: node-level kind derivation (pure) ---------------
+
+
+def test_derive_kinds_new_is_added() -> None:
+    change = _make_change("new", [_ctx_hunk(None, "added clause")], parent="b1", order=2)
+    assert svc.derive_document_change_kinds(change) == ["added"]
+
+
+def test_derive_kinds_deleted_is_deleted() -> None:
+    change = _make_change("deleted", [_ctx_hunk("removed clause", None)], node_id="b2")
+    assert svc.derive_document_change_kinds(change) == ["deleted"]
+
+
+def test_derive_kinds_edited_with_hunks_is_modified() -> None:
+    # An intra-clause insertion/replacement/deletion -> node-level "modified", never a
+    # node add/delete (the hunk types describe text WITHIN the clause).
+    change = _make_change("edited", [_ctx_hunk("thirty", "forty five")], node_id="b1", conf=0.6)
+    assert svc.derive_document_change_kinds(change) == ["modified"]
+
+
+def test_derive_kinds_edited_without_hunks_is_empty() -> None:
+    change = _make_change("edited", [], node_id="b1", conf=0.6)
+    assert svc.derive_document_change_kinds(change) == []
+
+
+def test_derive_kinds_never_emits_shifted_for_any_kind() -> None:
+    # "shifted" is in the legend but not derivable from staged data — assert no kind
+    # path produces it (the load-bearing gap guard).
+    kinds = [
+        *svc.derive_document_change_kinds(_make_change("new", [_ctx_hunk(None, "x")], order=1)),
+        *svc.derive_document_change_kinds(
+            _make_change("deleted", [_ctx_hunk("x", None)], node_id="b")
+        ),
+        *svc.derive_document_change_kinds(
+            _make_change("edited", [_ctx_hunk("a", "b")], node_id="b", conf=0.6)
+        ),
+        *svc.derive_document_change_kinds(
+            _make_change("abstain", [_ctx_hunk("a", "b")], parent="b")
+        ),
+    ]
+    assert "shifted" not in kinds
+
+
+def test_derive_kinds_abstain_is_empty() -> None:
+    # Abstains are carried in `abstain_matches[]`, not the change overlay.
+    change = _make_change("abstain", [_ctx_hunk("a", "b")], parent="b1", conf=0.4)
+    assert svc.derive_document_change_kinds(change) == []
+
+
+# --- two-pane document view: tree flattening (number / depth / order) --------
+
+
+def test_flatten_document_derives_number_depth_and_reading_order() -> None:
+    flat = svc._flatten_document(_edited_baseline_tree())
+    assert [(n.node_id, n.clause_number, n.depth) for n in flat] == [
+        ("svc", "1", 0),
+        ("pay", "1.1", 1),
+        ("pterm", "1.1.1", 2),
+        ("plate", "1.1.2", 2),
+    ]
+    # Body-only clause text is returned verbatim (offsets index into it downstream).
+    assert flat[2].text == "The licensee shall pay within thirty days of invoice."
+
+
+def test_flatten_document_none_tree_is_empty() -> None:
+    assert svc._flatten_document(None) == []

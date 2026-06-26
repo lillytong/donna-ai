@@ -4,6 +4,7 @@ call the service, map its typed `RevisionReviewError`s to HTTP, return.
 Read:
   GET  /contracts/{contract_id}/revisions/sessions      → open/recent sessions
   GET  /revisions/sessions/{session_id}                 → full two-phase payload
+  GET  /contracts/{cid}/revisions/sessions/{sid}/document → two-pane doc view (F03c)
 Decision:
   POST /revisions/changes/{change_id}/confirm-match     → 6b abstain resolution
   POST /revisions/hunks/{hunk_id}/decide                → DD-27 four-action verdict
@@ -24,6 +25,7 @@ from backend.models.revision_review import (
     NodeDecideRequest,
     ReviewChange,
     ReviewPayload,
+    RevisionDocumentView,
 )
 from backend.services.import_ import revision_review as svc
 
@@ -44,6 +46,18 @@ async def get_session(session_id: str) -> ReviewPayload:
     async with acquire() as conn:
         try:
             return await svc.get_review_payload(conn, session_id)
+        except svc.RevisionReviewError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.get(
+    "/contracts/{contract_id}/revisions/sessions/{session_id}/document",
+    response_model=RevisionDocumentView,
+)
+async def get_document(contract_id: str, session_id: str) -> RevisionDocumentView:
+    async with acquire() as conn:
+        try:
+            return await svc.get_document_view(conn, contract_id, session_id)
         except svc.RevisionReviewError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 

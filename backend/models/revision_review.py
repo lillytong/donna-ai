@@ -28,6 +28,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from backend.models.contract_tree import Role
 from backend.models.revision_import import (
     ChangeStatus,
     HunkType,
@@ -37,6 +38,12 @@ from backend.models.revision_import import (
 
 ChangeKind = Literal["edited", "new", "deleted", "abstain"]
 StoredHunkVerdict = Literal["pending", "accepted", "rejected", "modified"]
+
+# Node-level overlay kinds for the two-pane document view (F03c rework). A clause may
+# carry more than one. "shifted" (a reordered/moved clause) is in the legend but is NOT
+# currently derivable from the staged data — see `derive_document_change_kinds` and the
+# DEV_TODO follow-up; it is never emitted today.
+DocumentChangeKind = Literal["added", "deleted", "modified", "shifted"]
 
 # Operator-facing action vocabularies (mapped onto StoredHunkVerdict in the service).
 HunkDecisionAction = Literal["accept", "counter", "edit", "keep"]
@@ -178,3 +185,66 @@ class ApplyResult(BaseModel):
     nodes_deleted: int
     issues_created: int
     issue_ids: list[str]
+
+
+# --------------------------------------------------------------------------- #
+# Two-pane document view (F03c rework) — the read-only data spine for rendering #
+# the full revised document with changed clauses highlighted, plus the         #
+# match-confirm before/after overlay. Hunk-level redline text stays out of this #
+# payload (it is fetched on click via the existing review payload).            #
+# --------------------------------------------------------------------------- #
+
+
+class DocumentNode(BaseModel):
+    """One node in a document tree, flattened to reading order. `clause_number` is the
+    derived 1-based dotted sibling path ("4.2"); `depth` is the nesting level (roots = 0).
+    `role` is the DD-54 structural classification: snapshots do not store role, so on the
+    BASELINE side it is recovered by joining the (real) node id to live `nodes.role`; on
+    the REVISED side (as_received synthetic ids that don't join) and for genuinely new,
+    unclassified clauses it falls back to the default `clause` (frontend uses a generic
+    label there)."""
+
+    node_id: str
+    clause_number: str | None
+    role: Role
+    depth: int
+    text: str | None
+
+
+class DocumentChange(BaseModel):
+    """A change overlay entry keyed to the staged change row. `node_id` is the change's
+    stored node id — the baseline node for edited/deleted, NULL for added; the stable
+    join key against the `baseline` tree. `kinds` is the node-level classification
+    (`derive_document_change_kinds`). `decided` = the change is fully resolved."""
+
+    change_id: str
+    node_id: str | None
+    proposed_parent_id: str | None
+    kinds: list[DocumentChangeKind]
+    decided: bool
+    hunk_count: int
+    hunks_decided: int
+
+
+class AbstainMatch(BaseModel):
+    """A match-confirm overlay entry for one abstain change: both sides of the proposed
+    (low-confidence) match so the UI can highlight them together. `baseline_node_id` is
+    the baseline candidate (`proposed_parent_id`); `proposed_received_node_id` is the
+    incoming node recovered by body-match (lossy — NULL or first-of-duplicates where the
+    staged data can't disambiguate; see the DEV_TODO abstain-linkage follow-up)."""
+
+    change_id: str
+    baseline_node_id: str | None
+    proposed_received_node_id: str | None
+    confidence: float | None
+
+
+class RevisionDocumentView(BaseModel):
+    """The two-pane document payload: the baseline + revised document trees as ordered
+    nodes, the change overlay keyed to the revised side, and the abstain match-confirm
+    pairs. Light enough to render a 460+ node document — no hunk redline text here."""
+
+    baseline: list[DocumentNode]
+    revised: list[DocumentNode]
+    changes: list[DocumentChange]
+    abstain_matches: list[AbstainMatch]
