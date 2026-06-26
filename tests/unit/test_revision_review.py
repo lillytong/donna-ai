@@ -30,6 +30,7 @@ _SESSION = {
     "status": "reviewing",
     "changes_count": 3,
     "changes_reviewed_count": 0,
+    "pending_changes": 3,
     "imported_at": __import__("datetime").datetime(2026, 6, 25),
 }
 

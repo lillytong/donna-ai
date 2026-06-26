@@ -377,6 +377,7 @@ export type BadgeLabel =
   | "Sent to legal"
   | "Sent to counterparty & legal"
   | "Your move"
+  | "Reviewing revision"
   | "Signed";
 export type BadgeParty = "counterparty" | "legal" | "both";
 
@@ -959,6 +960,8 @@ export interface StoredRevisionSession {
   status: string;
   changes_count: number;
   changes_reviewed_count: number;
+  // Derived: changes still to decide (status != 'complete') — the resume "N pending".
+  pending_changes: number;
   imported_at: string;
 }
 

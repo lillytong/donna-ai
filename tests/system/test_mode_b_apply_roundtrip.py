@@ -473,3 +473,54 @@ async def test_real_pair_review_decide_apply_roundtrip() -> None:
     finally:
         await tx.rollback()
         await conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# Resume affordance — derived `pending_changes` count on the listed session     #
+# --------------------------------------------------------------------------- #
+
+
+async def test_pending_changes_tracks_undecided(tmp_path: Path) -> None:
+    """The cockpit resume affordance reads `pending_changes` (changes whose status is
+    not 'complete') off the listed session. It must equal the count of still-to-decide
+    changes and drop as changes are settled — proving the correlated subquery counts
+    the right rows in ONE query (no N+1)."""
+    conn = await _connect_or_skip()
+    tx = conn.transaction()
+    await tx.start()
+    try:
+        contract_id = await _make_contract(conn)
+
+        original = tmp_path / "original.docx"
+        revised = tmp_path / "revised.docx"
+        _write_docx(original, [_HEADING, _C1_ORIG, _C2, _C3, _C4, _C5])
+        _write_docx(revised, [_HEADING, _C1_REVISED, _C2, _C3, _C5, _NEW_CLAUSE])
+
+        await _seed_baseline_from_docx(conn, contract_id, original)
+        await mark_sent(
+            conn, contract_id, MarkSentRequest(recipient="counterparty", acknowledge_drift=True)
+        )
+        imp = await import_revision(
+            conn, contract_id, str(revised), RevisionImportRequest(source="counterparty")
+        )
+
+        payload = await review.get_review_payload(conn, imp.session_id)
+        total = len(payload.phase2) + len(payload.phase1.abstains)
+        assert total > 1, "fixture must produce >1 change to exercise the partial count"
+
+        # Nothing decided yet → every change is pending.
+        listed = await review.list_sessions(conn, contract_id)
+        assert len(listed) == 1
+        assert listed[0].status == "reviewing"
+        assert listed[0].pending_changes == total
+
+        # Decide exactly one settled change fully → pending drops by one.
+        await _decide_change_fully(conn, payload.phase2[0], accept=True)
+        after = await review.list_sessions(conn, contract_id)
+        assert after[0].pending_changes == total - 1
+        # The single-session read carries the same derived count.
+        reread = await review.get_review_payload(conn, imp.session_id)
+        assert reread.session.pending_changes == total - 1
+    finally:
+        await tx.rollback()
+        await conn.close()

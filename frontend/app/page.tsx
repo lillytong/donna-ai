@@ -44,6 +44,7 @@ interface ResumeContract {
 // F27 badge colour-key, by lifecycle label (mirrors the cockpit/list tone map).
 function badgeToneClass(label: string): string {
   if (label === "Your move") return styles.lifeMove;
+  if (label === "Reviewing revision") return styles.lifeReview;
   if (label.startsWith("Sent to")) return styles.lifeSent;
   if (label === "Signed") return styles.lifeSigned;
   return styles.lifeWorking;

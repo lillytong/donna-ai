@@ -102,6 +102,7 @@ def _compose_badge(
     shared_parties: set[str],
     received_parties: set[str],
     diverged: bool,
+    open_revision: bool = False,
 ) -> ContractBadge:
     """The single source of badge truth — both public entry points reduce to this.
     `snapshot_count` doubles as the latest snapshot's v-number (numbering is
@@ -109,6 +110,14 @@ def _compose_badge(
     # Rule 1: signed wins outright.
     if status == "signed":
         return ContractBadge(label="Signed", version=(snapshot_count or None), marker=False)
+    # Rule 1b: an open Mode-B revision review is the active operator task — it outranks
+    # the inbound "Your move" / send states (a freshly imported revision otherwise floats
+    # up as "Your move", masking the review-in-progress). `version` = the latest snapshot
+    # (the as_received revision being reviewed).
+    if open_revision:
+        return ContractBadge(
+            label="Reviewing revision", version=(snapshot_count or None), marker=False
+        )
     # Rule 2: nothing frozen yet → unsent working copy, no number.
     if snapshot_count == 0:
         return ContractBadge(label="Working copy", version=None, marker=False)
@@ -147,10 +156,13 @@ def derive_status(
     pointers: Sequence[_PointerLike],
     *,
     diverged: bool = False,
+    open_revision: bool = False,
 ) -> ContractBadge:
     """Pure, I/O-free badge resolver (DD-75). `diverged` is the "edited since the
     LBE snapshot" signal the caller probes (the marker / engaged check); it is
-    supplied rather than computed here so the resolver stays free of DB access."""
+    supplied rather than computed here so the resolver stays free of DB access.
+    `open_revision` is the "a Mode-B revision review is open" signal (an open
+    `counterparty_revision_sessions` row, status='reviewing')."""
     if not snapshots:
         return _compose_badge(
             status=contract.status,
@@ -159,6 +171,7 @@ def derive_status(
             shared_parties=set(),
             received_parties=set(),
             diverged=diverged,
+            open_revision=open_revision,
         )
     lbe = max(snapshots, key=lambda s: s.created_at)
     at_lbe = [p for p in pointers if p.snapshot_id == lbe.id]
@@ -171,6 +184,7 @@ def derive_status(
         shared_parties=shared,
         received_parties=received,
         diverged=diverged,
+        open_revision=open_revision,
     )
 
 
@@ -200,6 +214,10 @@ SELECT l.contract_id, l.status, l.snapshot_count, l.lbe_id, l.lbe_origin,
             WHERE p.contract_id = l.contract_id AND p.snapshot_id = l.lbe_id),
            ARRAY[]::text[]
        ) AS lbe_pointers,
+       EXISTS (
+           SELECT 1 FROM counterparty_revision_sessions crs
+           WHERE crs.contract_id = l.contract_id AND crs.status = 'reviewing'
+       ) AS open_revision,
        (l.lbe_id IS NOT NULL AND (
            EXISTS (
                SELECT 1 FROM nodes n
@@ -244,6 +262,7 @@ async def derive_status_for_contracts(
             shared_parties=shared,
             received_parties=received,
             diverged=bool(r["diverged"]),
+            open_revision=bool(r["open_revision"]),
         )
     return badges
 

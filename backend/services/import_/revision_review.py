@@ -108,16 +108,26 @@ class SessionAlreadyApplied(RevisionReviewError):
 # SQL                                                                           #
 # --------------------------------------------------------------------------- #
 
-_SELECT_SESSION = """
+# `pending_changes` is a correlated subquery (one query, no N+1) over this session's
+# changes — the resume affordance's "N pending" count.
+_PENDING_CHANGES_SUBQUERY = """
+    (SELECT count(*) FROM counterparty_revision_changes crc
+     WHERE crc.session_id = counterparty_revision_sessions.id
+       AND crc.status <> 'complete') AS pending_changes
+"""
+
+_SELECT_SESSION = f"""
 SELECT id, contract_id, baseline_snapshot_id, source, source_filename, parse_path,
-       status, changes_count, changes_reviewed_count, imported_at
+       status, changes_count, changes_reviewed_count, imported_at,
+       {_PENDING_CHANGES_SUBQUERY}
 FROM counterparty_revision_sessions
 WHERE id = $1
 """
 
-_LIST_SESSIONS = """
+_LIST_SESSIONS = f"""
 SELECT id, contract_id, baseline_snapshot_id, source, source_filename, parse_path,
-       status, changes_count, changes_reviewed_count, imported_at
+       status, changes_count, changes_reviewed_count, imported_at,
+       {_PENDING_CHANGES_SUBQUERY}
 FROM counterparty_revision_sessions
 WHERE contract_id = $1
 ORDER BY (status = 'reviewing') DESC, imported_at DESC
@@ -302,6 +312,7 @@ def _to_session(row: Any) -> StoredRevisionSession:
         status=row["status"],
         changes_count=row["changes_count"],
         changes_reviewed_count=row["changes_reviewed_count"],
+        pending_changes=row["pending_changes"],
         imported_at=row["imported_at"],
     )
 

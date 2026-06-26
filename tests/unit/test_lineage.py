@@ -130,6 +130,24 @@ def test_signed_with_no_snapshot_has_no_version() -> None:
     assert badge.version is None
 
 
+def test_open_revision_outranks_your_move() -> None:
+    # An imported revision otherwise floats up as "Your move"; an open review must
+    # instead read "Reviewing revision · vN" (the as_received version under review).
+    snaps = [_snap("s1", 1, origin="as_received")]
+    ptrs = [_ptr("counterparty", "received", "s1")]
+    badge = lineage.derive_status(_contract("drafting"), snaps, ptrs, open_revision=True)
+    assert badge.label == "Reviewing revision"
+    assert badge.version == 1
+    assert badge.marker is False
+
+
+def test_open_revision_does_not_override_signed() -> None:
+    snaps = [_snap("s1", 1)]
+    ptrs = [_ptr("counterparty", "shared", "s1")]
+    badge = lineage.derive_status(_contract("signed"), snaps, ptrs, open_revision=True)
+    assert badge.label == "Signed"
+
+
 # --- fake conn for the I/O paths --------------------------------------------
 
 
@@ -182,6 +200,7 @@ async def test_set_based_badge_single_query_no_n_plus_one() -> None:
                 "lbe_origin": "export",
                 "lbe_pointers": ["counterparty:shared"],
                 "diverged": True,
+                "open_revision": False,
             },
             {
                 "contract_id": "c2",
@@ -191,6 +210,7 @@ async def test_set_based_badge_single_query_no_n_plus_one() -> None:
                 "lbe_origin": None,
                 "lbe_pointers": [],
                 "diverged": False,
+                "open_revision": False,
             },
         ]
     )
@@ -204,6 +224,29 @@ async def test_set_based_badge_single_query_no_n_plus_one() -> None:
     assert badges["c1"].marker is True  # diverged since the send
     assert badges["c2"].label == "Working copy"
     assert badges["c2"].version is None
+
+
+async def test_set_based_badge_open_revision_label() -> None:
+    # The set-based path threads the `open_revision` flag (the additive EXISTS in the
+    # one query) into the same resolver → the card badge reads "Reviewing revision".
+    conn = _FakeConn(
+        badge_rows=[
+            {
+                "contract_id": "c1",
+                "status": "drafting",
+                "snapshot_count": 2,
+                "lbe_id": "s2",
+                "lbe_origin": "as_received",
+                "lbe_pointers": ["counterparty:received"],
+                "diverged": False,
+                "open_revision": True,
+            }
+        ]
+    )
+    badges = await lineage.derive_status_for_contracts(conn, ["c1"])
+    assert len(conn.fetch_sqls) == 1  # still one query, no N+1
+    assert badges["c1"].label == "Reviewing revision"
+    assert badges["c1"].version == 2
 
 
 async def test_set_based_badge_empty_ids_skips_query() -> None:
@@ -259,6 +302,7 @@ async def test_get_lineage_assembles_timeline_baseline_and_reserved() -> None:
                 "lbe_origin": "export",
                 "lbe_pointers": ["legal_team:shared"],
                 "diverged": False,
+                "open_revision": False,
             }
         ],
         numbered_rows=[
@@ -319,6 +363,7 @@ async def test_get_lineage_received_version_is_numbered_entry_not_reserved() -> 
                 "lbe_origin": "as_received",
                 "lbe_pointers": ["counterparty:received"],
                 "diverged": False,
+                "open_revision": False,
             }
         ],
         numbered_rows=[
@@ -370,6 +415,7 @@ async def test_get_lineage_marker_flows_to_working_copy() -> None:
                 "lbe_origin": "export",
                 "lbe_pointers": ["counterparty:shared"],
                 "diverged": True,
+                "open_revision": False,
             }
         ],
         numbered_rows=[

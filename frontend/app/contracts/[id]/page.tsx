@@ -31,6 +31,7 @@ import {
   getSnapshotTree,
   importRevision,
   listIssues,
+  listRevisionSessions,
   markSent,
   searchClause,
   updateIssue,
@@ -50,6 +51,7 @@ import {
   type StoredBrainstormSummary,
   type StoredIssue,
   type StoredRecommendation,
+  type StoredRevisionSession,
 } from "../../lib/api";
 
 // Rearrange mode is gated + lazy: @dnd-kit and the sortable tree only enter the
@@ -181,6 +183,7 @@ const MARK_LABEL: Record<MarkSentRecipient, string> = {
 // "Signed" reads as a done/settled blue. Unknown labels fall back to neutral.
 function badgeTone(label: string): string {
   if (label === "Your move") return styles.badgeToneMove;
+  if (label === "Reviewing revision") return styles.badgeToneReview;
   if (label.startsWith("Sent to")) return styles.badgeToneSent;
   if (label === "Signed") return styles.badgeToneSigned;
   return styles.badgeToneWorking;
@@ -725,6 +728,9 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
   // header badge opens. `snapshotView` (when set) swaps the live tree for a past
   // snapshot rendered read-only, behind a banner — null = the live working copy.
   const [lineage, setLineage] = useState<LineageView | null>(null);
+  // F03c: the open ('reviewing') revision session, if any — drives the persistent
+  // Resume affordance. Backed out of the review page, this is the only way back in.
+  const [openRevision, setOpenRevision] = useState<StoredRevisionSession | null>(null);
   const [lineageOpen, setLineageOpen] = useState(false);
   const [snapshotView, setSnapshotView] = useState<{
     snapshotId: string;
@@ -892,6 +898,24 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
         if (live) setLineage(lv);
       } catch {
         if (live) setLineage(null);
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [id, reloadKey]);
+
+  // F03c: detect an open revision review so the cockpit can offer Resume. An
+  // enrichment, not a load gate — a failure just leaves the affordance hidden.
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      try {
+        const sessions = await listRevisionSessions(id);
+        const open = sessions.find((s) => s.status === "reviewing") ?? null;
+        if (live) setOpenRevision(open);
+      } catch {
+        if (live) setOpenRevision(null);
       }
     })();
     return () => {
@@ -3570,6 +3594,30 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
           </div>
         </div>
       </header>
+
+      {/* F03c: persistent Resume affordance. While a 'reviewing' session is open the
+          operator can back out of the review page; without this strip there's no way
+          back in (and a re-import is blocked, 409). Visible until the session applies. */}
+      {openRevision && (
+        <div className={styles.resumeBar} role="status">
+          <span className={styles.resumeDot} aria-hidden />
+          <div className={styles.resumeText}>
+            <span className={styles.resumeTitle}>Revision review in progress</span>
+            <span className={styles.resumeMeta}>
+              {openRevision.source === "legal_team" ? "From legal" : "From counterparty"}
+              {lineage?.badge.version != null ? ` · v${lineage.badge.version}` : ""} ·{" "}
+              {openRevision.pending_changes} pending
+            </span>
+          </div>
+          <button
+            type="button"
+            className={styles.resumeBtn}
+            onClick={() => router.push(`/contracts/${id}/revisions/${openRevision.id}`)}
+          >
+            Resume review
+          </button>
+        </div>
+      )}
 
       {state.kind === "loading" ? (
         <div className={styles.center}>

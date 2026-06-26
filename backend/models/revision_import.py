@@ -78,6 +78,9 @@ class StoredRevisionSession(BaseModel):
     status: str
     changes_count: int
     changes_reviewed_count: int
+    # Derived (not a stored column): count of this session's changes still to decide
+    # (status <> 'complete'). Drives the cockpit "N pending" resume affordance.
+    pending_changes: int
     imported_at: datetime
 
 

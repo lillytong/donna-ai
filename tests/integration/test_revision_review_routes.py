@@ -31,6 +31,7 @@ _SESSION = {
     "status": "reviewing",
     "changes_count": 4,
     "changes_reviewed_count": 0,
+    "pending_changes": 4,
     "imported_at": datetime(2026, 6, 25),
 }
 
@@ -176,7 +177,10 @@ def test_list_sessions(monkeypatch: pytest.MonkeyPatch) -> None:
     _install(monkeypatch, conn)
     resp = client.get("/contracts/c1/revisions/sessions")
     assert resp.status_code == 200
-    assert resp.json()[0]["id"] == "s1"
+    body = resp.json()[0]
+    assert body["id"] == "s1"
+    # The resume affordance reads `pending_changes` off the listed session.
+    assert body["pending_changes"] == 4
 
 
 def test_review_payload_splits_phases_and_orders(monkeypatch: pytest.MonkeyPatch) -> None:
