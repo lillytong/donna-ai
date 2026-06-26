@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from backend.models.revision_match import ClauseNode
 from backend.services.import_.revision_match import (
+    STRUCTURAL_MATCH_CONFIDENCE,
     TAU_HIGH,
     TAU_LOW,
     match_revision,
@@ -175,6 +176,78 @@ def test_deleted_clause_is_deleted() -> None:
 # --------------------------------------------------------------------------- #
 # Injectivity — no baseline node is ever claimed twice                          #
 # --------------------------------------------------------------------------- #
+
+
+# --------------------------------------------------------------------------- #
+# Structural-consistency repair: a deleted parent with a surviving child is      #
+# structurally impossible -> it is a heading reword of a surviving parent.       #
+# --------------------------------------------------------------------------- #
+
+
+def test_reworded_parent_heading_with_unchanged_child_is_repaired() -> None:
+    """The operator-caught bug: the counterparty reworded a parent's HEADING enough
+    that it fell below the candidate floor (parent -> deleted, new heading -> new),
+    while the child's body is unchanged (child -> matched). The repair pass must turn
+    that spurious delete+new into a single heading-reword EDIT: parent ends up in
+    `matches` (not `deleted`), the child stays matched, and the reworded revised
+    parent is NOT left in `new`."""
+    baseline = [
+        _b("excl", 0, heading="Restrictions on Planetary relating to Licensed IP"),
+        _b(
+            "excl-sub",
+            1,
+            body="planetary shall not sublicense the licensed ip to any third party "
+            "without prior written consent",
+            parent="excl",
+        ),
+    ]
+    incoming = [
+        # heading reworded beyond lexical recognition -> would land in `new`
+        _r(0, heading="Planetary's Exclusivity Undertakings"),
+        # child body unchanged -> anchor-matches excl-sub
+        _r(
+            1,
+            body="planetary shall not sublicense the licensed ip to any third party "
+            "without prior written consent",
+            parent=0,
+        ),
+    ]
+    res = match_revision(baseline, incoming)
+    m = _matched(res)
+    assert m[1] == "excl-sub", "unchanged child must stay matched"
+    assert m[0] == "excl", "reworded parent must be repaired into a match, not deleted"
+    assert res.deleted == [], "no structurally-impossible deleted parent may remain"
+    assert res.new == [], "the reworded revised parent must not be left as NEW"
+    assert res.abstains == []
+    # the repaired pair carries the structural (below-auto-band) confidence
+    parent_pair = next(p for p in res.matches if p.baseline_id == "excl")
+    assert parent_pair.confidence == STRUCTURAL_MATCH_CONFIDENCE
+    assert parent_pair.confidence < TAU_HIGH
+
+
+def test_ambiguous_deleted_parent_demotes_to_abstain() -> None:
+    """When the surviving children's matched incoming nodes DISAGREE on their parent
+    (no clean revised counterpart for P), the repair must DEMOTE P to an abstain
+    (operator-confirm) rather than silently leave a structurally-invalid deletion."""
+    baseline = [
+        _b("p", 0, heading="Parent Heading That Matches Nothing In The Revision"),
+        _b("c1", 1, body="alpha alpha alpha distinct child one body text here unique", parent="p"),
+        _b("c2", 2, body="beta beta beta distinct child two body text here unique", parent="p"),
+    ]
+    incoming = [
+        _r(0, heading="Reworded Section ABC"),  # NEW top-level
+        _r(1, body="alpha alpha alpha distinct child one body text here unique", parent=0),
+        _r(2, heading="Another Unrelated New Section"),  # NEW top-level
+        # c2 reparented under a DIFFERENT incoming node -> children disagree on parent
+        _r(3, body="beta beta beta distinct child two body text here unique", parent=2),
+    ]
+    res = match_revision(baseline, incoming)
+    m = _matched(res)
+    assert m[1] == "c1" and m[3] == "c2", "both children stay matched"
+    assert res.deleted == [], "the ambiguous parent must not remain deleted"
+    assert "p" not in {pair.baseline_id for pair in res.matches}, "ambiguous P is not auto-matched"
+    abst = {a.best_baseline_id for a in res.abstains}
+    assert "p" in abst, "ambiguous deleted parent must be demoted to an abstain"
 
 
 def test_injectivity_no_baseline_claimed_twice() -> None:

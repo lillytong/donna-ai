@@ -30,6 +30,8 @@ import re
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
+import structlog
+
 from backend.models.revision_match import (
     Abstention,
     ClauseNode,
@@ -38,6 +40,8 @@ from backend.models.revision_match import (
     RevisionMatchResult,
     SelfMatchReport,
 )
+
+log = structlog.get_logger()
 
 # --------------------------------------------------------------------------- #
 # GREENLIT thresholds + weights — carried VERBATIM from SPIKE #3.              #
@@ -57,6 +61,14 @@ CANDIDATE_FLOOR = 0.30
 # WEAK signal (W_NUM tiny) because counterparty insert/delete renumbers everything
 # downstream — number is a generator/tiebreak only, NEVER a decision.
 W_TEXT, W_NUM, W_PARENT, W_ORDER = 0.82, 0.06, 0.07, 0.05
+
+# Confidence stamped on a parent rescued by the structural-consistency repair pass
+# (`_repair_structural_deletions`). Deliberately BELOW the auto band (TAU_HIGH) so a
+# repaired heading-reword surfaces to the operator as a normal low-confidence edit
+# rather than masquerading as a high-confidence lexical match. NOT a scoring/threshold
+# knob — it never participates in the de-risked match decision; it only labels a pair
+# the post-pass moved out of a structurally-impossible deletion.
+STRUCTURAL_MATCH_CONFIDENCE = 0.30
 
 
 # --------------------------------------------------------------------------- #
@@ -335,6 +347,149 @@ def _match_internal(baseline: list[_Node], incoming: list[_Node]) -> _Result:
 
 
 # --------------------------------------------------------------------------- #
+# Structural-consistency repair pass (post-scoring; does NOT touch the de-risked #
+# scoring/thresholds — operates only on the finished RevisionMatchResult).       #
+# --------------------------------------------------------------------------- #
+
+
+def _repair_structural_deletions(
+    result: RevisionMatchResult,
+    baseline_nodes: list[ClauseNode],
+    incoming_nodes: list[ClauseNode],
+) -> RevisionMatchResult:
+    """Enforce a structural invariant the lexical scorer cannot see.
+
+    INVARIANT: a baseline parent in `deleted` that still has >=1 baseline CHILD which
+    SURVIVES (matched or abstained) is NOT really deleted — it is a heading/text EDIT
+    of a surviving parent (the scorer dropped it because the counterparty reworded its
+    heading enough to fall below the candidate floor, so the old parent landed in
+    `deleted` and the new heading landed in `new`). A deleted-parent-with-surviving-
+    child is structurally impossible and must never reach the operator.
+
+    Runs AFTER the de-risked scoring (`_match_internal`) and re-classifies ONLY the
+    offending baseline parents; every other result is preserved byte-for-byte. Pure
+    and deterministic, O(n) over the node sets (child/parent index maps built once).
+
+    Per offending parent P:
+      1. From P's MATCHED baseline children, look up their matched incoming nodes and
+         take the common incoming-side `parent` R (the revised parent's structural
+         slot).
+      2. Clean R (exactly one real incoming parent, still unclaimed in `new`): MOVE P
+         from `deleted` into `matches` as MatchedPair(R, P, structural confidence) and
+         REMOVE R from `new` — the spurious delete+new becomes one heading-reword edit.
+      3. No clean R (children's incoming parents disagree, R is None/top-level, R is
+         already claimed, or only abstained children survive): DEMOTE P to an ABSTAIN
+         (operator-confirm), anchored to a safe surviving incoming node — never leave a
+         structurally-invalid deletion. Logged for observability.
+    """
+    # --- index maps (built once; O(n)) ------------------------------------- #
+    incoming_by_order: dict[int, ClauseNode] = {n.order: n for n in incoming_nodes}
+    children_of: dict[str, list[str]] = {}
+    for n in baseline_nodes:
+        if n.parent is not None and n.id is not None:
+            children_of.setdefault(str(n.parent), []).append(n.id)
+
+    baseline_to_incoming: dict[str, int] = {m.baseline_id: m.incoming_index for m in result.matches}
+    abstain_incoming_by_baseline: dict[str, int] = {
+        a.best_baseline_id: a.incoming_index
+        for a in result.abstains
+        if a.best_baseline_id is not None
+    }
+    surviving: set[str] = set(baseline_to_incoming) | set(abstain_incoming_by_baseline)
+
+    deleted_set: set[str] = set(result.deleted)
+    if not deleted_set:
+        return result
+
+    # mutable working buckets
+    out_matches: list[MatchedPair] = list(result.matches)
+    out_abstains: list[Abstention] = list(result.abstains)
+    out_new: set[int] = set(result.new)
+    out_deleted: set[str] = set(deleted_set)
+
+    changed = False
+    for p in sorted(deleted_set):  # deterministic order
+        surviving_kids = [c for c in children_of.get(p, []) if c in surviving]
+        if not surviving_kids:
+            continue  # genuine deletion — leave untouched
+
+        # candidate revised parent = common incoming-side parent of P's MATCHED kids
+        matched_kids = [c for c in surviving_kids if c in baseline_to_incoming]
+        candidate_parents: set[int | str | None] = set()
+        for c in matched_kids:
+            inc = incoming_by_order.get(baseline_to_incoming[c])
+            if inc is not None:
+                candidate_parents.add(inc.parent)
+        real_parents = {
+            cp for cp in candidate_parents if isinstance(cp, int) and cp in incoming_by_order
+        }
+
+        clean_r: int | None = None
+        if len(candidate_parents) == 1 and len(real_parents) == 1:
+            r = next(iter(real_parents))
+            if r in out_new:  # still unclaimed -> the reworded parent's slot
+                clean_r = r
+
+        if clean_r is not None:
+            out_deleted.discard(p)
+            out_new.discard(clean_r)
+            out_matches.append(
+                MatchedPair(
+                    incoming_index=clean_r,
+                    baseline_id=p,
+                    confidence=STRUCTURAL_MATCH_CONFIDENCE,
+                )
+            )
+            # keep maps coherent so a later P can't re-claim the same incoming node
+            baseline_to_incoming[p] = clean_r
+            changed = True
+            log.info(
+                "revision_match.structural_repair.heading_reword",
+                baseline_parent=p,
+                revised_parent_index=clean_r,
+                surviving_children=surviving_kids,
+            )
+        else:
+            # ambiguous -> abstain; anchor on a safe incoming node NOT in `new`
+            safe_real = sorted(cp for cp in real_parents if cp not in out_new)
+            if safe_real:
+                anchor = safe_real[0]
+            else:
+                child_anchors = [baseline_to_incoming[c] for c in matched_kids]
+                child_anchors += [
+                    abstain_incoming_by_baseline[c]
+                    for c in surviving_kids
+                    if c in abstain_incoming_by_baseline
+                ]
+                anchor = min(child_anchors)
+            out_deleted.discard(p)
+            out_abstains.append(
+                Abstention(
+                    incoming_index=anchor,
+                    best_baseline_id=p,
+                    confidence=STRUCTURAL_MATCH_CONFIDENCE,
+                )
+            )
+            changed = True
+            log.info(
+                "revision_match.structural_repair.ambiguous_demote",
+                baseline_parent=p,
+                anchor_incoming_index=anchor,
+                candidate_parents=sorted(str(cp) for cp in candidate_parents),
+                surviving_children=surviving_kids,
+            )
+
+    if not changed:
+        return result
+    return RevisionMatchResult(
+        matches=out_matches,
+        new=sorted(out_new),
+        deleted=sorted(out_deleted),
+        abstains=out_abstains,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Public API                                                                    #
 # --------------------------------------------------------------------------- #
 
@@ -380,7 +535,10 @@ def match_revision(
             new.append(r_order)
 
     deleted = sorted(str(k) for k in res.deleted_b)
-    return RevisionMatchResult(matches=matches, new=new, deleted=deleted, abstains=abstains)
+    result = RevisionMatchResult(matches=matches, new=new, deleted=deleted, abstains=abstains)
+    # Post-pass: repair structurally-impossible deleted-parent-with-surviving-child
+    # cases (heading rewords the lexical scorer can't see). Does NOT touch scoring.
+    return _repair_structural_deletions(result, baseline_nodes, incoming_nodes)
 
 
 # --------------------------------------------------------------------------- #
