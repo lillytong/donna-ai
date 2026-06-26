@@ -112,8 +112,9 @@ const TAG: Record<Exclude<DocumentChangeKind, "shifted">, { label: string; cls: 
 };
 
 // Donna's advisory verdict ("keep"/"accept"/"counter") capitalized for display.
+// "keep" maps to "Reject" — keep semantics = keep our version = reject the counterparty change.
 const DONNA_VERDICT_LABEL: Record<string, string> = {
-  keep: "Keep",
+  keep: "Reject",
   accept: "Accept",
   counter: "Counter",
 };
@@ -1441,6 +1442,33 @@ export default function RevisionReview({
     );
   }
 
+  // Unified Donna recommendation block — single shared renderer called by BOTH
+  // renderHunkMenu (edited hunks) and renderWholeNode (added/deleted clauses).
+  // Shows "Donna" label + bold verdict + one-line rationale, with counter-language below.
+  // Verdict map: accept->"Accept", counter->"Counter", keep->"Reject", edit->"Edit".
+  function renderDonnaBlock(h: ReviewHunk) {
+    if (!h.donna_verdict && !h.donna_counter_text) return null;
+    const verdictLabel = h.donna_verdict ? donnaPrettyVerdict(h.donna_verdict) : null;
+    return (
+      <div className={styles.donna}>
+        <span className={styles.donnaMark} aria-hidden>
+          Donna
+        </span>
+        <div className={styles.donnaBody}>
+          {verdictLabel && (
+            <p className={styles.donnaVerdict}>
+              <strong>{verdictLabel}</strong>
+              {h.donna_rationale && <> &mdash; {h.donna_rationale}</>}
+            </p>
+          )}
+          {h.donna_counter_text && (
+            <p className={styles.donnaCounter}>&ldquo;{h.donna_counter_text}&rdquo;</p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   function renderExpand(c: ReviewChange) {
     // For edited clauses: find the hunk whose fragment is selected (if any) and show its
     // inline menu immediately below the tracked-changes body. Only one at a time.
@@ -1479,14 +1507,7 @@ export default function RevisionReview({
       dv === "accept" ? "accept" : dv === "counter" ? "counter" : dv === "keep" ? "keep" : null;
     return (
       <div className={styles.hunkMenu}>
-        {h.donna_counter_text && (
-          <p className={styles.donnaCounterInMenu}>"{h.donna_counter_text}"</p>
-        )}
-        {recommended !== null && h.donna_rationale && (
-          <p className={styles.donnaRationaleHint}>
-            Donna recommends {donnaPrettyVerdict(h.donna_verdict)} &mdash; &ldquo;{h.donna_rationale}&rdquo;
-          </p>
-        )}
+        {renderDonnaBlock(h)}
         {decided && !editing && (
           <div className={styles.decided}>
             <span className={styles.decidedChip} data-tone={verdictTone(h.verdict)}>
@@ -1537,7 +1558,7 @@ export default function RevisionReview({
               disabled={busy === h.id}
               onClick={() => void runHunk(h, "keep")}
             >
-              Keep
+              Reject
             </button>
           </div>
         )}
@@ -1555,7 +1576,7 @@ export default function RevisionReview({
     const editing = editKey === c.id;
     const decided = c.status === "complete";
     const acceptLabel = added ? "Accept addition" : "Accept removal";
-    const keepLabel = added ? "Reject" : "Keep it";
+    const keepLabel = "Reject";
     const fragSelected = h != null && selectedHunkId === h.id;
     const dv = (h?.donna_verdict ?? "").trim().toLowerCase();
     const recommended: "accept" | "counter" | "keep" | null =
@@ -1593,28 +1614,7 @@ export default function RevisionReview({
         {/* Inline menu — appears on selection, same as for edited-clause fragments */}
         {fragSelected && h && (
           <div className={styles.hunkMenu}>
-            {(h.donna_verdict || h.donna_counter_text) && (
-              <div className={styles.donna}>
-                <span className={styles.donnaMark} aria-hidden>
-                  D
-                </span>
-                <div className={styles.donnaBody}>
-                  {h.donna_verdict && (
-                    <p className={styles.donnaVerdict}>
-                      {wholeNodeVerdictLabel(h.donna_verdict, c.change_kind)}
-                    </p>
-                  )}
-                  {h.donna_counter_text && (
-                    <p className={styles.donnaCounter}>"{h.donna_counter_text}"</p>
-                  )}
-                </div>
-              </div>
-            )}
-            {recommended !== null && h.donna_rationale && (
-              <p className={styles.donnaRationaleHint}>
-                Donna recommends {wholeNodeVerdictLabel(h.donna_verdict ?? "", c.change_kind)} &mdash; &ldquo;{h.donna_rationale}&rdquo;
-              </p>
-            )}
+            {renderDonnaBlock(h)}
             {decided && !editing && (
               <div className={styles.decided}>
                 <span className={styles.decidedChip} data-tone={verdictTone(h.verdict)}>
@@ -1710,7 +1710,7 @@ const CompareRow = memo(function CompareRow({
 const VERDICT_LABEL: Record<ReviewHunk["verdict"], string> = {
   pending: "Pending",
   accepted: "Accepted theirs",
-  rejected: "Kept ours",
+  rejected: "Rejected",
   modified: "Countered",
 };
 
@@ -1721,17 +1721,6 @@ function verdictTone(v: ReviewHunk["verdict"]): string {
   return "pending";
 }
 
-// Donna's advisory verdict is the hunk-level vocab (DD-27: accept|counter|keep). On a
-// whole-node (new/deleted) card it sits beside accept/reject/edit actions, so "keep"
-// (keep our baseline = reject their add/delete) and "accept" read off against the buttons.
-// Map them to kind-appropriate wording for display only — the underlying donna_verdict is
-// untouched. Edited/hunk cards keep the raw verdict (it already matches their actions).
-function wholeNodeVerdictLabel(verdict: string, kind: ReviewChange["change_kind"]): string {
-  const v = verdict.trim().toLowerCase();
-  if (v === "keep") return "Reject";
-  if (v === "accept") return kind === "deleted" ? "Accept deletion" : "Accept addition";
-  return verdict.charAt(0).toUpperCase() + verdict.slice(1);
-}
 
 function segClass(type: DiffSeg["type"]): string {
   if (type === "ins") return styles.diffIns;
