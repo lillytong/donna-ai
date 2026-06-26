@@ -188,6 +188,11 @@ def test_clean_import_stages_all_buckets(monkeypatch: pytest.MonkeyPatch) -> Non
     assert new[1] is None and new[3] == 200  # new: null node, order_index carried
     assert deleted[1] == "b2"  # deletion anchored to baseline id
     assert abstain[1] is None and abstain[2] == "b3" and abstain[4] == 0.5  # provisional + conf
+    # received_node_id (args[6], migration 0011) = str(incoming index) on NEW + ABSTAIN
+    # (the as_received synthetic node id), NULL on edited/deleted (keyed to baseline).
+    assert new[6] == "1"  # incoming index of the new clause
+    assert abstain[6] == "2"  # incoming index of the abstain clause
+    assert edited[6] is None and deleted[6] is None
     assert conn.session_update == 4
 
     # as_received snapshot advanced the received pointer for the party.

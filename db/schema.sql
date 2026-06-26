@@ -245,6 +245,11 @@ CREATE TABLE counterparty_revision_changes (
     -- F03b/DD-64: the matcher's composite confidence — set on EDITED matches and on
     -- ABSTAIN rows (the low-confidence pair the operator must confirm), NULL otherwise.
     match_confidence     DOUBLE PRECISION,
+    -- The incoming (revised / as_received) node this change came from, = the synthetic
+    -- as_received snapshot id (str of the incoming flat index). Set on NEW + ABSTAIN
+    -- rows so the frontend can render/target the revised node exactly; NULL on
+    -- EDITED/DELETED (they key to the baseline node_id). Migration 0011.
+    received_node_id     TEXT,
     hunk_count           INTEGER NOT NULL DEFAULT 0,
     hunks_decided        INTEGER NOT NULL DEFAULT 0,
     status               TEXT NOT NULL DEFAULT 'pending'

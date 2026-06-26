@@ -146,14 +146,14 @@ ORDER BY (status = 'reviewing') DESC, imported_at DESC
 
 _SELECT_CHANGES = """
 SELECT id, session_id, node_id, proposed_parent_id, proposed_order_index,
-       match_confidence, hunk_count, hunks_decided, status
+       match_confidence, received_node_id, hunk_count, hunks_decided, status
 FROM counterparty_revision_changes
 WHERE session_id = $1
 """
 
 _SELECT_CHANGE = """
 SELECT id, session_id, node_id, proposed_parent_id, proposed_order_index,
-       match_confidence, hunk_count, hunks_decided, status
+       match_confidence, received_node_id, hunk_count, hunks_decided, status
 FROM counterparty_revision_changes
 WHERE id = $1
 """
@@ -328,6 +328,7 @@ def _to_change(row: Any, hunks: list[ReviewHunk]) -> ReviewChange:
         proposed_parent_id=str(parent) if parent is not None else None,
         proposed_order_index=row["proposed_order_index"],
         match_confidence=row["match_confidence"],
+        received_node_id=row["received_node_id"],
         hunk_count=row["hunk_count"],
         hunks_decided=row["hunks_decided"],
         status=row["status"],
@@ -945,6 +946,7 @@ async def get_document_view(conn: Any, contract_id: str, session_id: str) -> Rev
             change_id=c.id,
             node_id=c.node_id,
             proposed_parent_id=c.proposed_parent_id,
+            received_node_id=c.received_node_id,
             kinds=derive_document_change_kinds(c),
             decided=c.status == "complete",
             hunk_count=c.hunk_count,

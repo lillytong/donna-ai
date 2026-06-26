@@ -103,8 +103,8 @@ RETURNING id
 _INSERT_CHANGE = """
 INSERT INTO counterparty_revision_changes
     (session_id, node_id, proposed_parent_id, proposed_order_index,
-     match_confidence, hunk_count)
-VALUES ($1, $2, $3, $4, $5, $6)
+     match_confidence, hunk_count, received_node_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING id
 """
 
@@ -292,6 +292,7 @@ async def _insert_change_with_hunks(
     proposed_order_index: int | None,
     match_confidence: float | None,
     hunks: list[HunkDraft],
+    received_node_id: str | None = None,
 ) -> None:
     change_id = await conn.fetchval(
         _INSERT_CHANGE,
@@ -301,6 +302,7 @@ async def _insert_change_with_hunks(
         proposed_order_index,
         match_confidence,
         len(hunks),
+        received_node_id,
     )
     for h in hunks:
         await conn.execute(
@@ -434,6 +436,9 @@ async def import_revision(
                 proposed_order_index=node.order_index,
                 match_confidence=None,
                 hunks=[hunk],
+                # The as_received snapshot froze this incoming node with id = str(index)
+                # (incoming_to_snapshot_nodes), so this links the change to the revised node.
+                received_node_id=str(incoming_index),
             )
 
         for baseline_id in result.deleted:
@@ -486,6 +491,9 @@ async def import_revision(
                 proposed_order_index=None,
                 match_confidence=ab.confidence,
                 hunks=hunks,
+                # Same as_received synthetic id linkage as NEW (closes the DEV_TODO
+                # abstain→incoming-node item — exact, no body-match heuristic needed).
+                received_node_id=str(ab.incoming_index),
             )
 
         changes_count = (

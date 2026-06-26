@@ -117,6 +117,10 @@ class ReviewChange(BaseModel):
     proposed_parent_id: str | None
     proposed_order_index: int | None
     match_confidence: float | None
+    # The incoming (revised / as_received) node id this change came from — the synthetic
+    # as_received snapshot id. Persisted on new/abstain rows (F03b migration 0011); NULL
+    # on edited/deleted (keyed to baseline node_id) and on rows staged before 0011.
+    received_node_id: str | None = None
     hunk_count: int
     hunks_decided: int
     status: ChangeStatus
@@ -221,6 +225,11 @@ class DocumentChange(BaseModel):
     change_id: str
     node_id: str | None
     proposed_parent_id: str | None
+    # The revised-side (as_received synthetic) node id for an added clause, so the
+    # frontend can render it from the role-resolved revised tree and target the
+    # role-override endpoint. Set on added (NEW) changes; NULL on edited/deleted (and on
+    # rows staged before F03b migration 0011). See migration 0011.
+    received_node_id: str | None = None
     kinds: list[DocumentChangeKind]
     decided: bool
     hunk_count: int

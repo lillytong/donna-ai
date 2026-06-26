@@ -44,6 +44,7 @@ def _change(**kw: Any) -> dict[str, Any]:
         proposed_parent_id=None,
         proposed_order_index=None,
         match_confidence=None,
+        received_node_id=None,
         hunk_count=1,
         hunks_decided=1,
         status="complete",
@@ -470,6 +471,7 @@ def _document_fixture() -> FakeConn:
             node_id=None,
             proposed_order_index=2,
             match_confidence=None,
+            received_node_id="2",  # the added clause's revised (as_received) node id
             status="pending",
             hunks_decided=0,
         ),
@@ -477,6 +479,7 @@ def _document_fixture() -> FakeConn:
             id="ab1",
             proposed_parent_id="b1",
             match_confidence=0.4,
+            received_node_id="3",
             status="pending",
             hunks_decided=0,
         ),
@@ -537,6 +540,10 @@ def test_document_view_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     assert overlay["edit1"]["kinds"] == ["modified"] and overlay["edit1"]["decided"] is True
     assert overlay["edit1"]["node_id"] == "b2"
     assert overlay["new1"]["kinds"] == ["added"] and overlay["new1"]["decided"] is False
+    # received_node_id (migration 0011) links an added clause to its revised-side node so
+    # the frontend can render it / target the role-override endpoint; NULL for edited.
+    assert overlay["new1"]["received_node_id"] == "2"
+    assert overlay["edit1"]["received_node_id"] is None
     # no change ever carries "shifted"
     assert all("shifted" not in c["kinds"] for c in body["changes"])
 

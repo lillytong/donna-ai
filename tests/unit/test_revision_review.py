@@ -62,6 +62,7 @@ def _change(**kw: Any) -> dict[str, Any]:
         proposed_parent_id=None,
         proposed_order_index=None,
         match_confidence=0.5,
+        received_node_id=None,
         hunk_count=1,
         hunks_decided=0,
         status="pending",
