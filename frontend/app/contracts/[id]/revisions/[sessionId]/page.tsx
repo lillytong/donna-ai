@@ -1413,7 +1413,11 @@ export default function RevisionReview({
               D
             </span>
             <div className={styles.donnaBody}>
-              {h.donna_verdict && <p className={styles.donnaVerdict}>{h.donna_verdict}</p>}
+              {h.donna_verdict && (
+                <p className={styles.donnaVerdict}>
+                  {wholeNodeVerdictLabel(h.donna_verdict, c.change_kind)}
+                </p>
+              )}
               {h.donna_counter_text && <p className={styles.donnaCounter}>“{h.donna_counter_text}”</p>}
             </div>
           </div>
@@ -1516,6 +1520,18 @@ function verdictTone(v: ReviewHunk["verdict"]): string {
   if (v === "rejected") return "reject";
   if (v === "modified") return "modify";
   return "pending";
+}
+
+// Donna's advisory verdict is the hunk-level vocab (DD-27: accept|counter|keep). On a
+// whole-node (new/deleted) card it sits beside accept/reject/edit actions, so "keep"
+// (keep our baseline = reject their add/delete) and "accept" read off against the buttons.
+// Map them to kind-appropriate wording for display only — the underlying donna_verdict is
+// untouched. Edited/hunk cards keep the raw verdict (it already matches their actions).
+function wholeNodeVerdictLabel(verdict: string, kind: ReviewChange["change_kind"]): string {
+  const v = verdict.trim().toLowerCase();
+  if (v === "keep") return "Reject";
+  if (v === "accept") return kind === "deleted" ? "Accept deletion" : "Accept addition";
+  return verdict;
 }
 
 function segClass(type: DiffSeg["type"]): string {
