@@ -979,6 +979,7 @@ export interface ReviewHunk {
   proposed_text: string | null;
   donna_verdict: string | null;
   donna_counter_text: string | null;
+  donna_rationale: string | null;
   verdict: StoredHunkVerdict;
   final_text: string | null;
 }

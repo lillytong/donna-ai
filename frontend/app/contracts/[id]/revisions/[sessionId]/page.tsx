@@ -68,7 +68,7 @@ const NIL_ISSUE_ID = "00000000-0000-0000-0000-000000000000";
 
 // One node of an inline word-diff. `split(/(\s+)/)` keeps whitespace tokens so the
 // rendered markup preserves spacing; the LCS walk classifies each token.
-type DiffSeg = { type: "same" | "ins" | "del"; text: string };
+type DiffSeg = { type: "same" | "ins" | "del"; text: string; hunkId?: string };
 
 function wordDiff(a: string | null, b: string | null): DiffSeg[] {
   const aw = (a ?? "").length ? (a ?? "").split(/(\s+)/) : [];
@@ -147,6 +147,18 @@ const TAG: Record<Exclude<DocumentChangeKind, "shifted">, { label: string; cls: 
   deleted: { label: "Deleted", cls: "tagDeleted" },
   modified: { label: "Modified", cls: "tagModified" },
 };
+
+// Donna's advisory verdict ("keep"/"accept"/"counter") capitalized for display.
+const DONNA_VERDICT_LABEL: Record<string, string> = {
+  keep: "Keep",
+  accept: "Accept",
+  counter: "Counter",
+};
+function donnaPrettyVerdict(v: string | null): string {
+  if (!v) return "";
+  const key = v.trim().toLowerCase();
+  return DONNA_VERDICT_LABEL[key] ?? (v.charAt(0).toUpperCase() + v.slice(1));
+}
 
 // Clause identity ("4.2 — Payment Terms"); number alone, heading alone, or both.
 function clauseIdentity(ctx: ChangeContextSide | undefined): string {
@@ -508,6 +520,9 @@ export default function RevisionReview({
   const [activeChangeId, setActiveChangeId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editKey, setEditKey] = useState<string | null>(null);
+  // The hunk (or whole-node) fragment the operator has clicked to reveal its inline menu.
+  // One selection at a time; cleared when the operator switches to a different clause.
+  const [selectedHunkId, setSelectedHunkId] = useState<string | null>(null);
 
   // Re-match picker (Phase 1) — lazily-loaded baseline tree, shared across abstains.
   const [baseline, setBaseline] = useState<{
@@ -567,6 +582,17 @@ export default function RevisionReview({
   const baselineNodeById = useMemo(() => {
     const m = new Map<string, DocumentNode>();
     for (const n of doc?.baseline ?? []) m.set(n.node_id, n);
+    return m;
+  }, [doc]);
+
+  // Canonical clause number keyed by baseline node_id — derived from the document view's
+  // rendered nodes (role-aware derive_numbers, post-renumber). Use this instead of the
+  // stale import-time number stored in change context (c.context.*.number).
+  const canonicalNumberByNodeId = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const n of doc?.baseline ?? []) {
+      if (n.clause_number) m.set(n.node_id, n.clause_number);
+    }
     return m;
   }, [doc]);
 
@@ -667,6 +693,7 @@ export default function RevisionReview({
     setActiveChangeId(changeId);
     setExpandedId(changeId);
     setEditKey(null);
+    setSelectedHunkId(null);
     rowRefs.current.get(changeId)?.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
@@ -812,8 +839,16 @@ export default function RevisionReview({
   }, [review]);
 
   // The anchor label for a change: clause number/heading, else a role-based fallback.
+  // For edited/deleted changes (have a node_id) the number is sourced from the
+  // document view's canonicalNumberByNodeId map (role-aware, correct after renumbering)
+  // so the rail and the right pane always agree. Falls back to the context number when
+  // the node isn't in the map (shouldn't happen; defensive only).
   function anchorLabel(c: ReviewChange): string {
-    const identity = clauseIdentity(primarySide(c));
+    const side = primarySide(c);
+    const canonicalNum = c.node_id ? (canonicalNumberByNodeId.get(c.node_id) ?? null) : null;
+    const number = canonicalNum ?? side?.number ?? null;
+    const heading = side?.heading ?? null;
+    const identity = [number, heading].filter(Boolean).join(" — ");
     if (identity) return identity;
     if (c.change_kind === "new") return "New clause";
     const node = c.node_id ? baselineNodeById.get(c.node_id) : undefined;
@@ -836,7 +871,7 @@ export default function RevisionReview({
     }
     const verdict = c.hunks.find((h) => h.donna_verdict)?.donna_verdict;
     const counter = c.hunks.find((h) => h.donna_counter_text)?.donna_counter_text;
-    if (verdict) lines.push(`My read: ${verdict}`);
+    if (verdict) lines.push(`My read: ${donnaPrettyVerdict(verdict)}`);
     if (counter) lines.push(`My counter-language:\n${counter}`);
     lines.push("Tell me to push harder, soften it, or take a different angle.");
     return lines.join("\n\n");
@@ -1313,15 +1348,21 @@ export default function RevisionReview({
   }
 
   function renderExpand(c: ReviewChange) {
+    // For edited clauses: find the hunk whose fragment is selected (if any) and show its
+    // inline menu immediately below the tracked-changes body. Only one at a time.
+    const selectedHunk =
+      selectedHunkId !== null
+        ? (c.hunks.find((hk) => hk.id === selectedHunkId) ?? null)
+        : null;
     return (
       <>
-        {renderCardContext(c)}
+        {renderCardContext(c, c.node_id ? canonicalNumberByNodeId.get(c.node_id) : undefined)}
         {c.change_kind === "edited" ? (
           <>
-            {renderInlineTrackedClause(c)}
-            <div className={styles.hunkList}>
-              {c.hunks.map((h, idx) => renderHunkControls(c, h, idx))}
-            </div>
+            {renderInlineTrackedClause(c, selectedHunkId, (id) =>
+              setSelectedHunkId(selectedHunkId === id ? null : id),
+            )}
+            {selectedHunk !== null && renderHunkMenu(c, selectedHunk)}
           </>
         ) : (
           renderWholeNode(c)
@@ -1335,27 +1376,25 @@ export default function RevisionReview({
     );
   }
 
-  // Per-hunk decision controls for an edited clause — the diff is shown ONCE above
-  // (renderInlineTrackedClause); these are the action rows only, one per hunk.
-  function renderHunkControls(c: ReviewChange, h: ReviewHunk, idx: number) {
+  // Inline hunk menu — shown below the tracked-changes clause when the operator clicks a
+  // change fragment. One menu at a time (selectedHunkId). Donna's recommended action is
+  // highlighted as a filled Donna-purple button; others stay ghost/donna-style.
+  // Verdict map: donna_verdict "accept" → Accept theirs, "counter" → Use Donna's, "keep" → Keep.
+  function renderHunkMenu(c: ReviewChange, h: ReviewHunk) {
     const editing = editKey === h.id;
     const decided = h.verdict !== "pending";
-    const showLabel = c.hunks.length > 1;
+    const dv = (h.donna_verdict ?? "").trim().toLowerCase();
+    const recommended: "accept" | "counter" | "keep" | null =
+      dv === "accept" ? "accept" : dv === "counter" ? "counter" : dv === "keep" ? "keep" : null;
     return (
-      <div key={h.id} className={styles.hunkControls}>
-        {showLabel && (
-          <span className={styles.hunkLabel}>Change {idx + 1}</span>
+      <div className={styles.hunkMenu}>
+        {h.donna_counter_text && (
+          <p className={styles.donnaCounterInMenu}>"{h.donna_counter_text}"</p>
         )}
-        {(h.donna_verdict || h.donna_counter_text) && (
-          <div className={styles.donna}>
-            <span className={styles.donnaMark} aria-hidden>
-              D
-            </span>
-            <div className={styles.donnaBody}>
-              {h.donna_verdict && <p className={styles.donnaVerdict}>{h.donna_verdict}</p>}
-              {h.donna_counter_text && <p className={styles.donnaCounter}>"{h.donna_counter_text}"</p>}
-            </div>
-          </div>
+        {recommended !== null && h.donna_rationale && (
+          <p className={styles.donnaRationaleHint}>
+            Donna recommends {donnaPrettyVerdict(h.donna_verdict)} &mdash; &ldquo;{h.donna_rationale}&rdquo;
+          </p>
         )}
         {decided && !editing && (
           <div className={styles.decided}>
@@ -1375,10 +1414,10 @@ export default function RevisionReview({
             onCancel={() => setEditKey(null)}
           />
         ) : (
-          <div className={styles.actions}>
+          <div className={styles.menuActions}>
             <button
               type="button"
-              className={styles.btnGhost}
+              className={recommended === "accept" ? styles.btnRecommended : styles.btnGhost}
               disabled={busy === h.id}
               onClick={() => void runHunk(h, "accept")}
             >
@@ -1386,7 +1425,7 @@ export default function RevisionReview({
             </button>
             <button
               type="button"
-              className={styles.btnDonna}
+              className={recommended === "counter" ? styles.btnRecommended : styles.btnDonna}
               disabled={busy === h.id || !h.donna_counter_text}
               title={h.donna_counter_text ? undefined : "Donna hasn't staged counter-language here"}
               onClick={() => void runHunk(h, "counter")}
@@ -1403,7 +1442,7 @@ export default function RevisionReview({
             </button>
             <button
               type="button"
-              className={styles.btnGhost}
+              className={recommended === "keep" ? styles.btnRecommended : styles.btnGhost}
               disabled={busy === h.id}
               onClick={() => void runHunk(h, "keep")}
             >
@@ -1415,6 +1454,9 @@ export default function RevisionReview({
     );
   }
 
+  // Whole-node card (added or deleted clause): the entire text block is the clickable
+  // fragment. Clicking it selects the block and reveals the inline menu below, same
+  // interaction model as clicking an ins/del span in an edited clause.
   function renderWholeNode(c: ReviewChange) {
     const h = c.hunks[0];
     const added = c.change_kind === "new";
@@ -1422,80 +1464,116 @@ export default function RevisionReview({
     const editing = editKey === c.id;
     const decided = c.status === "complete";
     const acceptLabel = added ? "Accept addition" : "Accept removal";
-    const rejectLabel = added ? "Reject" : "Keep it";
+    const keepLabel = added ? "Reject" : "Keep it";
+    const fragSelected = h != null && selectedHunkId === h.id;
+    const dv = (h?.donna_verdict ?? "").trim().toLowerCase();
+    const recommended: "accept" | "counter" | "keep" | null =
+      dv === "accept" ? "accept" : dv === "counter" ? "counter" : dv === "keep" ? "keep" : null;
+
+    function toggleWhole() {
+      if (!h) return;
+      setSelectedHunkId(fragSelected ? null : h.id);
+    }
+
     return (
       <div className={styles.hunk}>
-        <p className={styles.diff}>
-          <span className={added ? segClass("ins") : segClass("del")}>{text || "(no text)"}</span>
-        </p>
-        {h && (h.donna_verdict || h.donna_counter_text) && (
-          <div className={styles.donna}>
-            <span className={styles.donnaMark} aria-hidden>
-              D
-            </span>
-            <div className={styles.donnaBody}>
-              {h.donna_verdict && (
-                <p className={styles.donnaVerdict}>
-                  {wholeNodeVerdictLabel(h.donna_verdict, c.change_kind)}
-                </p>
-              )}
-              {h.donna_counter_text && <p className={styles.donnaCounter}>"{h.donna_counter_text}"</p>}
-            </div>
-          </div>
-        )}
-        {decided && h && !editing && (
-          <div className={styles.decided}>
-            <span className={styles.decidedChip} data-tone={verdictTone(h.verdict)}>
-              {VERDICT_LABEL[h.verdict]}
-            </span>
-            {h.final_text && h.verdict === "modified" && (
-              <span className={styles.decidedText}>{h.final_text}</span>
+        {/* The clickable fragment — the whole added/deleted text block */}
+        <div
+          className={[styles.wholeNodeFrag, fragSelected ? styles.fragSelected : ""].join(" ")}
+          role="button"
+          tabIndex={h ? 0 : undefined}
+          aria-pressed={fragSelected}
+          onClick={h ? toggleWhole : undefined}
+          onKeyDown={
+            h
+              ? (e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    toggleWhole();
+                  }
+                }
+              : undefined
+          }
+        >
+          <p className={styles.diff}>
+            <span className={added ? segClass("ins") : segClass("del")}>{text || "(no text)"}</span>
+          </p>
+        </div>
+        {/* Inline menu — appears on selection, same as for edited-clause fragments */}
+        {fragSelected && h && (
+          <div className={styles.hunkMenu}>
+            {(h.donna_verdict || h.donna_counter_text) && (
+              <div className={styles.donna}>
+                <span className={styles.donnaMark} aria-hidden>
+                  D
+                </span>
+                <div className={styles.donnaBody}>
+                  {h.donna_verdict && (
+                    <p className={styles.donnaVerdict}>
+                      {wholeNodeVerdictLabel(h.donna_verdict, c.change_kind)}
+                    </p>
+                  )}
+                  {h.donna_counter_text && (
+                    <p className={styles.donnaCounter}>"{h.donna_counter_text}"</p>
+                  )}
+                </div>
+              </div>
             )}
-          </div>
-        )}
-        {editing ? (
-          <InlineEditor
-            seed={h?.donna_counter_text ?? text}
-            busy={busy === c.id}
-            onSave={(t) => void runNode(c, "edit", t)}
-            onCancel={() => setEditKey(null)}
-          />
-        ) : (
-          <div className={styles.actions}>
-            <button
-              type="button"
-              className={styles.btnGhost}
-              disabled={busy === c.id}
-              onClick={() => void runNode(c, "accept")}
-            >
-              {acceptLabel}
-            </button>
-            {h?.donna_counter_text && (
-              <button
-                type="button"
-                className={styles.btnDonna}
-                disabled={busy === c.id}
-                onClick={() => void runNode(c, "edit", h.donna_counter_text ?? "")}
-              >
-                Use Donna&apos;s
-              </button>
+            {decided && !editing && (
+              <div className={styles.decided}>
+                <span className={styles.decidedChip} data-tone={verdictTone(h.verdict)}>
+                  {VERDICT_LABEL[h.verdict]}
+                </span>
+                {h.final_text && h.verdict === "modified" && (
+                  <span className={styles.decidedText}>{h.final_text}</span>
+                )}
+              </div>
             )}
-            <button
-              type="button"
-              className={styles.btnGhost}
-              disabled={busy === c.id}
-              onClick={() => void runNode(c, "reject")}
-            >
-              {rejectLabel}
-            </button>
-            <button
-              type="button"
-              className={styles.btnGhost}
-              disabled={busy === c.id}
-              onClick={() => setEditKey(c.id)}
-            >
-              Edit
-            </button>
+            {editing ? (
+              <InlineEditor
+                seed={h.donna_counter_text ?? text}
+                busy={busy === c.id}
+                onSave={(t) => void runNode(c, "edit", t)}
+                onCancel={() => setEditKey(null)}
+              />
+            ) : (
+              <div className={styles.menuActions}>
+                <button
+                  type="button"
+                  className={recommended === "accept" ? styles.btnRecommended : styles.btnGhost}
+                  disabled={busy === c.id}
+                  onClick={() => void runNode(c, "accept")}
+                >
+                  {acceptLabel}
+                </button>
+                {h.donna_counter_text && (
+                  <button
+                    type="button"
+                    className={recommended === "counter" ? styles.btnRecommended : styles.btnDonna}
+                    disabled={busy === c.id}
+                    onClick={() => void runNode(c, "edit", h.donna_counter_text ?? "")}
+                  >
+                    Use Donna&apos;s
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className={styles.btnGhost}
+                  disabled={busy === c.id}
+                  onClick={() => setEditKey(c.id)}
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  className={recommended === "keep" ? styles.btnRecommended : styles.btnGhost}
+                  disabled={busy === c.id}
+                  onClick={() => void runNode(c, "reject")}
+                >
+                  {keepLabel}
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1556,7 +1634,7 @@ function wholeNodeVerdictLabel(verdict: string, kind: ReviewChange["change_kind"
   const v = verdict.trim().toLowerCase();
   if (v === "keep") return "Reject";
   if (v === "accept") return kind === "deleted" ? "Accept deletion" : "Accept addition";
-  return verdict;
+  return verdict.charAt(0).toUpperCase() + verdict.slice(1);
 }
 
 function segClass(type: DiffSeg["type"]): string {
@@ -1567,10 +1645,14 @@ function segClass(type: DiffSeg["type"]): string {
 
 // A content change's header context (every kind): clause identity + the breadcrumb of
 // the section it sits in, plus the flanking-clause note for adds/removals.
-function renderCardContext(c: ReviewChange) {
+// overrideNumber: pass the canonical clause number from the document view when available,
+// so the card identity stays in sync with the right pane. Falls back to s.number when
+// undefined (new clauses have no baseline node to look up).
+function renderCardContext(c: ReviewChange, overrideNumber?: string) {
   const s = primarySide(c);
   if (!s || !s.found) return null;
-  const identity = clauseIdentity(s);
+  const number = overrideNumber !== undefined ? overrideNumber : (s.number ?? null);
+  const identity = [number, s.heading].filter(Boolean).join(" — ");
   const path = s.breadcrumb.join(" › ");
   const showNeighbours = c.change_kind === "new" || c.change_kind === "deleted";
   if (!identity && !path && !(showNeighbours && (s.prev_label || s.next_label))) return null;
@@ -1602,42 +1684,80 @@ function renderCardContext(c: ReviewChange) {
 
 // Splice an edited clause's hunks back into its full baseline body so the diff reads
 // IN PLACE, with the surrounding sentences visible.
+// Each ins/del segment now carries the id of the hunk it comes from so the renderer
+// can make it a click target (selecting that hunk's inline menu). "same" segments
+// never have a hunkId — they are not interactive. Adjacent same-type segments from the
+// same hunk are still merged; segments from different hunks are NOT merged (they
+// carry different hunkIds and are always separated by a "same" run anyway).
 function inContextSegs(body: string, hunks: ReviewHunk[]): DiffSeg[] {
   const sorted = [...hunks].sort((a, b) => (a.position_in_body ?? 0) - (b.position_in_body ?? 0));
   const out: DiffSeg[] = [];
-  const push = (type: DiffSeg["type"], text: string) => {
+  const push = (type: DiffSeg["type"], text: string, hunkId?: string) => {
     if (!text) return;
     const last = out[out.length - 1];
-    if (last && last.type === type) last.text += text;
-    else out.push({ type, text });
+    if (last && last.type === type && last.hunkId === hunkId) last.text += text;
+    else out.push({ type, text, hunkId });
   };
   let cursor = 0;
   for (const h of sorted) {
     const pos = h.position_in_body ?? 0;
     if (pos > cursor) push("same", body.slice(cursor, pos));
     const orig = h.original_text ?? "";
-    for (const seg of wordDiff(orig, h.proposed_text)) push(seg.type, seg.text);
+    for (const seg of wordDiff(orig, h.proposed_text)) {
+      push(seg.type, seg.text, seg.type !== "same" ? h.id : undefined);
+    }
     cursor = Math.max(cursor, pos + orig.length);
   }
   if (cursor < body.length) push("same", body.slice(cursor));
   return out;
 }
 
-// Full-clause inline tracked-changes view (no collapse — Lilly reads the whole clause).
-// Insertions: green underline (.diffIns). Deletions: red strikethrough (.diffDel).
-// This is the primary reading element for an edited clause; per-hunk controls follow.
-function renderInlineTrackedClause(c: ReviewChange) {
+// Full-clause inline tracked-changes view. Insertions: green underline (.diffIns).
+// Deletions: red strikethrough (.diffDel). Each ins/del span is a click target — it
+// carries its source hunk id so clicking it selects that hunk's inline menu. "same"
+// spans are plain text, not interactive.
+function renderInlineTrackedClause(
+  c: ReviewChange,
+  selectedHunkId: string | null,
+  onSelectHunk: (hunkId: string | null) => void,
+) {
   const body = c.context?.baseline?.body;
   if (!body) return null;
   const segs = inContextSegs(body, c.hunks);
   return (
     <div className={styles.inlineClause}>
       <p className={styles.inlineClauseBody}>
-        {segs.map((seg, i) => (
-          <span key={i} className={segClass(seg.type)}>
-            {seg.text}
-          </span>
-        ))}
+        {segs.map((seg, i) => {
+          if (seg.hunkId) {
+            const isSelected = selectedHunkId === seg.hunkId;
+            return (
+              <span
+                key={i}
+                className={[
+                  segClass(seg.type),
+                  isSelected ? styles.fragSelected : styles.fragChange,
+                ].join(" ")}
+                role="button"
+                tabIndex={0}
+                aria-pressed={isSelected}
+                onClick={() => onSelectHunk(isSelected ? null : seg.hunkId!)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onSelectHunk(isSelected ? null : seg.hunkId!);
+                  }
+                }}
+              >
+                {seg.text}
+              </span>
+            );
+          }
+          return (
+            <span key={i} className={segClass(seg.type)}>
+              {seg.text}
+            </span>
+          );
+        })}
       </p>
     </div>
   );

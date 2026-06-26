@@ -1338,6 +1338,130 @@
   color: #2b3038;
 }
 
+/* ---- clickable change fragments (ins/del spans in the inline tracked-clause view) ----
+   fragChange: unselected interactive state — subtle hover ring so the operator sees the
+   spans are clickable. fragSelected: selected state — solid ring + soft glow, same visual
+   weight as a focus ring so the selection reads clearly alongside the diff colours. Both
+   use box-shadow (not outline) so the ring follows the element's border-radius on all
+   browsers. */
+.fragChange {
+  cursor: pointer;
+  transition: box-shadow 0.1s ease;
+}
+.fragChange:hover {
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.32);
+}
+.fragChange:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.55);
+}
+.fragSelected {
+  cursor: pointer;
+  box-shadow: 0 0 0 2px #2563eb, 0 0 0 4px rgba(37, 99, 235, 0.14);
+}
+
+/* ---- whole-node clickable fragment wrapper (added/deleted clause cards) ---- */
+.wholeNodeFrag {
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 3px 5px;
+  margin: -3px -5px;
+  transition: box-shadow 0.1s ease;
+}
+.wholeNodeFrag:hover {
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.28);
+}
+.wholeNodeFrag:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.5);
+}
+.wholeNodeFrag.fragSelected {
+  box-shadow: 0 0 0 2px #2563eb, 0 0 0 5px rgba(37, 99, 235, 0.12);
+}
+
+/* ---- inline hunk menu — shown below the tracked-changes clause on fragment selection ----
+   Sits in a slightly tinted card to read as "detail panel for this fragment", distinct
+   from the outer expand card. */
+.hunkMenu {
+  margin-top: 13px;
+  padding: 13px 15px;
+  background: #fafbff;
+  border: 1px solid #dce3f4;
+  border-radius: 9px;
+  box-shadow: 0 1px 4px rgba(37, 99, 235, 0.05);
+}
+
+/* Donna's counter-language in the menu — quoted prose, distinct from action buttons */
+.donnaCounterInMenu {
+  margin: 0 0 11px;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: #2b3038;
+  padding: 9px 12px;
+  background: #f6f4fd;
+  border: 1px solid #e6e0f7;
+  border-radius: 7px;
+}
+/* One-liner explaining WHY Donna recommends what she does — muted, compact */
+.donnaRationaleHint {
+  margin: 0 0 10px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #7a6db0;
+}
+
+/* Actions inside the inline menu — same layout as .actions but given its own selector
+   so we can tighten the top margin when it follows other menu content. */
+.menuActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 0;
+}
+.hunkMenu .decided + .menuActions,
+.hunkMenu .donnaCounterInMenu + .menuActions,
+.hunkMenu .donna + .menuActions {
+  margin-top: 11px;
+}
+
+/* ---- recommended button — Donna's preferred action, filled Donna-purple ----
+   Visually distinct from ghost (border-only) and from the primary blue (action-blue),
+   communicating "Donna recommends this one" without being the generic primary colour. */
+.btnRecommended {
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 650;
+  border-radius: 7px;
+  padding: 7px 13px;
+  cursor: pointer;
+  color: #fff;
+  background: #6d5bd0;
+  border: 1px solid #6d5bd0;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.btnRecommended:hover:not(:disabled) {
+  background: #5a4ab0;
+  border-color: #5a4ab0;
+}
+.btnRecommended:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.btnRecommended:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(109, 91, 208, 0.45);
+}
+@media (prefers-reduced-motion: reduce) {
+  .btnRecommended {
+    transition: none;
+  }
+  .fragChange,
+  .wholeNodeFrag {
+    transition: none;
+  }
+}
+
 /* ---- responsive: collapse the rail on narrow viewports ---- */
 @media (max-width: 860px) {
   .compare {
