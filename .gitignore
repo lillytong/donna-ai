@@ -41,6 +41,8 @@ db/dump*.sql
 !docs/assets/*.png
 .playwright-mcp/
 sample-contract.docx
+# Local-only Mode B test fixtures — real-deal-derived counterparty revisions, never commit
+test-fixtures/
 
 # Node / Next.js
 node_modules/
