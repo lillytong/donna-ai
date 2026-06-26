@@ -528,7 +528,6 @@
 .hunkList > .hunkControls {
   padding-top: 12px;
   margin-top: 12px;
-  border-top: 1px solid #f1f3f6;
 }
 .hunkList > .hunkControls:first-child {
   padding-top: 0;
@@ -1275,7 +1274,6 @@
 .escalate {
   margin-top: 13px;
   padding-top: 12px;
-  border-top: 1px solid #f1f3f6;
 }
 
 /* ---- Phase 1: before / after comparison ---- */
@@ -1447,10 +1445,10 @@
 .hunkMenu {
   margin-top: 13px;
   padding: 13px 15px;
-  background: #fafbff;
-  border: 1px solid #dce3f4;
+  background: transparent;
+  border: none;
   border-radius: 9px;
-  box-shadow: 0 1px 4px rgba(37, 99, 235, 0.05);
+  box-shadow: none;
 }
 
 /* Donna's counter-language in the menu — quoted prose, distinct from action buttons */

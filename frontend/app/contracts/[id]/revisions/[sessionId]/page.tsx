@@ -1493,7 +1493,11 @@ export default function RevisionReview({
         : null;
     return (
       <>
-        {renderCardContext(c, c.node_id ? canonicalNumberByNodeId.get(c.node_id) : undefined)}
+        {/* For edited clauses: the clause number is already shown on the row, so the
+            identity+breadcrumb line from renderCardContext is a duplicate — suppress it.
+            For new/deleted clauses the neighbour-placement context (After:/Before:) is
+            still useful, so renderCardContext is kept for those kinds only. */}
+        {c.change_kind !== "edited" && renderCardContext(c, c.node_id ? canonicalNumberByNodeId.get(c.node_id) : undefined)}
         {c.change_kind === "edited" ? (
           // The redline is already rendered in the row body (inlineRedline prop) — no
           // duplicate here. The expand panel contributes only the inline hunk menu when
