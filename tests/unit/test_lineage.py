@@ -2,7 +2,7 @@
 
 `derive_status` is pure (no I/O) — tested directly against the DD-75 table: all five
 rules, the post-send-edit edge, no-snapshot→no-version, and the both-pointers label.
-The set-based list badge, the ROW_NUMBER version numbering, the lineage timeline
+The set-based list badge, the persisted version_number numbering, the lineage timeline
 assembly, and the read-only snapshot render adapter run against a fake conn (the
 snapshot/mark-sent test convention) so the SQL grouping is exercised without Postgres.
 """
@@ -33,6 +33,7 @@ def _snap(snap_id: str, n: int, origin: str = "export") -> StoredSnapshot:
         origin=origin,
         created_at=_BASE + timedelta(minutes=n),
         tree=None,
+        version_number=n,  # persisted v-number (DD-87 §1); n doubles as it in these fixtures
     )
 
 
@@ -174,10 +175,10 @@ class _FakeConn:
         self.fetch_sqls.append(sql)
         if "WITH latest AS" in sql:
             return self.badge_rows
-        if "ROW_NUMBER()" in sql:
-            return self.numbered_rows
         if "FROM snapshot_pointers" in sql:
             return self.pointer_rows
+        if "FROM contract_snapshots" in sql:
+            return self.numbered_rows
         return []
 
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
@@ -196,6 +197,7 @@ async def test_set_based_badge_single_query_no_n_plus_one() -> None:
                 "contract_id": "c1",
                 "status": "drafting",
                 "snapshot_count": 2,
+                "latest_version": 2,
                 "lbe_id": "s2",
                 "lbe_origin": "export",
                 "lbe_pointers": ["counterparty:shared"],
@@ -206,6 +208,7 @@ async def test_set_based_badge_single_query_no_n_plus_one() -> None:
                 "contract_id": "c2",
                 "status": "drafting",
                 "snapshot_count": 0,
+                "latest_version": None,
                 "lbe_id": None,
                 "lbe_origin": None,
                 "lbe_pointers": [],
@@ -235,6 +238,7 @@ async def test_set_based_badge_open_revision_label() -> None:
                 "contract_id": "c1",
                 "status": "drafting",
                 "snapshot_count": 2,
+                "latest_version": 2,
                 "lbe_id": "s2",
                 "lbe_origin": "as_received",
                 "lbe_pointers": ["counterparty:received"],
@@ -267,7 +271,7 @@ async def test_list_numbered_snapshots_pairs_version_and_omits_tree() -> None:
                 "label": "v1",
                 "origin": "export",
                 "created_at": _BASE,
-                "version": 1,
+                "version_number": 1,
             },
             {
                 "id": "s2",
@@ -275,7 +279,7 @@ async def test_list_numbered_snapshots_pairs_version_and_omits_tree() -> None:
                 "label": "v2",
                 "origin": "export",
                 "created_at": _BASE + timedelta(minutes=1),
-                "version": 2,
+                "version_number": 2,
             },
         ]
     )
@@ -284,8 +288,10 @@ async def test_list_numbered_snapshots_pairs_version_and_omits_tree() -> None:
 
     assert [(v, s.id) for v, s in numbered] == [(1, "s1"), (2, "s2")]
     assert all(s.tree is None for _v, s in numbered)
-    # the rule is encoded in the query: position over created_at
-    assert "ROW_NUMBER() OVER (PARTITION BY contract_id ORDER BY created_at)" in conn.fetch_sqls[0]
+    # the rule is encoded in the query: read the PERSISTED version_number (DD-87 §1),
+    # never ROW_NUMBER (which would renumber survivors after a version-delete).
+    assert "version_number" in conn.fetch_sqls[0]
+    assert "ROW_NUMBER" not in conn.fetch_sqls[0]
 
 
 # --- lineage timeline assembly ----------------------------------------------
@@ -298,6 +304,7 @@ async def test_get_lineage_assembles_timeline_baseline_and_reserved() -> None:
                 "contract_id": "c1",
                 "status": "under negotiation",
                 "snapshot_count": 2,
+                "latest_version": 2,
                 "lbe_id": "s2",
                 "lbe_origin": "export",
                 "lbe_pointers": ["legal_team:shared"],
@@ -312,7 +319,7 @@ async def test_get_lineage_assembles_timeline_baseline_and_reserved() -> None:
                 "label": None,
                 "origin": "export",
                 "created_at": _BASE,
-                "version": 1,
+                "version_number": 1,
             },
             {
                 "id": "s2",
@@ -320,7 +327,7 @@ async def test_get_lineage_assembles_timeline_baseline_and_reserved() -> None:
                 "label": None,
                 "origin": "export",
                 "created_at": _BASE + timedelta(minutes=1),
-                "version": 2,
+                "version_number": 2,
             },
         ],
         pointer_rows=[
@@ -359,6 +366,7 @@ async def test_get_lineage_received_version_is_numbered_entry_not_reserved() -> 
                 "contract_id": "c1",
                 "status": "under negotiation",
                 "snapshot_count": 2,
+                "latest_version": 2,
                 "lbe_id": "s2",
                 "lbe_origin": "as_received",
                 "lbe_pointers": ["counterparty:received"],
@@ -373,7 +381,7 @@ async def test_get_lineage_received_version_is_numbered_entry_not_reserved() -> 
                 "label": None,
                 "origin": "export",
                 "created_at": _BASE,
-                "version": 1,
+                "version_number": 1,
             },
             {
                 "id": "s2",
@@ -381,7 +389,7 @@ async def test_get_lineage_received_version_is_numbered_entry_not_reserved() -> 
                 "label": None,
                 "origin": "as_received",
                 "created_at": _BASE + timedelta(minutes=1),
-                "version": 2,
+                "version_number": 2,
             },
         ],
         pointer_rows=[
@@ -411,6 +419,7 @@ async def test_get_lineage_marker_flows_to_working_copy() -> None:
                 "contract_id": "c1",
                 "status": "under negotiation",
                 "snapshot_count": 1,
+                "latest_version": 1,
                 "lbe_id": "s1",
                 "lbe_origin": "export",
                 "lbe_pointers": ["counterparty:shared"],
@@ -425,7 +434,7 @@ async def test_get_lineage_marker_flows_to_working_copy() -> None:
                 "label": None,
                 "origin": "export",
                 "created_at": _BASE,
-                "version": 1,
+                "version_number": 1,
             }
         ],
         pointer_rows=[{"party": "counterparty", "direction": "shared", "snapshot_id": "s1"}],

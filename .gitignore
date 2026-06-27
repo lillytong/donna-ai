@@ -49,3 +49,7 @@ node_modules/
 .next/
 frontend/.env*.local
 .claude/settings.json
+
+# Local sample/example contracts — never commit contract content to the public repo (privacy)
+examples/
+*.bak*

@@ -8,8 +8,9 @@ DD-71) — all DERIVED, no schema change:
   * `derive_status_for_contracts` — a SET-BASED badge for the My-Contracts / home
     list: ONE query (latest snapshot + its pointer tags + a per-contract
     divergence-EXISTS), no N+1. Drives the card badges.
-  * `get_lineage` — the full v1→v2→…→vN chain (numbered by ROW_NUMBER over
-    created_at, DD-70), direction-tagged. Received versions (Mode B `as_received`
+  * `get_lineage` — the full v1→v2→…→vN chain (numbered by the PERSISTED
+    `version_number`, DD-87 §1; gaps survive a version-delete), direction-tagged.
+    Received versions (Mode B `as_received`
     snapshots / `received` pointers, F03b) render as real numbered entries; the
     greyed `received` placeholder slot is the empty state, kept only for a side
     that has no received version yet. The live working copy is marked separately.
@@ -52,6 +53,7 @@ class _HasStatus(Protocol):
 class _SnapshotLike(Protocol):
     id: str
     origin: str
+    version_number: int | None
 
     @property
     def created_at(self) -> Any: ...
@@ -98,6 +100,7 @@ def _compose_badge(
     *,
     status: str,
     snapshot_count: int,
+    latest_version: int | None,
     lbe_origin: str | None,
     shared_parties: set[str],
     received_parties: set[str],
@@ -105,24 +108,24 @@ def _compose_badge(
     open_revision: bool = False,
 ) -> ContractBadge:
     """The single source of badge truth — both public entry points reduce to this.
-    `snapshot_count` doubles as the latest snapshot's v-number (numbering is
-    oldest-first, so the newest = row N = count)."""
+    `latest_version` is the badge v-number = MAX(version_number) of the contract's
+    snapshots (DD-87 §1; NOT the snapshot count — they diverge after a version-delete
+    leaves a gap). `snapshot_count` is kept only for the "anything frozen yet?"
+    existence check (rule 2)."""
     # Rule 1: signed wins outright.
     if status == "signed":
-        return ContractBadge(label="Signed", version=(snapshot_count or None), marker=False)
+        return ContractBadge(label="Signed", version=latest_version, marker=False)
     # Rule 1b: an open Mode-B revision review is the active operator task — it outranks
     # the inbound "Your move" / send states (a freshly imported revision otherwise floats
     # up as "Your move", masking the review-in-progress). `version` = the latest snapshot
     # (the as_received revision being reviewed).
     if open_revision:
-        return ContractBadge(
-            label="Reviewing revision", version=(snapshot_count or None), marker=False
-        )
+        return ContractBadge(label="Reviewing revision", version=latest_version, marker=False)
     # Rule 2: nothing frozen yet → unsent working copy, no number.
     if snapshot_count == 0:
         return ContractBadge(label="Working copy", version=None, marker=False)
 
-    version = snapshot_count
+    version = latest_version
     # A receive is signalled by a `received` pointer on the LBE or an as_received cut.
     is_receive = bool(received_parties) or lbe_origin == "as_received"
 
@@ -167,6 +170,7 @@ def derive_status(
         return _compose_badge(
             status=contract.status,
             snapshot_count=0,
+            latest_version=None,
             lbe_origin=None,
             shared_parties=set(),
             received_parties=set(),
@@ -177,9 +181,14 @@ def derive_status(
     at_lbe = [p for p in pointers if p.snapshot_id == lbe.id]
     shared = {p.party for p in at_lbe if p.direction == "shared"}
     received = {p.party for p in at_lbe if p.direction == "received"}
+    # Badge v-number = MAX(version_number), not the snapshot count (they diverge after
+    # a version-delete leaves a gap, DD-87 §1).
+    versions = [s.version_number for s in snapshots if s.version_number is not None]
+    latest_version = max(versions) if versions else None
     return _compose_badge(
         status=contract.status,
         snapshot_count=len(snapshots),
+        latest_version=latest_version,
         lbe_origin=lbe.origin,
         shared_parties=shared,
         received_parties=received,
@@ -196,6 +205,8 @@ WITH latest AS (
     SELECT c.id AS contract_id, c.status,
            (SELECT count(*) FROM contract_snapshots s WHERE s.contract_id = c.id)
                AS snapshot_count,
+           (SELECT max(s.version_number) FROM contract_snapshots s
+             WHERE s.contract_id = c.id) AS latest_version,
            lbe.id AS lbe_id, lbe.created_at AS lbe_created_at, lbe.origin AS lbe_origin
     FROM contracts c
     LEFT JOIN LATERAL (
@@ -207,7 +218,7 @@ WITH latest AS (
     ) lbe ON true
     WHERE c.id = ANY($1::uuid[])
 )
-SELECT l.contract_id, l.status, l.snapshot_count, l.lbe_id, l.lbe_origin,
+SELECT l.contract_id, l.status, l.snapshot_count, l.latest_version, l.lbe_id, l.lbe_origin,
        COALESCE(
            (SELECT array_agg(p.party || ':' || p.direction)
             FROM snapshot_pointers p
@@ -255,9 +266,11 @@ async def derive_status_for_contracts(
     badges: dict[str, ContractBadge] = {}
     for r in rows:
         shared, received = _split_pointer_tags(r["lbe_pointers"] or [])
+        latest_version = r["latest_version"]
         badges[str(r["contract_id"])] = _compose_badge(
             status=r["status"],
             snapshot_count=int(r["snapshot_count"]),
+            latest_version=int(latest_version) if latest_version is not None else None,
             lbe_origin=r["lbe_origin"],
             shared_parties=shared,
             received_parties=received,

@@ -25,6 +25,7 @@ EVENT_NODE_DELETED = "node_deleted"  # clause soft-deleted (with its sub-tree)
 EVENT_NODE_MOVED = "node_moved"  # clause reordered up/down among its siblings
 EVENT_SNAPSHOT_CUT = "snapshot_cut"  # F14 point-in-time capture (e.g. send to counterparty)
 EVENT_MARK_SENT = "mark_sent"  # DD-71 boundary event: snapshot cut + shared pointer(s) advanced
+EVENT_VERSION_DELETED = "version_deleted"  # DD-85/DD-87 lineage version wiped (+ maybe rollback)
 EVENT_RECOMMENDATION_CONFIRMED = "recommendation_confirmed"  # F11 draft -> issues.* (DD-68)
 EVENT_REVISION_IMPORTED = "revision_imported"  # F03b Mode B counterparty/legal revision import
 EVENT_REVISION_MATCH_CONFIRMED = "revision_match_confirmed"  # F03c 6b abstain resolution

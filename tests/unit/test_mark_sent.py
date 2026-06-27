@@ -33,10 +33,11 @@ class _FakeConn:
         return []  # _FETCH_TREE → empty tree is fine for the cut
 
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
-        if "snapshot_count" in sql:  # the _DRIFT probe
+        if "next_version" in sql:  # the _DRIFT probe
             return {
                 "last_export_at": None if self._drift else _NOW,
-                "snapshot_count": self._snapshot_count,
+                # next minted v = COALESCE(MAX(version_number),0)+1; no gaps here, so = count+1
+                "next_version": self._snapshot_count + 1,
                 "drift": self._drift,
             }
         if "INSERT INTO contract_snapshots" in sql:

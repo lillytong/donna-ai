@@ -28,6 +28,7 @@ from backend.api import (
     revision_recommend,
     revision_review,
     settings,
+    version_delete,
 )
 from backend.db import close_pool, open_pool
 
@@ -91,6 +92,7 @@ app.include_router(clause_draft.router)
 app.include_router(cross_references.router)
 app.include_router(mark_sent.router)
 app.include_router(lineage.router)
+app.include_router(version_delete.router)
 app.include_router(revision_import.router)
 app.include_router(revision_review.router)
 app.include_router(revision_recommend.router)

@@ -443,6 +443,38 @@ export const getSnapshotTree = (
   snapshotId: string,
 ): Promise<ContractTreeResponse> => getJson(`/contracts/${id}/snapshots/${snapshotId}/tree`);
 
+// DD-85/DD-87 version delete. Two-call (mirrors Mark-as-sent): preview first (no
+// mutation, surfaces warnings), then execute. `sent_record` is set when the target
+// carries a `shared` pointer. `will_rollback`/`rollback_to_version` describe the
+// latest-delete working-copy rollback. 404 if not the contract's snapshot; 409 if
+// it's a revision baseline (show the error message).
+export interface SnapshotDeleteResponse {
+  deleted: boolean;
+  snapshot_id: string;
+  version_number: number;
+  is_latest: boolean;
+  will_rollback: boolean;
+  rollback_to_version: number | null;
+  sent_record: { party: string; date: string } | null;
+  warnings: string[];
+  rolled_back: boolean;
+  pointers_rolled_back: string[];
+}
+
+// confirm omitted → PREVIEW (no mutation).
+export const previewDeleteSnapshot = (
+  id: string,
+  snapshotId: string,
+): Promise<SnapshotDeleteResponse> =>
+  deleteJson<SnapshotDeleteResponse>(`/contracts/${id}/snapshots/${snapshotId}`);
+
+// confirm=true → EXECUTE the delete (+ rollback when latest).
+export const deleteSnapshotVersion = (
+  id: string,
+  snapshotId: string,
+): Promise<SnapshotDeleteResponse> =>
+  deleteJson<SnapshotDeleteResponse>(`/contracts/${id}/snapshots/${snapshotId}?confirm=true`);
+
 export const listIssues = (contractId: string): Promise<StoredIssue[]> =>
   getJson(`/contracts/${contractId}/issues`);
 

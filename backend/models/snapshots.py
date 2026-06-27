@@ -64,3 +64,7 @@ class StoredSnapshot(BaseModel):
     origin: SnapshotOrigin
     created_at: datetime
     tree: list[SnapshotNode] | None = None
+    # Persisted lineage v-number (DD-85/DD-87 §1). Populated on column-backed reads
+    # (fetch/list/insert RETURNING); None only on fakes/legacy rows. list_numbered
+    # returns the int separately, so this stays optional.
+    version_number: int | None = None

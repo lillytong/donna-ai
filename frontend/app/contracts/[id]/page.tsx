@@ -15,6 +15,7 @@ import {
   createIssue,
   createNode,
   deleteNode,
+  deleteSnapshotVersion,
   donnaErrorMessage,
   draftClause,
   editNode,
@@ -33,6 +34,7 @@ import {
   listIssues,
   listRevisionSessions,
   markSent,
+  previewDeleteSnapshot,
   searchClause,
   updateIssue,
   updateIssueStatus,
@@ -50,6 +52,7 @@ import {
   type Role,
   type StoredBrainstormSummary,
   type StoredIssue,
+  type SnapshotDeleteResponse,
   type StoredRecommendation,
   type StoredRevisionSession,
 } from "../../lib/api";
@@ -743,6 +746,19 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
     rows: FlatNode[];
   } | null>(null);
   const lineageRef = useRef<HTMLDivElement | null>(null);
+  // DD-85/DD-87 version delete. `deletePreviewFor` = snapshot id whose preview is in
+  // flight (trash clicked, awaiting the no-mutation preview). `deleteVersion` (when
+  // set) holds the loaded preview → renders the confirm dialog. `deleteBusy` = the
+  // confirm/execute call in flight. `deleteError` is shared: shown in the dialog when
+  // a confirm fails, and drawer-level when a preview fails (mutually exclusive).
+  const [deletePreviewFor, setDeletePreviewFor] = useState<string | null>(null);
+  const [deleteVersion, setDeleteVersion] = useState<{
+    snapshotId: string;
+    version: number;
+    preview: SnapshotDeleteResponse;
+  } | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   // Issue status write in flight (DD-65 toggle), keyed by issue id.
   const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
@@ -1902,6 +1918,47 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
   }
   function closeSnapshot() {
     setSnapshotView(null);
+  }
+
+  // DD-85/DD-87 version delete — preview (no mutation) then confirm. Trash click
+  // arms this: fetch the preview, then open the confirm dialog with its warnings.
+  async function startDeleteVersion(entry: LineageTimelineEntry) {
+    if (deletePreviewFor || deleteBusy) return;
+    setDeleteError(null);
+    setDeleteVersion(null);
+    setDeletePreviewFor(entry.snapshot_id);
+    try {
+      const preview = await previewDeleteSnapshot(id, entry.snapshot_id);
+      setDeleteVersion({ snapshotId: entry.snapshot_id, version: entry.version, preview });
+    } catch (e) {
+      // 404/409 (e.g. a revision baseline) surface here, drawer-level.
+      setDeleteError(e instanceof Error ? e.message : "Couldn't check this version");
+    } finally {
+      setDeletePreviewFor(null);
+    }
+  }
+  // Confirm → execute the wipe. On success: close any open read-only view of the
+  // deleted snapshot, then bump reloadKey so BOTH the tree (a latest-delete rolled
+  // the working copy back) and the lineage/badge re-fetch.
+  async function confirmDeleteVersion() {
+    if (!deleteVersion || deleteBusy) return;
+    setDeleteBusy(true);
+    setDeleteError(null);
+    const deletedId = deleteVersion.snapshotId;
+    try {
+      await deleteSnapshotVersion(id, deletedId);
+      setSnapshotView((s) => (s && s.snapshotId === deletedId ? null : s));
+      setDeleteVersion(null);
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : "Couldn't delete this version");
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
+  function cancelDeleteVersion() {
+    setDeleteVersion(null);
+    setDeleteError(null);
   }
 
   // Close the lineage drawer on an outside click or Escape (mirrors the Export menu).
@@ -3332,6 +3389,63 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
                     </button>
                   </div>
 
+                  {/* DD-85/DD-87 delete confirm — appears once the preview loads. */}
+                  {deleteVersion && (
+                    <div
+                      className={styles.deleteVersionPanel}
+                      role="alertdialog"
+                      aria-label={`Delete v${deleteVersion.version}`}
+                    >
+                      <p className={styles.deleteVersionTitle}>
+                        Delete v{deleteVersion.version}?
+                      </p>
+                      {deleteVersion.preview.warnings.map((w, i) => (
+                        <p key={i} className={styles.deleteVersionWarn}>
+                          {w}
+                        </p>
+                      ))}
+                      {deleteVersion.preview.will_rollback && (
+                        <p className={styles.deleteVersionWarnStrong}>
+                          This discards your current working-copy content and any unsent
+                          edits, rolling back to v{deleteVersion.preview.rollback_to_version}.
+                        </p>
+                      )}
+                      {deleteVersion.preview.sent_record && (
+                        <p className={styles.deleteVersionWarnStrong}>
+                          This erases the record of what was sent to{" "}
+                          {deleteVersion.preview.sent_record.party} on{" "}
+                          {deleteVersion.preview.sent_record.date} and rolls the redline
+                          baseline back.
+                        </p>
+                      )}
+                      {deleteError && (
+                        <p className={styles.deleteVersionError}>{deleteError}</p>
+                      )}
+                      <div className={styles.deleteVersionActions}>
+                        <button
+                          type="button"
+                          className={styles.deleteVersionPrimary}
+                          disabled={deleteBusy}
+                          onClick={() => void confirmDeleteVersion()}
+                        >
+                          {deleteBusy ? "Deleting…" : "Delete version"}
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.deleteVersionSecondary}
+                          disabled={deleteBusy}
+                          onClick={cancelDeleteVersion}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {/* Preview-stage failure (404/409) — no dialog opened. */}
+                  {deleteError && !deleteVersion && (
+                    <p className={styles.deleteVersionError}>{deleteError}</p>
+                  )}
+
                   {/* Working copy — pinned, never a numbered version. */}
                   <div className={[styles.lineageRow, styles.lineageWorking].join(" ")}>
                     <div className={styles.lineageRowMain}>
@@ -3352,34 +3466,75 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
                     </p>
                   ) : (
                     lineage.timeline.map((t) => (
-                      <button
-                        key={t.snapshot_id}
-                        type="button"
-                        className={[
-                          styles.lineageRow,
-                          styles.lineageRowClickable,
-                          snapshotView?.snapshotId === t.snapshot_id ? styles.lineageRowActive : "",
-                        ].join(" ")}
-                        onClick={() => void openSnapshot(t)}
-                      >
-                        <div className={styles.lineageRowMain}>
-                          <span className={styles.lineageVer}>v{t.version}</span>
-                          <span className={styles.lineageDir}>
-                            {t.direction === "sent" ? "→ Sent to" : "← Received from"} {t.party}
-                          </span>
-                          <span className={styles.lineageDate}>{lineageDate(t.created_at)}</span>
-                        </div>
-                        <div className={styles.lineageTags}>
-                          {t.is_current_baseline && (
-                            <span className={styles.lineageBaseline}>current baseline</span>
-                          )}
-                          {t.pointer_labels.map((p) => (
-                            <span key={p} className={styles.lineageTag}>
-                              {friendlyPointer(p)}
+                      // Row-button and Delete are SIBLINGS in a wrapper div — never
+                      // nested <button>s (invalid HTML). The trash opens the
+                      // DD-85/DD-87 delete preview, not the read-only snapshot view.
+                      <div key={t.snapshot_id} className={styles.lineageRowWrap}>
+                        <button
+                          type="button"
+                          className={[
+                            styles.lineageRow,
+                            styles.lineageRowClickable,
+                            snapshotView?.snapshotId === t.snapshot_id
+                              ? styles.lineageRowActive
+                              : "",
+                          ].join(" ")}
+                          onClick={() => void openSnapshot(t)}
+                        >
+                          <div className={styles.lineageRowMain}>
+                            <span className={styles.lineageVer}>v{t.version}</span>
+                            <span className={styles.lineageDir}>
+                              {t.direction === "sent" ? "→ Sent to" : "← Received from"} {t.party}
                             </span>
-                          ))}
-                        </div>
-                      </button>
+                            <span className={styles.lineageDate}>{lineageDate(t.created_at)}</span>
+                          </div>
+                          <div className={styles.lineageTags}>
+                            {t.is_current_baseline && (
+                              <span className={styles.lineageBaseline}>current baseline</span>
+                            )}
+                            {t.pointer_labels.map((p) => (
+                              <span key={p} className={styles.lineageTag}>
+                                {friendlyPointer(p)}
+                              </span>
+                            ))}
+                          </div>
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.lineageDelete}
+                          aria-label={`Delete v${t.version}`}
+                          title={`Delete v${t.version}`}
+                          disabled={deletePreviewFor !== null || deleteBusy}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void startDeleteVersion(t);
+                          }}
+                        >
+                          {deletePreviewFor === t.snapshot_id ? (
+                            <span className={styles.lineageDeleteSpin} aria-hidden>
+                              …
+                            </span>
+                          ) : (
+                            <svg
+                              width="14"
+                              height="14"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              aria-hidden
+                            >
+                              <path d="M3 6h18" />
+                              <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                              <path d="M10 11v6" />
+                              <path d="M14 11v6" />
+                            </svg>
+                          )}
+                        </button>
+                      </div>
                     ))
                   )}
 

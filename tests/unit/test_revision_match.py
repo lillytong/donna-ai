@@ -192,22 +192,22 @@ def test_reworded_parent_heading_with_unchanged_child_is_repaired() -> None:
     `matches` (not `deleted`), the child stays matched, and the reworded revised
     parent is NOT left in `new`."""
     baseline = [
-        _b("excl", 0, heading="Restrictions on Planetary relating to Licensed IP"),
+        _b("excl", 0, heading="Restrictions on Acme relating to Licensed IP"),
         _b(
             "excl-sub",
             1,
-            body="planetary shall not sublicense the licensed ip to any third party "
+            body="acme shall not sublicense the licensed ip to any third party "
             "without prior written consent",
             parent="excl",
         ),
     ]
     incoming = [
         # heading reworded beyond lexical recognition -> would land in `new`
-        _r(0, heading="Planetary's Exclusivity Undertakings"),
+        _r(0, heading="Acme's Exclusivity Undertakings"),
         # child body unchanged -> anchor-matches excl-sub
         _r(
             1,
-            body="planetary shall not sublicense the licensed ip to any third party "
+            body="acme shall not sublicense the licensed ip to any third party "
             "without prior written consent",
             parent=0,
         ),

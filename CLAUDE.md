@@ -46,9 +46,16 @@ db/schema.sql · frontend/ (Next.js) · evals/ · tests/{unit,integration,system
 
 ## Privacy (open-source repo, hard rule)
 
-No client/counterparty/deal/person names, **legal-firm names (our outside counsel
-or a counterparty's — never name a real firm; use a generic label like
+No client/counterparty/deal names, **company names of any firm specific to the real
+contracts** (a SugarCo partner, a counterparty org, etc.), **legal-firm names (our
+outside counsel or a counterparty's — never name a real firm; use a generic label like
 "[Counsel Note: …]" or a clearly fictional firm if an example is needed)**, contract
 content, or parameter values in the repo. All logic parameterized; prompts use
 variables; seed data is gitignored. The name pass treats legal-firm names as a
 flagged category; run it before any commit that will be pushed.
+
+**Explicitly ALLOWED in the public repo (Lilly, 2026-06-26):** the operator's own first
+name ("Lilly") and the AI persona names ("Katrina", "Kevin", "Agnes", "Donna"). These
+are NOT a privacy category here — do not scrub them and do not flag them in audits. The
+hard rule is scoped to *firm/client/counterparty/deal identifiers and real contract
+data*, never personal/persona names.

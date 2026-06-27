@@ -37,10 +37,15 @@ WHERE contract_id = $1
 ORDER BY order_index
 """
 
+# version_number is minted atomically inside the INSERT (DD-87 §1): the next value
+# per contract = COALESCE(MAX(version_number),0)+1, never reused, so a version-delete
+# leaves a preserved gap. Serves BOTH insert paths (cut_snapshot, snapshot_tree).
 _INSERT_SNAPSHOT = """
-INSERT INTO contract_snapshots (contract_id, label, tree, origin)
-VALUES ($1, $2, $3::jsonb, $4)
-RETURNING id, contract_id, label, origin, created_at
+INSERT INTO contract_snapshots (contract_id, label, tree, origin, version_number)
+SELECT $1, $2, $3::jsonb, $4, COALESCE(MAX(version_number), 0) + 1
+FROM contract_snapshots
+WHERE contract_id = $1
+RETURNING id, contract_id, label, origin, created_at, version_number
 """
 
 # Groups the pending (unsnapshotted) body edits under this snapshot. node_versions
@@ -60,27 +65,27 @@ DO UPDATE SET snapshot_id = EXCLUDED.snapshot_id, set_at = now()
 """
 
 _LIST_SNAPSHOTS = """
-SELECT id, contract_id, label, origin, created_at
+SELECT id, contract_id, label, origin, created_at, version_number
 FROM contract_snapshots
 WHERE contract_id = $1
 ORDER BY created_at DESC
 """
 
 _FETCH_SNAPSHOT = """
-SELECT id, contract_id, label, tree, origin, created_at
+SELECT id, contract_id, label, tree, origin, created_at, version_number
 FROM contract_snapshots
 WHERE id = $1
 """
 
-# Numbered timeline (DD-70): every snapshot gets its position via ROW_NUMBER over
-# created_at, so v-numbers are stable as Mode B later interleaves receives — adding
-# a receive never renumbers an existing version. Heavy `tree` JSONB is omitted.
+# Numbered timeline (DD-70/DD-85): v-numbers read the PERSISTED `version_number`
+# column (DD-87 §1) — never ROW_NUMBER, which would renumber survivors after a
+# version-delete and destroy the required gap. Ordered by the number itself (a
+# deleted version simply leaves a hole). Heavy `tree` JSONB is omitted.
 _LIST_NUMBERED = """
-SELECT id, contract_id, label, origin, created_at,
-       ROW_NUMBER() OVER (PARTITION BY contract_id ORDER BY created_at) AS version
+SELECT id, contract_id, label, origin, created_at, version_number
 FROM contract_snapshots
 WHERE contract_id = $1
-ORDER BY created_at
+ORDER BY version_number
 """
 
 _LIST_POINTERS = """
@@ -104,6 +109,7 @@ def _to_snapshot_node(record: Any) -> SnapshotNode:
 
 
 def _to_stored_snapshot(record: Any, *, tree: list[SnapshotNode] | None) -> StoredSnapshot:
+    version_number = record.get("version_number") if hasattr(record, "get") else None
     return StoredSnapshot(
         id=str(record["id"]),
         contract_id=str(record["contract_id"]),
@@ -111,6 +117,7 @@ def _to_stored_snapshot(record: Any, *, tree: list[SnapshotNode] | None) -> Stor
         origin=record["origin"],
         created_at=record["created_at"],
         tree=tree,
+        version_number=int(version_number) if version_number is not None else None,
     )
 
 
@@ -227,11 +234,11 @@ async def get_snapshot(conn: Any, snapshot_id: str) -> StoredSnapshot | None:
 
 
 async def list_numbered_snapshots(conn: Any, contract_id: str) -> list[tuple[int, StoredSnapshot]]:
-    """All snapshots oldest-first, each paired with its lineage v-number (ROW_NUMBER
-    over created_at, DD-70). Tree omitted (list view). Lineage assembly consumes
-    this; the numbering is receive-ready (position over ALL snapshots)."""
+    """All snapshots in v-number order, each paired with its PERSISTED lineage
+    v-number (DD-87 §1; never ROW_NUMBER, so a deleted version leaves a gap). Tree
+    omitted (list view). Lineage assembly consumes this."""
     records = await conn.fetch(_LIST_NUMBERED, contract_id)
-    return [(int(r["version"]), _to_stored_snapshot(r, tree=None)) for r in records]
+    return [(int(r["version_number"]), _to_stored_snapshot(r, tree=None)) for r in records]
 
 
 async def list_pointers(conn: Any, contract_id: str) -> list[PointerRow]:

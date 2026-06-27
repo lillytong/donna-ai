@@ -186,12 +186,17 @@ CREATE TABLE parameter_references (
 -- tree JSONB shape: [ { id, parent_id, order_index, content_type, heading,
 -- body, is_deleted } ] for every node in the contract at capture time.
 CREATE TABLE contract_snapshots (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    contract_id UUID NOT NULL REFERENCES contracts(id),
-    label       TEXT,
-    tree        JSONB NOT NULL,
-    origin      TEXT NOT NULL CHECK (origin IN ('export','as_received','manual')),
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    contract_id    UUID NOT NULL REFERENCES contracts(id),
+    label          TEXT,
+    tree           JSONB NOT NULL,
+    origin         TEXT NOT NULL CHECK (origin IN ('export','as_received','manual')),
+    -- Persisted lineage v-number (DD-85/DD-87 §1): monotonic per contract, minted
+    -- COALESCE(MAX(version_number),0)+1, NEVER reused. Stored (not ROW_NUMBER-derived)
+    -- so a version-delete leaves a preserved gap (delete v2 → v1,v3,v4; next = v5).
+    version_number INTEGER NOT NULL,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (contract_id, version_number)
 );
 
 ALTER TABLE node_versions
@@ -472,4 +477,5 @@ INSERT INTO schema_migrations (version) VALUES
     ('0004_donna_message_meta'),
     ('0005_contract_last_export_at'),
     ('0006_negotiation_patterns'),
-    ('0007_brainstorm_summaries');
+    ('0007_brainstorm_summaries'),
+    ('0012_snapshot_version_number');

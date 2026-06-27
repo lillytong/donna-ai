@@ -3413,6 +3413,122 @@
   cursor: default;
 }
 
+/* ---- DD-85/DD-87 version delete ---- */
+/* Row-button + trash sit side by side; the row keeps its full styling and flexes,
+   the trash is a fixed-width sibling (never a nested button). */
+.lineageRowWrap {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+.lineageRowWrap > .lineageRowClickable {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.lineageDelete {
+  flex: 0 0 auto;
+  width: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #9aa1ab;
+  background: #fbfcfd;
+  border: 1px solid #edf0f3;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+.lineageDelete:hover {
+  color: #b42318;
+  border-color: #fda29b;
+  background: #fef3f2;
+}
+.lineageDelete:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(180, 35, 24, 0.3);
+}
+.lineageDelete:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.lineageDeleteSpin {
+  font-size: 14px;
+  line-height: 1;
+}
+.deleteVersionPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid #fda29b;
+  background: #fef3f2;
+  border-radius: 8px;
+}
+.deleteVersionTitle {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: #912018;
+}
+.deleteVersionWarn {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #7a271a;
+}
+.deleteVersionWarnStrong {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.4;
+  color: #912018;
+}
+.deleteVersionError {
+  margin: 4px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #b42318;
+}
+.deleteVersionActions {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+.deleteVersionPrimary,
+.deleteVersionSecondary {
+  flex: 1;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.deleteVersionPrimary {
+  color: #fff;
+  background: #b42318;
+  border: 1px solid #b42318;
+}
+.deleteVersionPrimary:hover {
+  background: #912018;
+  border-color: #912018;
+}
+.deleteVersionSecondary {
+  color: #1f2328;
+  background: #fff;
+  border: 1px solid #d4d9e0;
+}
+.deleteVersionSecondary:hover {
+  border-color: #2563eb;
+  color: #2563eb;
+}
+.deleteVersionPrimary:disabled,
+.deleteVersionSecondary:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 /* ---- F27: read-only snapshot view in the tree panel ---- */
 .snapshotBanner {
   display: flex;

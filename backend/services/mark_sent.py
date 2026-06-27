@@ -36,13 +36,16 @@ _RECIPIENT_POINTERS: dict[MarkSentRecipient, list[SnapshotPointerTarget]] = {
     ],
 }
 
-# Drift + the version that would be minted (snapshot count + 1) + last_export_at,
-# in one read. EXISTS is false for a contract with no live edits since the last
-# export; true when last_export_at IS NULL (never exported) and live nodes exist.
+# Drift + the version that would be minted + last_export_at, in one read. The minted
+# v-number is COALESCE(MAX(version_number),0)+1 (DD-87 §1) — NOT the snapshot count,
+# which diverges from the max after a version-delete leaves a gap. EXISTS is false for
+# a contract with no live edits since the last export; true when last_export_at IS NULL
+# (never exported) and live nodes exist.
 _DRIFT = """
 SELECT
     c.last_export_at,
-    (SELECT count(*) FROM contract_snapshots WHERE contract_id = c.id) AS snapshot_count,
+    (SELECT COALESCE(MAX(version_number), 0) + 1
+       FROM contract_snapshots WHERE contract_id = c.id) AS next_version,
     EXISTS (
         SELECT 1 FROM nodes n
         WHERE n.contract_id = c.id AND n.is_deleted = false
@@ -56,10 +59,9 @@ WHERE c.id = $1
 async def mark_sent(conn: Any, contract_id: str, request: MarkSentRequest) -> MarkSentResult:
     info = await conn.fetchrow(_DRIFT, contract_id)
     last_export_at = info["last_export_at"] if info is not None else None
-    snapshot_count = int(info["snapshot_count"]) if info is not None else 0
     drift = bool(info["drift"]) if info is not None else False
-    # vN being minted = this snapshot's position on the lineage timeline (DD-70).
-    version = snapshot_count + 1
+    # vN being minted = COALESCE(MAX(version_number),0)+1 (DD-87 §1) — never reused.
+    version = int(info["next_version"]) if info is not None else 1
 
     targets = _RECIPIENT_POINTERS[request.recipient]
 

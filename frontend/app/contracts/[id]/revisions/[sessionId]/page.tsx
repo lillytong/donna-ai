@@ -66,9 +66,36 @@ type Phase = "structure" | "content";
 // distils nothing to persist (no issue to attach to). See the report's follow-up.
 const NIL_ISSUE_ID = "00000000-0000-0000-0000-000000000000";
 
-// One node of an inline diff segment. ins/del carry a hunkId so the renderer can make
-// them click targets for the hunk menu. "same" segments are never interactive.
-type DiffSeg = { type: "same" | "ins" | "del"; text: string; hunkId?: string };
+// One node of an inline diff segment. ins/del/donna carry a hunkId so the renderer can
+// make them click targets for the hunk menu. "same" segments are never interactive.
+//   - ins/del: a counterparty insertion / deletion (green underline / red strikethrough).
+//   - donna:   the language the operator adopted from Donna's counter (purple, solid).
+//   - pending: true while the change is undecided → DOTTED line; false once decided →
+//              SOLID (the decision-state axis). "donna" is always solid.
+//   - struck:  a rejected counterparty ADDITION kept as a green SOLID strikethrough
+//              trace (the document view is the audit trail).
+type DiffSeg = { type: "same" | "ins" | "del" | "donna"; text: string; hunkId?: string; pending?: boolean; struck?: boolean };
+
+// Decision-state axis for a hunk's tracked-change markup:
+//   - "pending" : not yet decided → dotted line.
+//   - "donna"   : operator adopted Donna's counter ("Use Donna's") → the resulting
+//                 language renders purple/solid. Detected because the backend maps the
+//                 "counter" action to verdict "modified" with final_text == donna_counter_text.
+//   - "decided" : any other settled verdict (accept theirs / operator edit / reject) →
+//                 solid line, appearance unchanged from before.
+type TcState = "pending" | "decided" | "donna";
+function hunkTcState(h: ReviewHunk): TcState {
+  if (h.verdict === "pending") return "pending";
+  if (
+    h.verdict === "modified" &&
+    h.donna_counter_text != null &&
+    h.final_text != null &&
+    h.final_text === h.donna_counter_text
+  ) {
+    return "donna";
+  }
+  return "decided";
+}
 
 function pct(conf: number | null): string {
   return conf == null ? "—" : `${Math.round(conf * 100)}%`;
@@ -162,7 +189,6 @@ interface RowProps {
   decided: boolean;
   onSelect: (changeId: string) => void;
   registerRef: (changeId: string, el: HTMLDivElement | null) => void;
-  children: React.ReactNode; // the inline expand panel, null unless expanded
   // Collapse/expand — the node's flat-list key, whether it has children, current state,
   // and the toggle callback (isolated from the change-select onClick via stopPropagation).
   nodeKey: string;
@@ -183,7 +209,6 @@ const DocRow = memo(function DocRow({
   decided,
   onSelect,
   registerRef,
-  children,
   nodeKey,
   isParent,
   collapsed,
@@ -265,9 +290,8 @@ const DocRow = memo(function DocRow({
       </div>
       {/* Inline tracked-changes redline for edited clauses — rendered once here in the row
           body so the operator sees the "after with tracked changes" without needing to
-          expand. The expand panel contributes context + hunk menu + brainstorm only. */}
+          expand. The dock (right pane) carries context + controls + brainstorm (DD-83). */}
       {inlineRedline}
-      {children}
     </div>
   );
 });
@@ -516,16 +540,24 @@ export default function RevisionReview({
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  // The selected change (highlighted in both panes) and the inline editor target.
+  // Guided cursor (DD-83): the focused change + focused hunk within it. The decision dock
+  // and the keyboard walk both read this; activeChangeId is also the highlighted clause.
   const [activeChangeId, setActiveChangeId] = useState<string | null>(null);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [editKey, setEditKey] = useState<string | null>(null);
+  const [selectedHunkId, setSelectedHunkId] = useState<string | null>(null);
+  // Whether the dock is in edit mode for the focused change (Edit advances on SAVE, DD-83).
+  const [editing, setEditing] = useState(false);
+  // Decisions the operator has re-opened to re-decide (DD-83). A re-opened hunk renders as
+  // pending (dotted) and counts as an OPEN cursor stop again, until a new decision settles
+  // it. Client-only — re-deciding overwrites the persisted verdict (no schema change).
+  const [reopened, setReopened] = useState<Set<string>>(new Set());
+  // Set after a committed decision; the advance effect reads it to move the cursor to the
+  // next open stop (or Apply). An effect, not inline, so it runs against FRESH state.
+  const [advanceTarget, setAdvanceTarget] = useState<{ changeId: string; hunkId: string } | null>(
+    null,
+  );
   // Phase-2 document pane collapse state: Set of item keys whose subtrees are hidden.
   // Ephemeral — client-side only, no DB/API (mirrors Mode A import view pattern).
   const [collapsedDocNodes, setCollapsedDocNodes] = useState<Set<string>>(new Set());
-  // The hunk (or whole-node) fragment the operator has clicked to reveal its inline menu.
-  // One selection at a time; cleared when the operator switches to a different clause.
-  const [selectedHunkId, setSelectedHunkId] = useState<string | null>(null);
 
   // Re-match picker (Phase 1) — lazily-loaded baseline tree, shared across abstains.
   const [baseline, setBaseline] = useState<{
@@ -541,6 +573,7 @@ export default function RevisionReview({
   // change-id → row element, for the rail-click scroll + the scroll spy.
   const rowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const docPaneRef = useRef<HTMLDivElement | null>(null);
+  const applyBtnRef = useRef<HTMLButtonElement | null>(null);
 
   const load = useCallback(async () => {
     setState({ kind: "loading" });
@@ -709,38 +742,217 @@ export default function RevisionReview({
     else rowRefs.current.delete(changeId);
   }, []);
 
-  // Scroll spy: keep the rail's active row in sync as the operator scrolls the document.
-  useEffect(() => {
-    if (phase !== "content") return;
-    const root = docPaneRef.current;
-    if (!root) return;
-    const obs = new IntersectionObserver(
-      (entries) => {
-        const top = entries
-          .filter((e) => e.isIntersecting)
-          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
-        if (top) {
-          for (const [cid, el] of rowRefs.current) {
-            if (el === top.target) {
-              setActiveChangeId(cid);
-              break;
-            }
-          }
-        }
-      },
-      { root, rootMargin: "-10% 0px -75% 0px", threshold: 0 },
-    );
-    for (const el of rowRefs.current.values()) obs.observe(el);
-    return () => obs.disconnect();
-  }, [phase, renderItems, collapsedDocNodes]);
+  // ---- the guided decision cursor (DD-83) -----------------------------------
+  // A "stop" is one decision unit in strict document order: each hunk of an edited clause,
+  // or the single whole-node hunk of an added/deleted clause. The cursor walks OPEN stops
+  // top-to-bottom; the fixed dock shows the focused stop's controls.
+  type Stop = { changeId: string; hunkId: string };
 
-  function selectChange(changeId: string) {
-    setActiveChangeId(changeId);
-    setExpandedId(changeId);
-    setEditKey(null);
-    setSelectedHunkId(null);
+  const stops = useMemo<Stop[]>(() => {
+    const out: Stop[] = [];
+    for (const item of renderItems) {
+      const c = item.change;
+      if (!c) continue;
+      if (c.change_kind === "edited") {
+        const sorted = [...c.hunks].sort(
+          (a, b) => (a.position_in_body ?? 0) - (b.position_in_body ?? 0),
+        );
+        for (const h of sorted) out.push({ changeId: c.id, hunkId: h.id });
+      } else {
+        const h = c.hunks[0];
+        if (h) out.push({ changeId: c.id, hunkId: h.id });
+      }
+    }
+    return out;
+  }, [renderItems]);
+
+  const liveHunk = useCallback(
+    (stop: Stop): ReviewHunk | null => {
+      const c = changeById.get(stop.changeId);
+      return c?.hunks.find((h) => h.id === stop.hunkId) ?? null;
+    },
+    [changeById],
+  );
+
+  // OPEN = a cursor stop: hunk verdict still pending, OR re-opened to re-decide.
+  const isOpen = useCallback(
+    (stop: Stop): boolean => {
+      if (reopened.has(stop.hunkId)) return true;
+      const h = liveHunk(stop);
+      return h ? h.verdict === "pending" : false;
+    },
+    [reopened, liveHunk],
+  );
+
+  const scrollToChange = useCallback((changeId: string) => {
     rowRefs.current.get(changeId)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, []);
+
+  const focusStop = useCallback(
+    (stop: Stop, scroll = true) => {
+      setActiveChangeId(stop.changeId);
+      setSelectedHunkId(stop.hunkId);
+      setEditing(false);
+      if (scroll) scrollToChange(stop.changeId);
+    },
+    [scrollToChange],
+  );
+
+  // End of the walk: drop the focus and send the cursor to the Apply affordance.
+  const focusApply = useCallback(() => {
+    setActiveChangeId(null);
+    setSelectedHunkId(null);
+    setEditing(false);
+    applyBtnRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    applyBtnRef.current?.focus();
+  }, []);
+
+  // Rail/row click: focus a change's FIRST open stop; if every stop is already decided,
+  // re-open the first one so the operator can re-decide (returns it to pending/dotted).
+  function focusChange(changeId: string) {
+    const changeStops = stops.filter((s) => s.changeId === changeId);
+    if (changeStops.length === 0) return;
+    const open = changeStops.find(isOpen);
+    if (open) {
+      focusStop(open);
+      return;
+    }
+    const first = changeStops[0];
+    setReopened((p) => new Set(p).add(first.hunkId));
+    focusStop(first);
   }
+
+  // Fragment click: focus a specific hunk; re-open it if already decided.
+  function focusHunk(changeId: string, hunkId: string) {
+    if (!isOpen({ changeId, hunkId })) setReopened((p) => new Set(p).add(hunkId));
+    focusStop({ changeId, hunkId });
+  }
+
+  // Keyboard < / > : step to the previous / next OPEN stop (cyclic; skips decided). If
+  // nothing is open, land on Apply.
+  function stepOpen(dir: 1 | -1) {
+    const n = stops.length;
+    if (n === 0) return;
+    const cur = selectedHunkId ? stops.findIndex((s) => s.hunkId === selectedHunkId) : -1;
+    for (let k = 1; k <= n; k++) {
+      const idx = (((cur + dir * k) % n) + n) % n;
+      if (isOpen(stops[idx])) {
+        focusStop(stops[idx]);
+        return;
+      }
+    }
+    focusApply();
+  }
+
+  // Decide the focused stop. Maps the operator actions onto the edited-hunk endpoint
+  // (accept/counter/edit/keep) or the whole-node endpoint (accept/reject/edit). The cursor
+  // auto-advances afterwards via the advance effect (once state settles).
+  function decideFocused(action: "accept" | "reject" | "donna") {
+    if (!activeChangeId || !selectedHunkId || busy) return;
+    const c = changeById.get(activeChangeId);
+    const h = c?.hunks.find((x) => x.id === selectedHunkId);
+    if (!c || !h) return;
+    if (c.change_kind === "edited") {
+      if (action === "accept") void runHunk(h, "accept");
+      else if (action === "reject") void runHunk(h, "keep");
+      else if (action === "donna" && h.donna_counter_text) void runHunk(h, "counter");
+    } else {
+      if (action === "accept") void runNode(c, "accept");
+      else if (action === "reject") void runNode(c, "reject");
+      else if (action === "donna" && h.donna_counter_text) void runNode(c, "edit", h.donna_counter_text);
+    }
+  }
+
+  function editFocused() {
+    if (!activeChangeId || !selectedHunkId) return;
+    setEditing(true);
+  }
+
+  // Edit commits (and advances) on SAVE, not on the Edit button (DD-83).
+  function saveEdit(text: string) {
+    if (!activeChangeId || !selectedHunkId) return;
+    const c = changeById.get(activeChangeId);
+    const h = c?.hunks.find((x) => x.id === selectedHunkId);
+    if (!c || !h) return;
+    if (c.change_kind === "edited") void runHunk(h, "edit", text);
+    else void runNode(c, "edit", text);
+  }
+
+  // After a committed decision, advance the cursor to the next OPEN stop (forward from the
+  // decided stop, then wrap to the first open above; Apply when none remain). Runs in an
+  // effect so it sees the freshly-patched verdict + cleared re-open flag.
+  useEffect(() => {
+    if (!advanceTarget) return;
+    const i = stops.findIndex((s) => s.hunkId === advanceTarget.hunkId);
+    setAdvanceTarget(null);
+    for (let j = i + 1; j < stops.length; j++) {
+      if (isOpen(stops[j])) {
+        focusStop(stops[j]);
+        return;
+      }
+    }
+    for (let j = 0; j < stops.length; j++) {
+      if (isOpen(stops[j])) {
+        focusStop(stops[j]);
+        return;
+      }
+    }
+    focusApply();
+  }, [advanceTarget, stops, isOpen, focusStop, focusApply]);
+
+  // On first entry to the content phase, focus the first open stop (no scroll yank).
+  const contentInitRef = useRef(false);
+  useEffect(() => {
+    if (phase !== "content" || contentInitRef.current || stops.length === 0) return;
+    contentInitRef.current = true;
+    const open = stops.find(isOpen);
+    if (open) focusStop(open, false);
+  }, [phase, stops, isOpen, focusStop]);
+
+  // Keyboard shortcuts (DD-83). Latest handlers via a ref so the listener attaches once per
+  // phase but never goes stale. ALL shortcuts are disabled while a text input/textarea is
+  // focused or the dock is editing (so typing the replacement never triggers them); < / >
+  // work regardless of focus otherwise.
+  const kbRef = useRef({ editing, stepOpen, decideFocused, editFocused });
+  kbRef.current = { editing, stepOpen, decideFocused, editFocused };
+  useEffect(() => {
+    if (phase !== "content" || applied || brainstormSeed) return;
+    function onKey(e: KeyboardEvent) {
+      const h = kbRef.current;
+      const el = document.activeElement as HTMLElement | null;
+      const typing =
+        el?.tagName === "INPUT" || el?.tagName === "TEXTAREA" || el?.isContentEditable === true;
+      if (h.editing || typing) return;
+      if (e.key === ">") {
+        e.preventDefault();
+        h.stepOpen(1);
+        return;
+      }
+      if (e.key === "<") {
+        e.preventDefault();
+        h.stepOpen(-1);
+        return;
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (k === "a") {
+        e.preventDefault();
+        h.decideFocused("accept");
+      } else if (k === "r") {
+        e.preventDefault();
+        h.decideFocused("reject");
+      } else if (k === "d") {
+        e.preventDefault();
+        h.decideFocused("donna");
+      } else if (k === "e") {
+        e.preventDefault();
+        h.editFocused();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, applied, brainstormSeed]);
 
   // Phase 1: selecting an abstain scrolls BOTH columns to its proposed pair.
   function selectAbstain(changeId: string) {
@@ -765,7 +977,14 @@ export default function RevisionReview({
     try {
       const updated = await decideHunk(hunk.id, { verdict, final_text: finalText ?? null });
       patchChange(updated);
-      setEditKey(null);
+      setReopened((p) => {
+        if (!p.has(hunk.id)) return p;
+        const n = new Set(p);
+        n.delete(hunk.id);
+        return n;
+      });
+      setEditing(false);
+      setAdvanceTarget({ changeId: updated.id, hunkId: hunk.id });
     } catch (e) {
       setActionError(
         e instanceof ApiError && e.status === 422
@@ -780,12 +999,22 @@ export default function RevisionReview({
   }
 
   async function runNode(change: ReviewChange, verdict: NodeDecisionAction, finalText?: string) {
+    const hunkId = change.hunks[0]?.id;
     setBusy(change.id);
     setActionError(null);
     try {
       const updated = await decideNode(change.id, { verdict, final_text: finalText ?? null });
       patchChange(updated);
-      setEditKey(null);
+      if (hunkId) {
+        setReopened((p) => {
+          if (!p.has(hunkId)) return p;
+          const n = new Set(p);
+          n.delete(hunkId);
+          return n;
+        });
+        setAdvanceTarget({ changeId: updated.id, hunkId });
+      }
+      setEditing(false);
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Couldn't record that decision.");
     } finally {
@@ -953,6 +1182,7 @@ export default function RevisionReview({
         </Link>
         {!applied && (
           <button
+            ref={applyBtnRef}
             type="button"
             className={styles.applyBtn}
             disabled={!allDecided || busy === "apply"}
@@ -1128,7 +1358,7 @@ export default function RevisionReview({
                         activeChangeId === c.id ? styles.railItemActive : "",
                         done ? styles.railItemDone : "",
                       ].join(" ")}
-                      onClick={() => selectChange(c.id)}
+                      onClick={() => focusChange(c.id)}
                     >
                       <span
                         className={styles.railTick}
@@ -1163,6 +1393,7 @@ export default function RevisionReview({
                 </main>
               )
             : renderContent()}
+        {phase === "content" && !nothingToDo && renderDock()}
       </div>
 
       {brainstormSeed && (
@@ -1379,33 +1610,23 @@ export default function RevisionReview({
               : item.kind === "added"
                 ? ["added"]
                 : [];
-            const expanded = c != null && expandedId === c.id;
+            const isActive = c != null && activeChangeId === c.id;
 
-            // For edited clauses: compute the inline tracked-changes redline that will be
-            // rendered in the row body instead of plain node.text.
-            //   - expanded row:     pass the live selectedHunkId so the selected fragment
-            //     is highlighted; fragments are interactive (stopPropagation + handler).
-            //   - non-expanded row: pass null for selectedHunkId (no selection shown);
-            //     clicking a fragment expands the row and immediately selects the hunk via
-            //     React 18 state batching (setExpandedId then setSelectedHunkId wins last).
-            const inlineRedline =
-              c?.change_kind === "edited"
-                ? renderInlineTrackedClause(
-                    c,
-                    expanded ? selectedHunkId : null,
-                    (hunkId) => {
-                      if (!expanded) {
-                        setActiveChangeId(c.id);
-                        setExpandedId(c.id);
-                        setEditKey(null);
-                        rowRefs.current
-                          .get(c.id)
-                          ?.scrollIntoView({ behavior: "smooth", block: "center" });
-                      }
-                      setSelectedHunkId(hunkId);
-                    },
-                  )
-                : undefined;
+            // The inline tracked-changes redline rendered in the row body in place of plain
+            // node.text, for EVERY change kind (edited / added / deleted) — ONCE (DD-83),
+            // never a box-below copy. Clicking a change fragment focuses that hunk; the dock
+            // (not an inline panel) carries the controls. The focused clause highlights its
+            // selected fragment; re-opened decisions render pending (dotted) via `reopened`.
+            const inlineRedline = c
+              ? renderInlineTrackedClause(
+                  c,
+                  isActive ? selectedHunkId : null,
+                  (hunkId) => {
+                    if (hunkId) focusHunk(c.id, hunkId);
+                  },
+                  reopened,
+                )
+              : undefined;
 
             return (
               <DocRow
@@ -1414,22 +1635,16 @@ export default function RevisionReview({
                 added={item.kind === "added"}
                 kinds={kinds}
                 changeId={c?.id ?? null}
-                active={c != null && activeChangeId === c.id}
+                active={isActive}
                 decided={c?.status === "complete"}
-                onSelect={selectChange}
+                onSelect={focusChange}
                 registerRef={registerRef}
                 nodeKey={item.key}
                 isParent={docNodeParents.has(item.key)}
                 collapsed={collapsedDocNodes.has(item.key)}
                 onToggleCollapse={toggleDocNode}
                 inlineRedline={inlineRedline}
-              >
-                {expanded && c ? (
-                  <div className={styles.expand} onClick={(e) => e.stopPropagation()}>
-                    {renderExpand(c)}
-                  </div>
-                ) : null}
-              </DocRow>
+              />
             );
           })}
         </div>
@@ -1469,44 +1684,46 @@ export default function RevisionReview({
     );
   }
 
-  function renderExpand(c: ReviewChange) {
-    // For edited clauses: find the hunk whose fragment is selected (if any) and show its
-    // inline menu immediately below the tracked-changes body. Only one at a time.
-    const selectedHunk =
-      selectedHunkId !== null
-        ? (c.hunks.find((hk) => hk.id === selectedHunkId) ?? null)
-        : null;
-    return (
-      <>
-        {c.change_kind === "edited" ? (
-          // The redline is already rendered in the row body (inlineRedline prop) — no
-          // duplicate here. The expand panel contributes only the inline hunk menu when
-          // the operator has selected a change fragment by clicking it in the row.
-          selectedHunk !== null ? renderHunkMenu(c, selectedHunk) : null
-        ) : (
-          renderWholeNode(c)
-        )}
-        <div className={styles.escalate}>
-          <button type="button" className={styles.btnDonna} onClick={() => openBrainstorm(c)}>
-            Brainstorm with Donna ↗
-          </button>
-        </div>
-      </>
-    );
-  }
+  // ---- the stable decision dock (DD-83) ----------------------------------
+  // The single home for Phase-2 decision controls: a fixed panel in the right pane that
+  // reads the FOCUSED cursor stop (activeChangeId + selectedHunkId) and renders the
+  // clause context, Donna's recommendation, and the action buttons. The inline document
+  // never hosts controls — clicking a change focuses it here; the cursor walk / `<`/`>`
+  // move the focus; Edit commits on SAVE (advancing the cursor), not on click.
+  function renderDock() {
+    const c = activeChangeId ? changeById.get(activeChangeId) : null;
+    const h = c && selectedHunkId ? (c.hunks.find((x) => x.id === selectedHunkId) ?? null) : null;
 
-  // Inline hunk menu — shown below the tracked-changes clause when the operator clicks a
-  // change fragment. One menu at a time (selectedHunkId). Donna's recommended action is
-  // highlighted as a filled Donna-purple button; others stay ghost/donna-style.
-  // Verdict map: donna_verdict "accept" → Accept theirs, "counter" → Use Donna's, "keep" → Keep.
-  function renderHunkMenu(c: ReviewChange, h: ReviewHunk) {
-    const editing = editKey === h.id;
-    const decided = h.verdict !== "pending";
+    // No focused stop → the cursor is at the end (everything decided → Apply) or nothing
+    // is selected yet. A non-interactive prompt; the walk lands a real stop here.
+    if (!c || !h) {
+      return (
+        <aside className={styles.dock} aria-label="Decision">
+          <div className={styles.dockEmpty}>
+            {allDecided
+              ? "Every change is decided — apply to your working copy above."
+              : "Pick a change on the left, or press › to walk to the next open one."}
+          </div>
+        </aside>
+      );
+    }
+
+    const isEdited = c.change_kind === "edited";
+    const added = c.change_kind === "new";
+    const decided = isEdited ? h.verdict !== "pending" : c.status === "complete";
     const dv = (h.donna_verdict ?? "").trim().toLowerCase();
     const recommended: "accept" | "counter" | "keep" | null =
       dv === "accept" ? "accept" : dv === "counter" ? "counter" : dv === "keep" ? "keep" : null;
+    const acceptLabel = added ? "Accept addition" : c.change_kind === "deleted" ? "Accept removal" : "Accept theirs";
+    const kindLabel = added ? "Added clause" : c.change_kind === "deleted" ? "Deleted clause" : "Modified";
+    const busyHere = busy === c.id || busy === h.id;
+
     return (
-      <div className={styles.hunkMenu}>
+      <aside className={styles.dock} aria-label="Decision">
+        <div className={styles.dockHead}>
+          <span className={styles.dockAnchor}>{anchorLabel(c)}</span>
+          <span className={styles.dockKind}>{kindLabel}</span>
+        </div>
         {renderDonnaBlock(h)}
         {decided && !editing && (
           <div className={styles.decided}>
@@ -1520,159 +1737,59 @@ export default function RevisionReview({
         )}
         {editing ? (
           <InlineEditor
-            seed={h.donna_counter_text ?? h.proposed_text ?? ""}
-            busy={busy === h.id}
-            onSave={(text) => void runHunk(h, "edit", text)}
-            onCancel={() => setEditKey(null)}
+            seed={h.donna_counter_text ?? h.proposed_text ?? h.original_text ?? ""}
+            busy={busyHere}
+            onSave={(text) => saveEdit(text)}
+            onCancel={() => setEditing(false)}
           />
         ) : (
           <div className={styles.menuActions}>
             <button
               type="button"
               className={recommended === "accept" ? styles.btnRecommended : styles.btnGhost}
-              disabled={busy === h.id}
-              onClick={() => void runHunk(h, "accept")}
+              disabled={busyHere}
+              onClick={() => decideFocused("accept")}
             >
-              Accept theirs
+              {acceptLabel}
             </button>
             <button
               type="button"
               className={recommended === "counter" ? styles.btnRecommended : styles.btnDonna}
-              disabled={busy === h.id || !h.donna_counter_text}
+              disabled={busyHere || !h.donna_counter_text}
               title={h.donna_counter_text ? undefined : "Donna hasn't staged counter-language here"}
-              onClick={() => void runHunk(h, "counter")}
+              onClick={() => decideFocused("donna")}
             >
               Use Donna&apos;s
             </button>
             <button
               type="button"
               className={styles.btnGhost}
-              disabled={busy === h.id}
-              onClick={() => setEditKey(h.id)}
+              disabled={busyHere}
+              onClick={() => editFocused()}
             >
               Edit
             </button>
             <button
               type="button"
               className={recommended === "keep" ? styles.btnRecommended : styles.btnGhost}
-              disabled={busy === h.id}
-              onClick={() => void runHunk(h, "keep")}
+              disabled={busyHere}
+              onClick={() => decideFocused("reject")}
             >
               Reject
             </button>
           </div>
         )}
-      </div>
-    );
-  }
-
-  // Whole-node card (added or deleted clause): the entire text block is the clickable
-  // fragment. Clicking it selects the block and reveals the inline menu below, same
-  // interaction model as clicking an ins/del span in an edited clause.
-  function renderWholeNode(c: ReviewChange) {
-    const h = c.hunks[0];
-    const added = c.change_kind === "new";
-    const text = added ? h?.proposed_text ?? "" : h?.original_text ?? "";
-    const editing = editKey === c.id;
-    const decided = c.status === "complete";
-    const acceptLabel = added ? "Accept addition" : "Accept removal";
-    const keepLabel = "Reject";
-    const fragSelected = h != null && selectedHunkId === h.id;
-    const dv = (h?.donna_verdict ?? "").trim().toLowerCase();
-    const recommended: "accept" | "counter" | "keep" | null =
-      dv === "accept" ? "accept" : dv === "counter" ? "counter" : dv === "keep" ? "keep" : null;
-
-    function toggleWhole() {
-      if (!h) return;
-      setSelectedHunkId(fragSelected ? null : h.id);
-    }
-
-    return (
-      <div className={styles.hunk}>
-        {/* The clickable fragment — the whole added/deleted text block */}
-        <div
-          className={[styles.wholeNodeFrag, fragSelected ? styles.fragSelected : ""].join(" ")}
-          role="button"
-          tabIndex={h ? 0 : undefined}
-          aria-pressed={fragSelected}
-          onClick={h ? toggleWhole : undefined}
-          onKeyDown={
-            h
-              ? (e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    toggleWhole();
-                  }
-                }
-              : undefined
-          }
-        >
-          <p className={styles.diff}>
-            <span className={added ? segClass("ins") : segClass("del")}>{text || "(no text)"}</span>
-          </p>
+        <div className={styles.escalate}>
+          <button type="button" className={styles.btnDonna} onClick={() => openBrainstorm(c)}>
+            Brainstorm with Donna ↗
+          </button>
         </div>
-        {/* Inline menu — appears on selection, same as for edited-clause fragments */}
-        {fragSelected && h && (
-          <div className={styles.hunkMenu}>
-            {renderDonnaBlock(h)}
-            {decided && !editing && (
-              <div className={styles.decided}>
-                <span className={styles.decidedChip} data-tone={verdictTone(h.verdict)}>
-                  {VERDICT_LABEL[h.verdict]}
-                </span>
-                {h.final_text && h.verdict === "modified" && (
-                  <span className={styles.decidedText}>{h.final_text}</span>
-                )}
-              </div>
-            )}
-            {editing ? (
-              <InlineEditor
-                seed={h.donna_counter_text ?? text}
-                busy={busy === c.id}
-                onSave={(t) => void runNode(c, "edit", t)}
-                onCancel={() => setEditKey(null)}
-              />
-            ) : (
-              <div className={styles.menuActions}>
-                <button
-                  type="button"
-                  className={recommended === "accept" ? styles.btnRecommended : styles.btnGhost}
-                  disabled={busy === c.id}
-                  onClick={() => void runNode(c, "accept")}
-                >
-                  {acceptLabel}
-                </button>
-                {h.donna_counter_text && (
-                  <button
-                    type="button"
-                    className={recommended === "counter" ? styles.btnRecommended : styles.btnDonna}
-                    disabled={busy === c.id}
-                    onClick={() => void runNode(c, "edit", h.donna_counter_text ?? "")}
-                  >
-                    Use Donna&apos;s
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className={styles.btnGhost}
-                  disabled={busy === c.id}
-                  onClick={() => setEditKey(c.id)}
-                >
-                  Edit
-                </button>
-                <button
-                  type="button"
-                  className={recommended === "keep" ? styles.btnRecommended : styles.btnGhost}
-                  disabled={busy === c.id}
-                  onClick={() => void runNode(c, "reject")}
-                >
-                  {keepLabel}
-                </button>
-              </div>
-            )}
-          </div>
+        {actionError && (
+          <p className={styles.streamError} role="alert">
+            {actionError}
+          </p>
         )}
-      </div>
+      </aside>
     );
   }
 }
@@ -1722,10 +1839,61 @@ function verdictTone(v: ReviewHunk["verdict"]): string {
 }
 
 
-function segClass(type: DiffSeg["type"]): string {
-  if (type === "ins") return styles.diffIns;
-  if (type === "del") return styles.diffDel;
-  return styles.diffSame;
+// Compose the encoding classes for one segment. Colour comes from the type
+// (ins=green / del=red / donna=purple / same=normal); the decision-state axis adds
+// .tcDotted when the change is still pending (solid otherwise); a rejected counterparty
+// addition keeps its green colour but draws a solid strikethrough via .diffStruck.
+function segClasses(seg: DiffSeg): string {
+  const cls: string[] = [];
+  if (seg.type === "ins") cls.push(styles.diffIns);
+  else if (seg.type === "del") cls.push(styles.diffDel);
+  else if (seg.type === "donna") cls.push(styles.diffDonna);
+  else cls.push(styles.diffSame);
+  if (seg.pending) cls.push(styles.tcDotted);
+  if (seg.struck) cls.push(styles.diffStruck);
+  return cls.join(" ");
+}
+
+// Verdict-aware segments for ONE hunk — shared by the edited-clause splice and the
+// whole-node (added/deleted) renderer so the colour x line-style encoding is identical
+// everywhere (DD-83). Redline content is always the deterministic diff text (DD-64); only
+// colour/line-style are decided here, from the persisted verdict + final_text.
+//   pending  -> their del (red) + their ins (green), both DOTTED.
+//   accepted -> same, SOLID.
+//   rejected -> their deletion restored to normal; their insertion kept as a green SOLID
+//               strikethrough trace.
+//   modified -> what was swapped out (baseline, or their addition when there is no
+//               baseline) red SOLID strikethrough + the operator's final language purple
+//               SOLID underline (Use Donna's / Edit).
+function hunkChangeSegs(h: ReviewHunk, forcePending = false): DiffSeg[] {
+  const orig = h.original_text ?? "";
+  const proposed = h.proposed_text ?? "";
+  const final = h.final_text ?? "";
+  const segs: DiffSeg[] = [];
+  // A re-opened decision (DD-83) renders as pending/dotted again until re-decided, even
+  // though the persisted verdict is still settled.
+  const verdict = forcePending ? "pending" : h.verdict;
+  switch (verdict) {
+    case "pending":
+      if (orig) segs.push({ type: "del", text: orig, hunkId: h.id, pending: true });
+      if (proposed) segs.push({ type: "ins", text: proposed, hunkId: h.id, pending: true });
+      break;
+    case "accepted":
+      if (orig) segs.push({ type: "del", text: orig, hunkId: h.id });
+      if (proposed) segs.push({ type: "ins", text: proposed, hunkId: h.id });
+      break;
+    case "rejected":
+      if (orig) segs.push({ type: "same", text: orig });
+      if (proposed) segs.push({ type: "ins", text: proposed, hunkId: h.id, struck: true });
+      break;
+    case "modified": {
+      const swappedOut = orig || proposed;
+      if (swappedOut) segs.push({ type: "del", text: swappedOut, hunkId: h.id });
+      if (final) segs.push({ type: "donna", text: final, hunkId: h.id });
+      break;
+    }
+  }
+  return segs;
 }
 
 // Splice an edited clause's hunks back into its full baseline body so the diff reads
@@ -1735,43 +1903,64 @@ function segClass(type: DiffSeg["type"]): string {
 // never have a hunkId — they are not interactive. Adjacent same-type segments from the
 // same hunk are still merged; segments from different hunks are NOT merged (they
 // carry different hunkIds and are always separated by a "same" run anyway).
-function inContextSegs(body: string, hunks: ReviewHunk[]): DiffSeg[] {
+function inContextSegs(body: string, hunks: ReviewHunk[], reopened?: Set<string>): DiffSeg[] {
   const sorted = [...hunks].sort((a, b) => (a.position_in_body ?? 0) - (b.position_in_body ?? 0));
   const out: DiffSeg[] = [];
-  const push = (type: DiffSeg["type"], text: string, hunkId?: string) => {
-    if (!text) return;
+  const push = (seg: DiffSeg) => {
+    if (!seg.text) return;
     const last = out[out.length - 1];
-    if (last && last.type === type && last.hunkId === hunkId) last.text += text;
-    else out.push({ type, text, hunkId });
+    if (
+      last &&
+      last.type === seg.type &&
+      last.hunkId === seg.hunkId &&
+      last.pending === seg.pending &&
+      last.struck === seg.struck
+    ) {
+      last.text += seg.text;
+    } else {
+      out.push({ ...seg });
+    }
   };
   let cursor = 0;
   for (const h of sorted) {
     const pos = h.position_in_body ?? 0;
-    if (pos > cursor) push("same", body.slice(cursor, pos));
-    const orig = h.original_text ?? "";
-    // Bundled emit: the entire removed text struck through, then the entire new text —
-    // never word-interleaved. Pure-insertion hunks (no original) emit only the ins;
-    // pure-deletion hunks (no proposed) emit only the del.
-    if (orig) push("del", orig, h.id);
-    if (h.proposed_text) push("ins", h.proposed_text, h.id);
-    cursor = Math.max(cursor, pos + orig.length);
+    if (pos > cursor) push({ type: "same", text: body.slice(cursor, pos) });
+    // The original substring [pos, pos+orig.length) is represented by the hunk's own
+    // verdict-aware segments (del/same), never by a body slice — so advance the cursor
+    // past it. Pure-insertion hunks (no original) contribute only an ins segment.
+    for (const s of hunkChangeSegs(h, reopened?.has(h.id) ?? false)) push(s);
+    cursor = Math.max(cursor, pos + (h.original_text ?? "").length);
   }
-  if (cursor < body.length) push("same", body.slice(cursor));
+  if (cursor < body.length) push({ type: "same", text: body.slice(cursor) });
   return out;
 }
 
-// Full-clause inline tracked-changes view. Insertions: green underline (.diffIns).
-// Deletions: red strikethrough (.diffDel). Each ins/del span is a click target — it
-// carries its source hunk id so clicking it selects that hunk's inline menu. "same"
-// spans are plain text, not interactive.
+// Inline segments for ANY change kind, rendered ONCE in the clause body (DD-83):
+//   - edited:  the hunks spliced into the full baseline body (redline in place).
+//   - new:     the whole added clause as one green insertion (dotted->solid->struck).
+//   - deleted: the whole removed clause as one red deletion (dotted->solid->restored).
+function changeInlineSegs(c: ReviewChange, reopened?: Set<string>): DiffSeg[] {
+  if (c.change_kind === "edited") {
+    const body = c.context?.baseline?.body;
+    if (!body) return [];
+    return inContextSegs(body, c.hunks, reopened);
+  }
+  const h = c.hunks[0];
+  return h ? hunkChangeSegs(h, reopened?.has(h.id) ?? false) : [];
+}
+
+// Full-clause inline tracked-changes view, Word-style, for every change kind. Colour x
+// line-style encoding via segClasses (DD-83). Each change span is a click target — it
+// carries its source hunk id so clicking it focuses that change. "same" spans are plain
+// text, not interactive.
 function renderInlineTrackedClause(
   c: ReviewChange,
   selectedHunkId: string | null,
   onSelectHunk: (hunkId: string | null) => void,
+  reopened?: Set<string>,
 ) {
-  const body = c.context?.baseline?.body;
-  if (!body) return null;
-  const segs = inContextSegs(body, c.hunks);
+  const segs = changeInlineSegs(c, reopened);
+  if (segs.length === 0) return null;
   return (
     <div className={styles.inlineClause}>
       <p className={styles.inlineClauseBody}>
@@ -1782,7 +1971,7 @@ function renderInlineTrackedClause(
               <span
                 key={i}
                 className={[
-                  segClass(seg.type),
+                  segClasses(seg),
                   isSelected ? styles.fragSelected : styles.fragChange,
                 ].join(" ")}
                 role="button"
@@ -1805,7 +1994,7 @@ function renderInlineTrackedClause(
             );
           }
           return (
-            <span key={i} className={segClass(seg.type)}>
+            <span key={i} className={segClasses(seg)}>
               {seg.text}
             </span>
           );

@@ -38,10 +38,10 @@ class _FakeConn:
         return []
 
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
-        if "snapshot_count" in sql:
+        if "next_version" in sql:
             return {
                 "last_export_at": None if self._drift else _NOW,
-                "snapshot_count": self._snapshot_count,
+                "next_version": self._snapshot_count + 1,
                 "drift": self._drift,
             }
         if "INSERT INTO contract_snapshots" in sql:
