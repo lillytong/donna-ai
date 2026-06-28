@@ -94,9 +94,9 @@ _SNAPSHOT_COUNT = "SELECT count(*) FROM contract_snapshots WHERE contract_id = $
 
 _INSERT_SESSION = """
 INSERT INTO counterparty_revision_sessions
-    (contract_id, baseline_snapshot_id, source, source_filename, parse_path,
-     status, changes_count)
-VALUES ($1, $2, $3, $4, 'clean_diff', 'reviewing', $5)
+    (contract_id, baseline_snapshot_id, as_received_snapshot_id, source, source_filename,
+     parse_path, status, changes_count)
+VALUES ($1, $2, $3, $4, $5, 'clean_diff', 'reviewing', $6)
 RETURNING id
 """
 
@@ -390,6 +390,7 @@ async def import_revision(
             _INSERT_SESSION,
             contract_id,
             baseline_snapshot_id,
+            as_received.id,
             db_source,
             request.source_filename,
             0,

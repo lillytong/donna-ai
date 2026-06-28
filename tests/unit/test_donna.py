@@ -321,7 +321,9 @@ class _AppendCapturingConn:
         return "OK"
 
 
-def _run_ask(monkeypatch: object, model_text: str, **ask_kwargs: object):  # type: ignore[no-untyped-def]
+def _run_ask(  # type: ignore[no-untyped-def]
+    monkeypatch: object, model_text: str, firm_profile: str = "", **ask_kwargs: object
+):
     import asyncio
     import contextlib
 
@@ -330,6 +332,7 @@ def _run_ask(monkeypatch: object, model_text: str, **ask_kwargs: object):  # typ
     from backend.services.donna import qa
 
     captured: list[dict[str, object]] = []
+    prompts: list[str] = []
     conn = _AppendCapturingConn()
 
     @contextlib.asynccontextmanager
@@ -361,10 +364,14 @@ def _run_ask(monkeypatch: object, model_text: str, **ask_kwargs: object):  # typ
     async def fake_update_summary(*_a: object, **_k: object) -> None:
         return None
 
+    async def fake_get_firm_profile(_conn: object) -> str:
+        return firm_profile
+
     class _Result:
         text = model_text
 
-    async def fake_complete(**_k: object) -> object:
+    async def fake_complete(**kwargs: object) -> object:
+        prompts.append(kwargs["messages"][0]["content"])  # type: ignore[index]
         return _Result()
 
     monkeypatch.setattr(qa, "acquire", fake_acquire)  # type: ignore[attr-defined]
@@ -373,6 +380,7 @@ def _run_ask(monkeypatch: object, model_text: str, **ask_kwargs: object):  # typ
     monkeypatch.setattr(qa, "fetch_messages", fake_fetch_messages)  # type: ignore[attr-defined]
     monkeypatch.setattr(qa, "list_issues", fake_list_issues)  # type: ignore[attr-defined]
     monkeypatch.setattr(qa, "fetch_nodes", fake_fetch_nodes)  # type: ignore[attr-defined]
+    monkeypatch.setattr(qa, "get_firm_profile", fake_get_firm_profile)  # type: ignore[attr-defined]
     monkeypatch.setattr(qa, "append_message", fake_append)  # type: ignore[attr-defined]
     monkeypatch.setattr(qa, "_update_rolling_summary", fake_update_summary)  # type: ignore[attr-defined]
     monkeypatch.setattr(qa, "render", lambda *_a, **_k: "prompt")  # type: ignore[attr-defined]
@@ -380,14 +388,14 @@ def _run_ask(monkeypatch: object, model_text: str, **ask_kwargs: object):  # typ
 
     result = asyncio.run(qa.ask("c1", "Should we accept this?", **ask_kwargs))  # type: ignore[arg-type]
     assistant = next(c for c in captured if c["role"] == "assistant")
-    return result, assistant
+    return result, assistant, prompts[0]
 
 
 def test_ask_persists_softer_deflection_text_when_overridden(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     from backend.services.donna.advise import _ACQUIRE_CONTEXT
 
     deflected = '{"answer": "Raise an issue / get a lawyer.", "kind": "deflected", "citations": []}'
-    result, assistant = _run_ask(monkeypatch, deflected, deflection_text=_ACQUIRE_CONTEXT)
+    result, assistant, _prompt = _run_ask(monkeypatch, deflected, deflection_text=_ACQUIRE_CONTEXT)
     # Persisted text + the returned answer both carry the softer wording, citations dropped.
     assert assistant["content"] == _ACQUIRE_CONTEXT
     assert assistant["citations"] == []
@@ -397,6 +405,28 @@ def test_ask_persists_softer_deflection_text_when_overridden(monkeypatch) -> Non
 
 def test_ask_keeps_model_deflection_prose_without_override(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     deflected = '{"answer": "Raise an issue / get a lawyer.", "kind": "deflected", "citations": []}'
-    _result, assistant = _run_ask(monkeypatch, deflected)
+    _result, assistant, _prompt = _run_ask(monkeypatch, deflected)
     # F10 direct path (no override): the model's own deflection prose is persisted unchanged.
     assert assistant["content"] == "Raise an issue / get a lawyer."
+
+
+# --- qa.ask firm-profile mandate grounding (F32 v1 / DD-90) -----------------
+# The global operator-authored firm profile is appended to the Q&A judge/answer prompt as the
+# firm's standing MANDATE so Donna grounds every answer in the firm's identity + red-lines.
+# Synthetic profile — NOT real firm/contract data (public repo).
+
+_MANDATE_MARK = "FIRM PROFILE / MANDATE"
+_PROFILE = "We are a licensing firm. Standing red-line: never accept uncapped liability."
+
+
+def test_ask_injects_firm_profile_mandate_into_prompt(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    answer = '{"answer": "The cap is in 11.2.", "kind": "answer", "citations": []}'
+    _result, _assistant, prompt = _run_ask(monkeypatch, answer, firm_profile=_PROFILE)
+    assert _MANDATE_MARK in prompt  # the labelled mandate block is present
+    assert _PROFILE in prompt  # the operator's profile text reaches the model
+
+
+def test_ask_empty_firm_profile_not_injected(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    answer = '{"answer": "The cap is in 11.2.", "kind": "answer", "citations": []}'
+    _result, _assistant, prompt = _run_ask(monkeypatch, answer, firm_profile="")
+    assert _MANDATE_MARK not in prompt  # unset profile -> no-op

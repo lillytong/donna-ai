@@ -11,14 +11,19 @@ from typing import Any
 
 import pytest
 from backend.models.imports import ContractTreeResponse, StoredNode
+from backend.models.revision_match import MatchedPair, RevisionMatchResult
 from backend.models.revision_review import (
+    ClusterDecideRequest,
     ConfirmMatchRequest,
+    DocumentNode,
     HunkDecideRequest,
     NodeDecideRequest,
     ReviewChange,
     ReviewHunk,
 )
 from backend.services.import_ import revision_review as svc
+from backend.services.import_.revision_cluster import cluster_id as _cluster_id
+from backend.services.import_.revision_cluster import cluster_key as _cluster_key
 
 _SESSION = {
     "id": "s1",
@@ -333,6 +338,115 @@ async def test_confirm_match_rejects_completed_session() -> None:
     assert not any("SET node_id = $2" in sql for sql, _ in conn.executes)
 
 
+# --- cross-document clustering (DD-89 / F34) --------------------------------
+
+
+def test_stamp_clusters_groups_recurring_edits_and_skips_singleton_and_abstain() -> None:
+    # Two edited clauses carry the SAME counterparty edit (modulo case/whitespace/edge punct);
+    # they must share one cluster id (size 2). A unique edit stays a singleton; an abstain whose
+    # text happens to match is excluded (recommend never judged it) and does not bump the count.
+    a = svc._to_change(
+        _change(id="chA", node_id="bA", match_confidence=0.9),
+        [
+            svc._to_hunk(
+                _hunk(id="hA", change_id="chA", original_text="Buyer", proposed_text="Purchaser")
+            )
+        ],
+    )
+    b = svc._to_change(
+        _change(id="chB", node_id="bB", match_confidence=0.9),
+        [
+            svc._to_hunk(
+                _hunk(
+                    id="hB", change_id="chB", original_text="(Buyer", proposed_text="  purchaser  "
+                )
+            )
+        ],
+    )
+    singleton = svc._to_change(
+        _change(id="chC", node_id="bC", match_confidence=0.9),
+        [svc._to_hunk(_hunk(id="hC", change_id="chC", original_text="foo", proposed_text="bar"))],
+    )
+    abstain = svc._to_change(
+        _change(id="chD"),
+        [
+            svc._to_hunk(
+                _hunk(id="hD", change_id="chD", original_text="Buyer", proposed_text="Purchaser")
+            )
+        ],
+    )
+    svc._stamp_clusters([a, b, singleton, abstain])
+
+    ha, hb = a.hunks[0], b.hunks[0]
+    # Same id as the SHARED helper Step-1 recommend-time clustering uses (no drift).
+    expected = _cluster_id(_cluster_key("substantive", "Buyer", "Purchaser") or ("", ""))
+    assert ha.cluster_id == expected and hb.cluster_id == expected
+    assert ha.cluster_size == 2 and hb.cluster_size == 2
+    assert singleton.hunks[0].cluster_id is None and singleton.hunks[0].cluster_size == 1
+    assert abstain.hunks[0].cluster_id is None and abstain.hunks[0].cluster_size == 1
+
+
+@pytest.mark.asyncio
+async def test_decide_cluster_propagates_to_all_member_change_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    changes = [
+        _change(id="chA", node_id="bA", match_confidence=0.9, hunk_count=1),
+        _change(id="chB", node_id="bB", match_confidence=0.9, hunk_count=1),
+    ]
+    hunks = [
+        _hunk(id="hA", change_id="chA", original_text="Buyer", proposed_text="Purchaser"),
+        _hunk(id="hB", change_id="chB", original_text="Buyer", proposed_text="Purchaser"),
+    ]
+    conn = FakeConn(changes=changes, hunks=hunks)
+    sentinel = object()
+
+    async def _stub_payload(_conn: Any, _sid: str) -> Any:
+        return sentinel
+
+    monkeypatch.setattr(svc, "get_review_payload", _stub_payload)
+    cid = _cluster_id(_cluster_key("substantive", "Buyer", "Purchaser") or ("", ""))
+    result = await svc.decide_cluster(conn, "s1", cid, ClusterDecideRequest(verdict="accept"))
+
+    assert result is sentinel
+    verdict_updates = [a for sql, a in conn.executes if "SET verdict = $2" in sql]
+    assert {a[0] for a in verdict_updates} == {"hA", "hB"}
+    assert all(a[1] == "accepted" and a[2] == "Purchaser" for a in verdict_updates)
+    # Progress refreshed for EACH distinct affected change row (members span >1 change).
+    progress = [a for sql, a in conn.executes if "SET hunks_decided = sub.decided" in sql]
+    assert {a[0] for a in progress} == {"chA", "chB"}
+
+
+@pytest.mark.asyncio
+async def test_decide_cluster_unknown_cluster_is_404() -> None:
+    conn = FakeConn(
+        changes=[_change(id="chA", node_id="bA", match_confidence=0.9)],
+        hunks=[_hunk(id="hA", change_id="chA")],
+    )
+    with pytest.raises(svc.ClusterNotFound) as exc:
+        await svc.decide_cluster(conn, "s1", "cl_missing", ClusterDecideRequest(verdict="accept"))
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_peel_off_decide_hunk_leaves_cluster_sibling_untouched() -> None:
+    # A member overridden via the per-hunk decide must not touch its cluster siblings.
+    changes = [
+        _change(id="chA", node_id="bA", match_confidence=0.9, hunk_count=1),
+        _change(id="chB", node_id="bB", match_confidence=0.9, hunk_count=1),
+    ]
+    hunks = [
+        _hunk(id="hA", change_id="chA", original_text="Buyer", proposed_text="Purchaser"),
+        _hunk(id="hB", change_id="chB", original_text="Buyer", proposed_text="Purchaser"),
+    ]
+    conn = FakeConn(changes=changes, hunks=hunks)
+    await svc.decide_hunk(conn, "hA", HunkDecideRequest(verdict="keep"))
+
+    verdict_updates = [a for sql, a in conn.executes if "SET verdict = $2" in sql]
+    assert len(verdict_updates) == 1
+    assert verdict_updates[0][0] == "hA" and verdict_updates[0][1] == "rejected"
+
+
 # --- change structural context (F03c UX enrichment, every change kind) ------
 
 
@@ -629,3 +743,353 @@ def test_flatten_document_reading_order_then_role_aware_numbering() -> None:
 
 def test_flatten_document_none_tree_is_empty() -> None:
     assert svc._flatten_document(None) == []
+
+
+def test_flatten_marks_heading_only_node_and_keeps_heading_text() -> None:
+    # Mirrors import's `typeLabel === "Heading"` (heading set, no body) so the review
+    # pane can bold headings. A heading-only node -> is_heading True AND text carries the
+    # heading (renders, never empty); a body-bearing clause -> is_heading False.
+    tree = ContractTreeResponse.from_rows(
+        "c1",
+        [
+            _sn("h", None, 0, heading="Payment Terms"),
+            _sn("c", "h", 0, body="The licensee shall pay within thirty days."),
+        ],
+    )
+    flat = {n.node_id: n for n in svc._flatten_document(tree)}
+    assert flat["h"].is_heading is True
+    assert flat["h"].text == "Payment Terms"
+    assert flat["c"].is_heading is False
+    assert flat["c"].text == "The licensee shall pay within thirty days."
+
+
+# --- BUG R5: context number is role-aware, never `_locate`'s inflated count, and new
+# clauses are placed in document order (not floated to the top) --------------------
+
+
+def test_build_side_context_prefers_role_aware_number_over_locate() -> None:
+    # `_locate` numbers "pterm" positionally as "1.1.1". The canonical role-aware map
+    # (the number derive_numbers/the two-pane view assign) wins when supplied — this is
+    # what stops a matched clause showing `_locate`'s inflated path (the 13.3 -> 31.3.1
+    # / 18.1 -> 36.1 live failures, where front-matter/recitals had bumped the count).
+    tree = _edited_baseline_tree()
+    role_aware = svc._build_side_context("baseline", tree, "pterm", {"pterm": "13.3.1"})
+    assert role_aware.number == "13.3.1"
+    # Breadcrumb / body still come from the positional walk (only the NUMBER is overridden).
+    assert role_aware.breadcrumb == ["Services", "Payment"]
+    assert role_aware.body == "The licensee shall pay within thirty days of invoice."
+    # No map (or id absent) -> falls back to the positional path (unit-test/legacy shape).
+    fallback = svc._build_side_context("baseline", tree, "pterm", None)
+    assert fallback.number == "1.1.1"
+    assert svc._build_side_context("baseline", tree, "pterm", {"other": "9.9"}).number == "1.1.1"
+
+
+def test_assign_clause_numbers_excludes_nonclause_no_inflated_number() -> None:
+    # Reproduces the >20 inflation at its root: three front-matter siblings precede the
+    # clauses. A naive positional count would make the first clause "4" and a child "4.1";
+    # the role-aware scheme skips non-clause nodes so they stay "1" / "1.1" — i.e. a clause
+    # number can never exceed the clause count, the property the live 31.3.1 / 36.1 violated.
+    def dn(node_id: str, role: str, depth: int) -> DocumentNode:
+        return DocumentNode(
+            node_id=node_id, clause_number=None, role=role, depth=depth, text=node_id
+        )
+
+    nodes = [
+        dn("title", "title", 0),
+        dn("recital-a", "recital", 0),
+        dn("recital-b", "recital", 0),
+        dn("c1", "clause", 0),
+        dn("c1-1", "clause", 1),
+        dn("c2", "clause", 0),
+    ]
+    svc._assign_clause_numbers(nodes)
+    numbered = {n.node_id: n.clause_number for n in nodes}
+    assert numbered["title"] is None and numbered["recital-a"] is None
+    assert numbered["c1"] == "1" and numbered["c1-1"] == "1.1" and numbered["c2"] == "2"
+
+
+def _doc_node(node_id: str, depth: int = 0) -> DocumentNode:
+    return DocumentNode(
+        node_id=node_id, clause_number=None, role="clause", depth=depth, text=node_id
+    )
+
+
+def _resolved_for_order() -> svc._ResolvedDocument:
+    # Revised reading order (flat snapshot index == node_id): b1=0, b2=1, NEW=2, b3=3.
+    # Baseline order has a DELETED node `bdel` between b2 and b3 (absent from revised).
+    revised = [_doc_node("0"), _doc_node("1"), _doc_node("2"), _doc_node("3")]
+    baseline = [_doc_node("b1"), _doc_node("b2"), _doc_node("bdel"), _doc_node("b3")]
+    match = RevisionMatchResult(
+        matches=[
+            MatchedPair(incoming_index=0, baseline_id="b1", confidence=1.0),
+            MatchedPair(incoming_index=1, baseline_id="b2", confidence=1.0),
+            MatchedPair(incoming_index=3, baseline_id="b3", confidence=1.0),
+        ],
+        new=[2],
+        deleted=["bdel"],
+        abstains=[],
+    )
+    return svc._ResolvedDocument(
+        baseline=baseline,
+        revised=revised,
+        baseline_tree=None,
+        revised_tree=None,
+        match=match,
+        received_snapshot_id="snap",
+    )
+
+
+def test_document_order_new_clause_not_floated_to_top() -> None:
+    # A genuinely-new clause whose F03b `proposed_parent_id` is NULL must land at its REAL
+    # revised position (after b2, index 2), never at the top — the live "31.3.1/36.1 sort
+    # to the top" failure. Edited/deleted interleave by document position.
+    key = svc._document_order_key(_resolved_for_order())
+    edited_b1 = _make_change("edited", [_ctx_hunk("a", "b")], node_id="b1", conf=0.6)
+    edited_b2 = _make_change("edited", [_ctx_hunk("a", "b")], node_id="b2", conf=0.6)
+    edited_b3 = _make_change("edited", [_ctx_hunk("a", "b")], node_id="b3", conf=0.6)
+    deleted = _make_change("deleted", [_ctx_hunk("x", None)], node_id="bdel")
+    new = _make_change("new", [_ctx_hunk(None, "added")], parent=None, order=100)
+    new.received_node_id = "2"
+
+    ordered = sorted([new, edited_b3, deleted, edited_b1, edited_b2], key=key)
+    assert [c.node_id or "NEW" for c in ordered] == ["b1", "b2", "bdel", "NEW", "b3"]
+    # The new clause is NOT first (the regression guard).
+    assert ordered[0] is not new
+
+
+def test_document_order_new_with_null_received_falls_back_to_parent_anchor() -> None:
+    # Defensive: a pre-migration-0011 new row (received_node_id NULL) anchors just after
+    # its proposed_parent's revised position instead of floating to the top.
+    key = svc._document_order_key(_resolved_for_order())
+    new = _make_change("new", [_ctx_hunk(None, "added")], parent="b1", order=100)
+    edited_b3 = _make_change("edited", [_ctx_hunk("a", "b")], node_id="b3", conf=0.6)
+    ordered = sorted([edited_b3, new], key=key)
+    assert ordered[0] is new  # anchored at b1 (pos 0)+0.5, before b3 (pos 3)
+
+
+# --- projected reading order: verdict-aware numbering + real placement -------------
+
+
+def _resolved_for_projection() -> svc._ResolvedDocument:
+    # Baseline two top-level clauses b1, b2 -> "1", "2". Counterparty inserts a NEW clause
+    # between them (revised order: 0=match b1, 1=NEW, 2=match b2). Mirrors the section-18
+    # insert pushing the next section down.
+    revised = [_doc_node("0"), _doc_node("1"), _doc_node("2")]
+    baseline = [_doc_node("b1"), _doc_node("b2")]
+    match = RevisionMatchResult(
+        matches=[
+            MatchedPair(incoming_index=0, baseline_id="b1", confidence=1.0),
+            MatchedPair(incoming_index=2, baseline_id="b2", confidence=1.0),
+        ],
+        new=[1],
+        deleted=[],
+        abstains=[],
+    )
+    return svc._ResolvedDocument(
+        baseline=baseline,
+        revised=revised,
+        baseline_tree=None,
+        revised_tree=None,
+        match=match,
+        received_snapshot_id="snap",
+    )
+
+
+def _added_change(verdict: str = "pending") -> ReviewChange:
+    hunk = _ctx_hunk(None, "Limitation of Liability")
+    hunk.verdict = verdict  # type: ignore[assignment]
+    c = _make_change("new", [hunk], parent=None, order=100)
+    c.received_node_id = "1"  # its real revised position (between b1 and b2)
+    return c
+
+
+def test_projected_numbering_bumps_baseline_clause_down_for_pending_addition() -> None:
+    # (a) A non-rejected (pending) addition before b2 pushes b2 from "2" to "3".
+    projected = svc._build_projected(_resolved_for_projection(), [_added_change("pending")])
+    by_id = {p.node_id: p for p in projected}
+    assert by_id["b1"].clause_number == "1"
+    assert by_id["1"].clause_number == "2" and by_id["1"].change_kind == "added"
+    assert by_id["b2"].clause_number == "3"  # bumped down by the insert
+
+
+def test_projected_numbering_reverts_when_addition_rejected() -> None:
+    # (b) Rejecting that addition EMITS it as a struck trace (in place, unnumbered) and
+    # excludes it from the projected numbering tree; b2 renumbers back to "2".
+    projected = svc._build_projected(_resolved_for_projection(), [_added_change("rejected")])
+    by_id = {p.node_id: p for p in projected}
+    # The rejected addition is still emitted at its real revised position (between b1, b2)...
+    assert "1" in by_id
+    rejected_add = by_id["1"]
+    assert rejected_add.change_kind == "added"
+    assert rejected_add.numbered is False and rejected_add.clause_number is None
+    assert [p.node_id for p in projected] == ["b1", "1", "b2"]
+    # ...but it consumes no number, so the surrounding clauses number as if it were absent.
+    assert by_id["b1"].clause_number == "1"
+    assert by_id["b2"].clause_number == "2"  # back to the baseline number
+
+
+def test_projected_added_clause_placed_at_real_position_not_top() -> None:
+    # (c) The added clause lands at its real revised position (between b1 and b2), never
+    # floated to the top — the live "added clauses pile at the top" failure.
+    projected = svc._build_projected(_resolved_for_projection(), [_added_change("pending")])
+    assert [p.node_id for p in projected] == ["b1", "1", "b2"]
+    assert projected[0].node_id == "b1"  # top is the real first baseline clause, not the add
+
+
+def test_projected_deletion_accepted_unnumbered_rejected_kept_numbered() -> None:
+    # A deleted baseline node `bdel` (absent from the revised side): an ACCEPTED deletion is
+    # shown in place but excluded from numbering; a REJECTED deletion survives and numbers.
+    resolved = _resolved_for_order()  # baseline b1,b2,bdel,b3 ; bdel matcher-deleted
+    accepted = _make_change("deleted", [_ctx_hunk("x", None)], node_id="bdel")
+    accepted.hunks[0].verdict = "accepted"  # type: ignore[assignment]
+    proj_acc = {p.node_id: p for p in svc._build_projected(resolved, [accepted])}
+    assert proj_acc["bdel"].change_kind == "deleted" and proj_acc["bdel"].numbered is False
+    assert proj_acc["bdel"].clause_number is None
+    # Survivors number contiguously around the removed clause: b1,b2,b3 -> 1,2,3.
+    assert [proj_acc[i].clause_number for i in ("b1", "b2", "b3")] == ["1", "2", "3"]
+
+    rejected = _make_change("deleted", [_ctx_hunk("x", None)], node_id="bdel")
+    rejected.hunks[0].verdict = "rejected"  # type: ignore[assignment]
+    proj_rej = {p.node_id: p for p in svc._build_projected(resolved, [rejected])}
+    assert proj_rej["bdel"].numbered is True and proj_rej["bdel"].clause_number == "3"
+    assert proj_rej["b3"].clause_number == "4"  # the kept deletion pushes b3 down
+
+
+def test_projected_rejected_addition_emitted_struck_unnumbered() -> None:
+    # (a) A REJECTED addition is EMITTED at its real revised position as a struck trace —
+    # numbered=False, clause_number=None, change_kind "added" — and consumes no number, so
+    # the clause below it keeps the number it would have if the addition were absent.
+    projected = svc._build_projected(_resolved_for_projection(), [_added_change("rejected")])
+    by_id = {p.node_id: p for p in projected}
+    added = by_id["1"]
+    assert added.change_kind == "added"
+    assert added.numbered is False and added.clause_number is None
+    assert added.change_id == "ch1"
+    # Emitted in place (between b1 and b2), not omitted and not floated.
+    assert [p.node_id for p in projected] == ["b1", "1", "b2"]
+    # b2 keeps the number it would have with the addition absent (baseline "2").
+    assert by_id["b1"].clause_number == "1"
+    assert by_id["b2"].clause_number == "2"
+
+
+# --- cascade: reject of an added parent rejects its added descendants -------------
+
+
+def test_descendant_received_ids_collects_subtree_only() -> None:
+    tree = ContractTreeResponse.from_rows(
+        "c1",
+        [
+            _sn("r17", None, 0, heading="17"),
+            _sn("r18", None, 1, heading="18"),
+            _sn("r18-1", "r18", 0, body="18.1"),
+            _sn("r18-2", "r18", 1, body="18.2"),
+            _sn("r18-2-a", "r18-2", 0, body="18.2.a"),
+            _sn("r19", None, 2, heading="19"),
+        ],
+    )
+    # Every proper descendant of r18 (incl. the grandchild), and nothing outside the subtree.
+    assert svc._descendant_received_ids(tree, "r18") == {"r18-1", "r18-2", "r18-2-a"}
+    assert svc._descendant_received_ids(tree, "missing") == set()
+    assert svc._descendant_received_ids(None, "r18") == set()
+
+
+def _new_change(change_id: str, received_node_id: str) -> dict[str, Any]:
+    return _change(
+        id=change_id,
+        node_id=None,
+        proposed_order_index=180,
+        match_confidence=None,
+        received_node_id=received_node_id,
+    )
+
+
+def _cascade_conn_and_tree() -> tuple[FakeConn, ContractTreeResponse]:
+    # Counterparty added section "18" (r18) with three sub-clauses 18.1/18.2/18.3 — each a
+    # NEW change row keyed to its as_received node id.
+    changes = [
+        _new_change("p18", "r18"),
+        _new_change("c1", "r18-1"),
+        _new_change("c2", "r18-2"),
+        _new_change("c3", "r18-3"),
+    ]
+    hunks = [
+        _hunk(
+            id="h-p18",
+            change_id="p18",
+            hunk_type="insertion",
+            original_text=None,
+            proposed_text="Section 18",
+        ),
+        _hunk(
+            id="h-c1",
+            change_id="c1",
+            hunk_type="insertion",
+            original_text=None,
+            proposed_text="18.1",
+        ),
+        _hunk(
+            id="h-c2",
+            change_id="c2",
+            hunk_type="insertion",
+            original_text=None,
+            proposed_text="18.2",
+        ),
+        _hunk(
+            id="h-c3",
+            change_id="c3",
+            hunk_type="insertion",
+            original_text=None,
+            proposed_text="18.3",
+        ),
+    ]
+    conn = FakeConn(changes=changes, hunks=hunks)
+    tree = ContractTreeResponse.from_rows(
+        "c1",
+        [
+            _sn("r18", None, 0, heading="18"),
+            _sn("r18-1", "r18", 0, body="18.1"),
+            _sn("r18-2", "r18", 1, body="18.2"),
+            _sn("r18-3", "r18", 2, body="18.3"),
+        ],
+    )
+    return conn, tree
+
+
+@pytest.mark.asyncio
+async def test_decide_node_reject_added_parent_cascades_to_added_descendants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # (b) Rejecting added "18" auto-rejects 18.1/18.2/18.3 in the SAME call.
+    conn, tree = _cascade_conn_and_tree()
+
+    async def _fake_resolve(_conn: Any, _session: Any) -> svc._ResolvedDocument:
+        return svc._ResolvedDocument([], [], None, tree, None, None)
+
+    monkeypatch.setattr(svc, "_resolve_document", _fake_resolve)
+    await svc.decide_node(conn, "p18", NodeDecideRequest(verdict="reject"))
+
+    verdicts = {a[0]: a[1] for sql, a in conn.executes if "SET verdict = $2" in sql}
+    assert verdicts == {
+        "h-p18": "rejected",
+        "h-c1": "rejected",
+        "h-c2": "rejected",
+        "h-c3": "rejected",
+    }
+
+
+@pytest.mark.asyncio
+async def test_decide_node_accept_added_parent_does_not_cascade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # (c) ASYMMETRIC: accepting added "18" leaves its children PENDING (no cascade, the
+    # document-resolution path is never even entered on accept).
+    conn, tree = _cascade_conn_and_tree()
+
+    async def _must_not_resolve(_conn: Any, _session: Any) -> svc._ResolvedDocument:
+        raise AssertionError("accept must not resolve the document or cascade")
+
+    monkeypatch.setattr(svc, "_resolve_document", _must_not_resolve)
+    await svc.decide_node(conn, "p18", NodeDecideRequest(verdict="accept"))
+
+    touched = {a[0] for sql, a in conn.executes if "SET verdict = $2" in sql}
+    assert touched == {"h-p18"}  # only the parent; the three children are untouched

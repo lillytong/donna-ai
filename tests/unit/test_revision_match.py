@@ -250,6 +250,55 @@ def test_ambiguous_deleted_parent_demotes_to_abstain() -> None:
     assert "p" in abst, "ambiguous deleted parent must be demoted to an abstain"
 
 
+def test_abstained_parent_heading_with_surviving_child_is_promoted() -> None:
+    """The operator-caught "maps to nothing" bug: the counterparty reworded a SECTION
+    HEADING just enough that it scored in the abstain band ([TAU_LOW, TAU_HIGH)) against
+    its own baseline parent (best_baseline_id -> that parent), so it landed in `abstains`
+    rather than `deleted`. Its children all matched confidently, so the section is
+    unmistakably the same. The repair must CONFIRM the pairing — promote the abstain into
+    `matches` at structural confidence — instead of surfacing a low-confidence guess."""
+    baseline = [
+        # 4-token heading; the reword shares 2 tokens -> Jaccard 0.333 -> composite in
+        # the abstain band (the same 0.38 the real DISCLAIMER/PERFORMANCE case produced)
+        _b("sec", 0, heading="alpha beta gamma delta"),
+        _b(
+            "sec-sub",
+            1,
+            body="the parties shall maintain confidentiality of all shared materials",
+            parent="sec",
+        ),
+    ]
+    incoming = [
+        _r(0, heading="alpha beta epsilon zeta"),  # reworded heading -> abstains on "sec"
+        _r(
+            1,
+            body="the parties shall maintain confidentiality of all shared materials",
+            parent=0,
+        ),
+    ]
+    res = match_revision(baseline, incoming)
+    m = _matched(res)
+    assert m[1] == "sec-sub", "unchanged child must stay matched"
+    assert m[0] == "sec", "abstained reworded parent must be promoted into a match"
+    assert res.abstains == [], "the confirmed pairing must not remain an abstain"
+    assert res.new == [] and res.deleted == []
+    # the promoted pair carries the structural (below-auto-band) confidence
+    parent_pair = next(p for p in res.matches if p.baseline_id == "sec")
+    assert parent_pair.confidence == STRUCTURAL_MATCH_CONFIDENCE
+    assert parent_pair.confidence < TAU_HIGH
+
+
+def test_abstained_leaf_without_surviving_child_stays_abstain() -> None:
+    """Guard the promotion's invariant: an abstain with NO surviving children to confirm
+    it (a heavily reworded LEAF clause) is a genuine low-confidence pair and MUST be left
+    for the operator — only parents whose children vouch for the pairing get promoted."""
+    baseline = [_b("leaf", 0, body="alpha beta gamma delta")]
+    incoming = [_r(0, body="alpha beta epsilon zeta")]  # Jaccard 0.333 -> abstain band
+    res = match_revision(baseline, incoming)
+    assert res.matches == [], "a childless abstain must not be promoted"
+    assert {a.best_baseline_id for a in res.abstains} == {"leaf"}
+
+
 def test_injectivity_no_baseline_claimed_twice() -> None:
     """Two incoming clauses both resemble one baseline clause; only one may win it,
     the other must fall to NEW/abstain — never a double claim."""

@@ -16,6 +16,7 @@ from backend.api import (
     donna,
     donna_recommendations,
     export,
+    firm_profile,
     health,
     imports,
     issue_export,
@@ -26,6 +27,7 @@ from backend.api import (
     redline,
     revision_import,
     revision_recommend,
+    revision_reset,
     revision_review,
     settings,
     version_delete,
@@ -78,6 +80,7 @@ app.add_exception_handler(Exception, _unhandled_exception_handler)
 app.include_router(health.router)
 app.include_router(imports.router)
 app.include_router(settings.router)
+app.include_router(firm_profile.router)
 app.include_router(issues.router)
 app.include_router(nodes.router)
 app.include_router(audit.router)
@@ -95,4 +98,5 @@ app.include_router(lineage.router)
 app.include_router(version_delete.router)
 app.include_router(revision_import.router)
 app.include_router(revision_review.router)
+app.include_router(revision_reset.router)
 app.include_router(revision_recommend.router)

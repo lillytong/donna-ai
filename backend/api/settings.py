@@ -24,6 +24,7 @@ from backend.models.settings import (
     DealCreate,
     DealUpdate,
     OperatorOrganization,
+    OperatorOrganizationUpdate,
     StoredClient,
     StoredContract,
     StoredContractType,
@@ -31,6 +32,11 @@ from backend.models.settings import (
 )
 from backend.services import settings_repo
 from backend.services.audit_repo import record_event
+from backend.services.operator_org_repo import (
+    resolve_export_author,
+    resolve_org_name,
+    set_org_name_override,
+)
 
 router = APIRouter()
 
@@ -62,18 +68,30 @@ async def _audit(
 
 
 # --- operator organization (F25, DD-44) ------------------------------------
-# Read-only: the org identity is a config value (config/.env), not a DB entity,
-# so there is no write path here. `export_author` is the resolved redline author.
+# Editable: `organization_name` is a DB-backed override over the config value; the
+# resolver (services/operator_org_repo) layers DB → config → default. `export_author`
+# is the resolved redline author (explicit DONNA_REDLINE_AUTHOR still wins when set).
 
 
 @router.get("/organization", response_model=OperatorOrganization)
 async def get_organization() -> OperatorOrganization:
-    s = get_settings()
-    return OperatorOrganization(
-        organization_name=s.operator_org_name,
-        export_author=s.export_author,
-        editable=False,
-    )
+    async with acquire() as conn:
+        return OperatorOrganization(
+            organization_name=await resolve_org_name(conn),
+            export_author=await resolve_export_author(conn),
+            editable=True,
+        )
+
+
+@router.put("/organization", response_model=OperatorOrganization)
+async def update_organization(payload: OperatorOrganizationUpdate) -> OperatorOrganization:
+    async with acquire() as conn:
+        await set_org_name_override(conn, payload.organization_name.strip())
+        return OperatorOrganization(
+            organization_name=await resolve_org_name(conn),
+            export_author=await resolve_export_author(conn),
+            editable=True,
+        )
 
 
 # --- clients ---------------------------------------------------------------

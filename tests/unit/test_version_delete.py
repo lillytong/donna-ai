@@ -46,16 +46,21 @@ class _FakeConn:
         pointers: list[dict[str, str]] | None = None,
         nodes: list[dict[str, Any]] | None = None,
         pending_versions: int = 0,
-        baselines: set[str] | None = None,
+        sessions: list[dict[str, Any]] | None = None,
     ) -> None:
         self.snapshots = snapshots
         self.pointers = pointers if pointers is not None else []
         self.nodes = nodes if nodes is not None else []
         self.pending_versions = pending_versions
-        self.baselines = baselines or set()
+        self.sessions = sessions if sessions is not None else []
         self.target_versions_deleted = False
         self.issues_opened_nulled = False
         self.issues_resolved_nulled = False
+        self.discarded_sessions: list[str] = []
+        self.discarded_hunks: list[str] = []
+        self.discarded_changes: list[str] = []
+        self.discarded_overrides: list[str] = []
+        self.issue_session_nulled: list[str] = []
         self.executes: list[str] = []
 
     @asynccontextmanager
@@ -69,8 +74,6 @@ class _FakeConn:
                 s["version_number"] for s in self.snapshots.values() if s["contract_id"] == cid
             ]
             return max(versions) if versions else None
-        if "counterparty_revision_sessions" in sql:
-            return 1 if args[0] in self.baselines else None
         return None
 
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
@@ -101,6 +104,19 @@ class _FakeConn:
                 for p in self.pointers
                 if p["snapshot_id"] == sid
             ]
+        if "FROM counterparty_revision_sessions" in sql:  # _DEPENDENT_SESSIONS
+            cid, target = args[0], args[1]
+            return [
+                {
+                    "id": s["id"],
+                    "changes_count": s["changes_count"],
+                    "changes_reviewed_count": s["changes_reviewed_count"],
+                }
+                for s in self.sessions
+                if s["contract_id"] == cid
+                and s["status"] == "reviewing"
+                and target in (s.get("baseline_snapshot_id"), s.get("as_received_snapshot_id"))
+            ]
         return []
 
     async def execute(self, sql: str, *args: Any) -> str:
@@ -126,12 +142,6 @@ class _FakeConn:
         if "DELETE FROM node_versions" in sql:
             self.target_versions_deleted = True
             return "DELETE 1"
-        if "UPDATE snapshot_pointers SET snapshot_id" in sql:
-            new_sid, _cid, old_sid = args[0], args[1], args[2]
-            for p in self.pointers:
-                if p["snapshot_id"] == old_sid:
-                    p["snapshot_id"] = new_sid
-            return "UPDATE 1"
         if "DELETE FROM snapshot_pointers" in sql:
             sid = args[1]
             self.pointers = [p for p in self.pointers if p["snapshot_id"] != sid]
@@ -142,6 +152,22 @@ class _FakeConn:
         if "resolved_in_snapshot_id = NULL" in sql:
             self.issues_resolved_nulled = True
             return "UPDATE 1"
+        if "DELETE FROM counterparty_revision_hunks" in sql:
+            self.discarded_hunks.append(args[0])
+            return "DELETE 1"
+        if "DELETE FROM counterparty_revision_node_overrides" in sql:
+            self.discarded_overrides.append(args[0])
+            return "DELETE 1"
+        if "counterparty_revision_session_id = NULL" in sql:
+            self.issue_session_nulled.append(args[0])
+            return "UPDATE 1"
+        if "DELETE FROM counterparty_revision_changes" in sql:
+            self.discarded_changes.append(args[0])
+            return "DELETE 1"
+        if "DELETE FROM counterparty_revision_sessions" in sql:
+            self.discarded_sessions.append(args[0])
+            self.sessions = [s for s in self.sessions if s["id"] != args[0]]
+            return "DELETE 1"
         if "DELETE FROM contract_snapshots" in sql:
             self.snapshots.pop(args[0], None)
             return "DELETE 1"
@@ -227,7 +253,7 @@ async def test_preview_does_not_mutate() -> None:
     assert res.will_rollback is True
     assert res.rollback_to_version == 1
     assert res.rolled_back is False
-    assert res.pointers_rolled_back == []
+    assert res.pointers_removed == []
     assert res.sent_record is not None and res.sent_record.party == "counterparty"
     assert any("Rollback is destructive" in w for w in res.warnings)
     assert any("erases the record of what was sent" in w for w in res.warnings)
@@ -259,7 +285,7 @@ async def test_latest_delete_rolls_back_content_pointer_and_pending() -> None:
     assert res is not None
     assert res.deleted is True
     assert res.rolled_back is True
-    assert res.pointers_rolled_back == ["counterparty"]
+    assert res.pointers_removed == ["counterparty"]
     # content restored to the predecessor (n1 -> "old"); n2 (added after v1) soft-deleted
     n1 = next(n for n in conn.nodes if n["id"] == "n1")
     n2 = next(n for n in conn.nodes if n["id"] == "n2")
@@ -267,9 +293,9 @@ async def test_latest_delete_rolls_back_content_pointer_and_pending() -> None:
     assert n2["is_deleted"] is True
     # restored content stamped with the predecessor's created_at, not now()
     assert n1["updated_at"] == snaps_created("s1")
-    # pending edits discarded; pointer moved to s1; target snapshot gone
+    # pending edits discarded; the tag is DROPPED (not rolled to s1); target snapshot gone
     assert conn.pending_versions == 0
-    assert conn.pointers[0]["snapshot_id"] == "s1"
+    assert conn.pointers == []
     assert "s2" not in conn.snapshots
     assert conn.target_versions_deleted is True
     assert conn.issues_opened_nulled and conn.issues_resolved_nulled
@@ -284,8 +310,8 @@ def snaps_created(sid: str) -> datetime:
 
 
 async def test_middle_delete_leaves_working_copy_and_preserves_gap() -> None:
-    # versions 1,2,3 present; delete the middle (v2). working copy untouched, pointer
-    # that rested on v2 rolls to v1, gap preserved (no renumber — numbering is stored).
+    # versions 1,2,3 present; delete the middle (v2). working copy untouched, the tag on
+    # v2 is DROPPED (not rolled to v1), gap preserved (no renumber — numbering is stored).
     snaps = {
         "s1": _snap_row("s1", 1, [_node("n1", "v1")]),
         "s2": _snap_row("s2", 2, [_node("n1", "v2")]),
@@ -304,13 +330,62 @@ async def test_middle_delete_leaves_working_copy_and_preserves_gap() -> None:
     assert res.is_latest is False
     assert res.will_rollback is False
     assert res.rolled_back is False
-    assert res.pointers_rolled_back == ["legal"]
+    assert res.pointers_removed == ["legal"]
     # working copy untouched (no restore ran), pending edits NOT discarded
     assert next(n for n in conn.nodes if n["id"] == "n1")["body"] == "current"
     assert conn.pending_versions == 5
-    # the v2 pointer rolled to its predecessor v1; v2 wiped; v1 and v3 remain (gap)
-    assert conn.pointers[0]["snapshot_id"] == "s1"
+    # the v2 tag is DROPPED (predecessor v1 does NOT inherit it); v2 wiped; v1,v3 remain (gap)
+    assert conn.pointers == []
     assert "s2" not in conn.snapshots
+    assert set(conn.snapshots) == {"s1", "s3"}
+
+
+# --- tag-drop: deleting the tagged version REMOVES the tag (DD-87 §4(b) amended) ---
+
+
+async def test_delete_latest_with_received_tag_drops_it_not_rolled_to_predecessor() -> None:
+    # Operator's report: v4 tagged "received from counterparty"; deleting v4 must REMOVE
+    # the tag — v3 must NOT become "received from counterparty".
+    snaps = {
+        "s3": _snap_row("s3", 3, [_node("n1", "v3")]),
+        "s4": _snap_row("s4", 4, [_node("n1", "v4")]),
+    }
+    conn = _FakeConn(
+        snapshots=snaps,
+        pointers=[{"party": "counterparty", "direction": "received", "snapshot_id": "s4"}],
+        nodes=[{"id": "n1", "contract_id": "c1", "body": "v4", "is_deleted": False}],
+    )
+    res = await vd.delete_version(conn, "c1", "s4", confirm=True)
+
+    assert res is not None and res.deleted is True
+    assert res.pointers_removed == ["counterparty"]
+    # tag gone; the predecessor s3 did NOT inherit it
+    assert conn.pointers == []
+    assert "s4" not in conn.snapshots
+
+
+async def test_delete_drops_both_received_and_shared_predecessor_does_not_inherit() -> None:
+    # v1,v2,v3; v2 carries BOTH a `received` (counterparty) and a `shared` (legal) tag.
+    # Deleting v2 DROPS both — the predecessor v1 must NOT inherit either (no roll-back).
+    snaps = {
+        "s1": _snap_row("s1", 1, [_node("n1", "v1")]),
+        "s2": _snap_row("s2", 2, [_node("n1", "v2")]),
+        "s3": _snap_row("s3", 3, [_node("n1", "v3")]),
+    }
+    conn = _FakeConn(
+        snapshots=snaps,
+        pointers=[
+            {"party": "counterparty", "direction": "received", "snapshot_id": "s2"},
+            {"party": "legal_team", "direction": "shared", "snapshot_id": "s2"},
+        ],
+        nodes=[{"id": "n1", "contract_id": "c1", "body": "current", "is_deleted": False}],
+    )
+    res = await vd.delete_version(conn, "c1", "s2", confirm=True)
+
+    assert res is not None and res.deleted is True
+    assert res.pointers_removed == ["counterparty", "legal"]
+    # both tags gone; nothing moved to the predecessor s1
+    assert conn.pointers == []
     assert set(conn.snapshots) == {"s1", "s3"}
 
 
@@ -340,14 +415,116 @@ async def test_only_delete_removes_snapshot_and_pointer_rows() -> None:
     assert conn.pending_versions == 1  # only/middle never discards pending edits
 
 
-# --- baseline guard ---------------------------------------------------------
+# --- DD-94: cascade-discard the OPEN review the deleted version anchors -------
 
 
-async def test_baseline_guard_raises_conflict() -> None:
-    snaps = {"s1": _snap_row("s1", 1, [_node("n1", "v1")])}
-    conn = _FakeConn(snapshots=snaps, baselines={"s1"})
-    with pytest.raises(vd.VersionDeleteConflict):
-        await vd.delete_version(conn, "c1", "s1", confirm=False)
+def _session(
+    sid: str, *, baseline: str | None = None, as_received: str | None = None
+) -> dict[str, Any]:
+    return {
+        "id": sid,
+        "contract_id": "c1",
+        "status": "reviewing",
+        "baseline_snapshot_id": baseline,
+        "as_received_snapshot_id": as_received,
+        "changes_count": 7,
+        "changes_reviewed_count": 3,
+    }
+
+
+async def test_delete_baseline_discards_open_review() -> None:
+    # v1 is the baseline an OPEN review diffs against; v2 the working copy. Deleting v1
+    # (middle, here the only-other) must cascade-discard the session, children-first.
+    snaps = {
+        "s1": _snap_row("s1", 1, [_node("n1", "v1")]),
+        "s2": _snap_row("s2", 2, [_node("n1", "v2")]),
+    }
+    conn = _FakeConn(
+        snapshots=snaps,
+        nodes=[{"id": "n1", "contract_id": "c1", "body": "v2", "is_deleted": False}],
+        sessions=[_session("sess1", baseline="s1")],
+    )
+    res = await vd.delete_version(conn, "c1", "s1", confirm=True)
+
+    assert res is not None and res.deleted is True
+    assert conn.discarded_sessions == ["sess1"]
+    assert conn.discarded_hunks == ["sess1"]
+    assert conn.discarded_changes == ["sess1"]
+    assert conn.discarded_overrides == ["sess1"]
+    assert conn.issue_session_nulled == ["sess1"]
+    # session row gone BEFORE the snapshot delete (FK order); snapshot wiped.
+    assert "s1" not in conn.snapshots
+    # children discarded before the parent session (FK-correct order).
+    hunk_i = next(
+        i for i, s in enumerate(conn.executes) if "DELETE FROM counterparty_revision_hunks" in s
+    )
+    change_i = next(
+        i for i, s in enumerate(conn.executes) if "DELETE FROM counterparty_revision_changes" in s
+    )
+    sess_i = next(
+        i for i, s in enumerate(conn.executes) if "DELETE FROM counterparty_revision_sessions" in s
+    )
+    assert hunk_i < change_i < sess_i
+
+
+async def test_delete_as_received_discards_open_review() -> None:
+    # The target is the as_received (received) snapshot the review reviews — also discards.
+    snaps = {
+        "s1": _snap_row("s1", 1, [_node("n1", "v1")]),
+        "s2": _snap_row("s2", 2, [_node("n1", "received")]),
+    }
+    conn = _FakeConn(
+        snapshots=snaps,
+        nodes=[{"id": "n1", "contract_id": "c1", "body": "v1", "is_deleted": False}],
+        sessions=[_session("sess1", baseline="s1", as_received="s2")],
+    )
+    res = await vd.delete_version(conn, "c1", "s2", confirm=True)
+
+    assert res is not None and res.deleted is True
+    assert conn.discarded_sessions == ["sess1"]
+    assert "s2" not in conn.snapshots
+
+
+async def test_preview_reports_review_discard_with_counts() -> None:
+    snaps = {
+        "s1": _snap_row("s1", 1, [_node("n1", "v1")]),
+        "s2": _snap_row("s2", 2, [_node("n1", "received")]),
+    }
+    conn = _FakeConn(
+        snapshots=snaps,
+        nodes=[{"id": "n1", "contract_id": "c1", "body": "v1", "is_deleted": False}],
+        sessions=[_session("sess1", baseline="s1", as_received="s2")],
+    )
+    res = await vd.delete_version(conn, "c1", "s2", confirm=False)
+
+    assert res is not None and res.deleted is False
+    assert res.review_discard is not None
+    assert res.review_discard.changes_count == 7
+    assert res.review_discard.reviewed == 3
+    assert any("discards the in-progress revision review" in w for w in res.warnings)
+    # preview mutates nothing.
+    assert conn.discarded_sessions == [] and conn.executes == []
+    assert "s2" in conn.snapshots
+
+
+async def test_delete_unrelated_to_review_leaves_session_untouched() -> None:
+    # An OPEN review on s1/s2; deleting an UNRELATED version s3 must not touch it.
+    snaps = {
+        "s1": _snap_row("s1", 1, [_node("n1", "v1")]),
+        "s2": _snap_row("s2", 2, [_node("n1", "received")]),
+        "s3": _snap_row("s3", 3, [_node("n1", "v3")]),
+    }
+    conn = _FakeConn(
+        snapshots=snaps,
+        nodes=[{"id": "n1", "contract_id": "c1", "body": "v3", "is_deleted": False}],
+        sessions=[_session("sess1", baseline="s1", as_received="s2")],
+    )
+    res = await vd.delete_version(conn, "c1", "s3", confirm=True)
+
+    assert res is not None and res.deleted is True
+    assert res.review_discard is None
+    assert conn.discarded_sessions == []
+    assert [s["id"] for s in conn.sessions] == ["sess1"]
 
 
 # --- badge v-number = MAX(version_number), not count, after a delete ---------

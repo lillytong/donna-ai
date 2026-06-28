@@ -37,13 +37,20 @@ ContractOrigin = Literal["us", "our_legal", "counterparty"]
 
 
 class OperatorOrganization(BaseModel):
-    """F25: the operator's org identity (DD-44). A config value, not a DB entity —
-    `editable` is False because it's set in config/.env, not via a write path here.
-    `export_author` is the resolved redline/export author (org name or default)."""
+    """F25: the operator's org identity (DD-44). `organization_name` is a DB-backed,
+    editable override over the DONNA_OPERATOR_ORG_NAME config value (`editable` is True).
+    `export_author` is the resolved redline/export author — explicit DONNA_REDLINE_AUTHOR
+    if set, else the org name, else the neutral default; never blank, never "Donna"."""
 
     organization_name: str
     export_author: str
     editable: bool
+
+
+class OperatorOrganizationUpdate(BaseModel):
+    """PUT /organization body — the editable org-name override (F25, DD-44)."""
+
+    organization_name: str
 
 
 class ClientCreate(BaseModel):

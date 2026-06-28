@@ -11,6 +11,7 @@ Edit:
 Decision:
   POST /revisions/changes/{change_id}/confirm-match     → 6b abstain resolution
   POST /revisions/hunks/{hunk_id}/decide                → DD-27 four-action verdict
+  POST /revisions/sessions/{sid}/clusters/{cid}/decide  → DD-89 grouped-stop, fan to members
   POST /revisions/changes/{change_id}/decide-node       → whole-node (new/deleted)
   POST /revisions/sessions/{session_id}/apply           → apply to working copy
 """
@@ -23,6 +24,7 @@ from backend.db import acquire
 from backend.models.revision_import import StoredRevisionSession
 from backend.models.revision_review import (
     ApplyResult,
+    ClusterDecideRequest,
     ConfirmMatchRequest,
     HunkDecideRequest,
     NodeDecideRequest,
@@ -97,6 +99,20 @@ async def decide_hunk(hunk_id: str, payload: HunkDecideRequest) -> ReviewChange:
     async with acquire() as conn:
         try:
             return await svc.decide_hunk(conn, hunk_id, payload)
+        except svc.RevisionReviewError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.post(
+    "/revisions/sessions/{session_id}/clusters/{cluster_id}/decide",
+    response_model=ReviewPayload,
+)
+async def decide_cluster(
+    session_id: str, cluster_id: str, payload: ClusterDecideRequest
+) -> ReviewPayload:
+    async with acquire() as conn:
+        try:
+            return await svc.decide_cluster(conn, session_id, cluster_id, payload)
         except svc.RevisionReviewError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 

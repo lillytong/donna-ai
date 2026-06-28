@@ -352,6 +352,35 @@ def _match_internal(baseline: list[_Node], incoming: list[_Node]) -> _Result:
 # --------------------------------------------------------------------------- #
 
 
+def _revised_parent_candidates(
+    parent: str,
+    *,
+    children_of: dict[str, list[str]],
+    surviving: set[str],
+    baseline_to_incoming: dict[str, int],
+    incoming_by_order: dict[int, ClauseNode],
+) -> tuple[list[str], list[str], set[int | str | None], set[int]]:
+    """The revised-parent slot(s) implied by a baseline parent's surviving children.
+
+    Shared by both repair branches: from `parent`'s MATCHED baseline children, look up
+    their matched incoming nodes and collect the common incoming-side `parent` (the
+    revised parent's structural slot). Returns (surviving_kids, matched_kids,
+    candidate_parents, real_parents) where `real_parents` is the subset of candidate
+    parents that are concrete incoming nodes (int order present on the incoming side).
+    """
+    surviving_kids = [c for c in children_of.get(parent, []) if c in surviving]
+    matched_kids = [c for c in surviving_kids if c in baseline_to_incoming]
+    candidate_parents: set[int | str | None] = set()
+    for c in matched_kids:
+        inc = incoming_by_order.get(baseline_to_incoming[c])
+        if inc is not None:
+            candidate_parents.add(inc.parent)
+    real_parents = {
+        cp for cp in candidate_parents if isinstance(cp, int) and cp in incoming_by_order
+    }
+    return surviving_kids, matched_kids, candidate_parents, real_parents
+
+
 def _repair_structural_deletions(
     result: RevisionMatchResult,
     baseline_nodes: list[ClauseNode],
@@ -359,21 +388,31 @@ def _repair_structural_deletions(
 ) -> RevisionMatchResult:
     """Enforce a structural invariant the lexical scorer cannot see.
 
-    INVARIANT: a baseline parent in `deleted` that still has >=1 baseline CHILD which
-    SURVIVES (matched or abstained) is NOT really deleted — it is a heading/text EDIT
-    of a surviving parent (the scorer dropped it because the counterparty reworded its
-    heading enough to fall below the candidate floor, so the old parent landed in
-    `deleted` and the new heading landed in `new`). A deleted-parent-with-surviving-
-    child is structurally impossible and must never reach the operator.
+    INVARIANT: a baseline parent that still has >=1 baseline CHILD which SURVIVES
+    (matched or abstained) is NOT really deleted, and — when the children confirm the
+    pairing — it is NOT a low-confidence guess either. The lexical scorer cannot see
+    that a section's children all matched confidently, so a reworded section HEADING
+    lands either in `deleted` (heading fell below the candidate floor; new heading ->
+    `new`) or in `abstains` (heading scored in the [TAU_LOW, TAU_HIGH) band against its
+    own baseline parent). Both are heading-reword EDITs of a surviving parent and must
+    never reach the operator as a phantom deletion or a "maps to nothing" abstain.
 
     Runs AFTER the de-risked scoring (`_match_internal`) and re-classifies ONLY the
     offending baseline parents; every other result is preserved byte-for-byte. Pure
     and deterministic, O(n) over the node sets (child/parent index maps built once).
+    Does NOT touch any scoring threshold.
 
-    Per offending parent P:
-      1. From P's MATCHED baseline children, look up their matched incoming nodes and
-         take the common incoming-side `parent` R (the revised parent's structural
-         slot).
+    Two branches, both keyed on the SAME surviving-children signal:
+
+    (A) ABSTAIN parent -> confident match. An abstention whose `best_baseline_id` is a
+        baseline parent with surviving MATCHED children, where those children's common
+        incoming parent is exactly this abstention's `incoming_index` (one clean real
+        parent that IS the abstain's own slot), is CONFIRMED: the children prove the
+        pairing the scorer was unsure of. PROMOTE it out of `abstains` into `matches`
+        at structural confidence. We only confirm an existing pairing — never invent.
+
+    (B) DELETED parent. Per offending deleted parent P:
+      1. From P's MATCHED children take the common incoming-side `parent` R.
       2. Clean R (exactly one real incoming parent, still unclaimed in `new`): MOVE P
          from `deleted` into `matches` as MatchedPair(R, P, structural confidence) and
          REMOVE R from `new` — the spurious delete+new becomes one heading-reword edit.
@@ -397,32 +436,66 @@ def _repair_structural_deletions(
     }
     surviving: set[str] = set(baseline_to_incoming) | set(abstain_incoming_by_baseline)
 
-    deleted_set: set[str] = set(result.deleted)
-    if not deleted_set:
-        return result
-
     # mutable working buckets
     out_matches: list[MatchedPair] = list(result.matches)
     out_abstains: list[Abstention] = list(result.abstains)
     out_new: set[int] = set(result.new)
-    out_deleted: set[str] = set(deleted_set)
+    out_deleted: set[str] = set(result.deleted)
 
     changed = False
-    for p in sorted(deleted_set):  # deterministic order
-        surviving_kids = [c for c in children_of.get(p, []) if c in surviving]
+
+    # --- (A) promote abstain parents whose children confirm the pairing ----- #
+    promoted_abstain_baselines: set[str] = set()
+    for ab in result.abstains:
+        bid = ab.best_baseline_id
+        if bid is None or bid not in children_of:
+            continue  # not a parent heading -> ordinary low-confidence pair, leave it
+        _kids, matched_kids, candidate_parents, real_parents = _revised_parent_candidates(
+            bid,
+            children_of=children_of,
+            surviving=surviving,
+            baseline_to_incoming=baseline_to_incoming,
+            incoming_by_order=incoming_by_order,
+        )
+        if not matched_kids:
+            continue  # no confident child to confirm the slot -> leave for operator
+        if (
+            len(candidate_parents) == 1
+            and len(real_parents) == 1
+            and next(iter(real_parents)) == ab.incoming_index
+        ):
+            promoted_abstain_baselines.add(bid)
+            baseline_to_incoming[bid] = ab.incoming_index  # keep maps coherent for (B)
+            out_matches.append(
+                MatchedPair(
+                    incoming_index=ab.incoming_index,
+                    baseline_id=bid,
+                    confidence=STRUCTURAL_MATCH_CONFIDENCE,
+                )
+            )
+            changed = True
+            log.info(
+                "revision_match.structural_repair.abstain_heading_reword",
+                baseline_parent=bid,
+                revised_parent_index=ab.incoming_index,
+                surviving_children=_kids,
+            )
+    if promoted_abstain_baselines:
+        out_abstains = [
+            a for a in out_abstains if a.best_baseline_id not in promoted_abstain_baselines
+        ]
+
+    # --- (B) rescue structurally-impossible deleted parents ----------------- #
+    for p in sorted(out_deleted):  # deterministic order
+        surviving_kids, matched_kids, candidate_parents, real_parents = _revised_parent_candidates(
+            p,
+            children_of=children_of,
+            surviving=surviving,
+            baseline_to_incoming=baseline_to_incoming,
+            incoming_by_order=incoming_by_order,
+        )
         if not surviving_kids:
             continue  # genuine deletion — leave untouched
-
-        # candidate revised parent = common incoming-side parent of P's MATCHED kids
-        matched_kids = [c for c in surviving_kids if c in baseline_to_incoming]
-        candidate_parents: set[int | str | None] = set()
-        for c in matched_kids:
-            inc = incoming_by_order.get(baseline_to_incoming[c])
-            if inc is not None:
-                candidate_parents.add(inc.parent)
-        real_parents = {
-            cp for cp in candidate_parents if isinstance(cp, int) and cp in incoming_by_order
-        }
 
         clean_r: int | None = None
         if len(candidate_parents) == 1 and len(real_parents) == 1:

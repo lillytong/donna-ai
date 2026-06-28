@@ -67,10 +67,16 @@ _DOTTED_PREFIX = re.compile(r"^\s*\d+(?:\.\d+)+\.?\s+")
 _PAREN_PREFIX = re.compile(r"^\s*\([a-zA-Z]{1,4}\)\s*")
 
 # Inline bold spans (house style): a leading quoted defined term ("Affiliate" means
-# …) and all-caps emphasis runs. Acronyms (≤3 letters, e.g. IP, ID) are left unbolded —
-# bolding them everywhere is noise, not emphasis.
+# …) and all-caps legal connectives. The bolded all-caps spans are now a fixed
+# allowlist of legal-connective words (WHEREAS, NOW, AND, …) rather than a length rule,
+# so acronyms (DBO, JVA) are never bolded while short connectives (AND, NOW) always are —
+# no length rule can separate same-length tokens, only an allowlist can. Case-sensitive
+# so only the uppercase token matches.
 _LEADING_DEFINED_TERM = re.compile(r'^\s*[“"][^”"]{1,80}[”"]')
-_ALL_CAPS_SPAN = re.compile(r"[A-Z]{4,}(?:[ '’&/–-]+[A-Z0-9]{2,})*")
+_ALL_CAPS_SPAN = re.compile(
+    r"\b(?:WHEREAS|NOW|THEREFORE|BY|AND|BETWEEN|AMONG|IN|WITNESS|WHEREOF|"
+    r"WITNESSETH|RECITALS|BACKGROUND|PREAMBLE|HEREBY|HERETO|HEREOF|THEREOF)\b"
+)
 
 
 def _w(tag: str) -> str:

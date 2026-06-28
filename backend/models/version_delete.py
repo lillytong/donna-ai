@@ -24,14 +24,24 @@ class SentRecord(BaseModel):
     date: str
 
 
+class ReviewDiscard(BaseModel):
+    """The in-progress revision review a delete will discard (DD-94). Set when the target
+    is the baseline OR the as_received snapshot of an OPEN ('reviewing') session — its
+    change count + how many were already decided, for the non-blocking preview warning."""
+
+    changes_count: int
+    reviewed: int
+
+
 class SnapshotDeleteResponse(BaseModel):
     """Preview (`confirm=false`) or execute (`confirm=true`) outcome of a version delete.
 
-    On preview, `deleted`/`rolled_back` are false and `pointers_rolled_back` is empty —
+    On preview, `deleted`/`rolled_back` are false and `pointers_removed` is empty —
     `warnings` carries the non-blocking confirmations. On execute, `deleted=true`,
     `rolled_back` reflects whether the latest-delete rolled the working copy back, and
-    `pointers_rolled_back` names the redline-baseline / shared pointer sides that moved
-    to (or were cleared with) the deleted version."""
+    `pointers_removed` names the lifecycle-tag sides (shared / received) that were
+    DROPPED with the deleted version (DD-87 §4(b), amended): the tag is removed, never
+    rolled back to the predecessor — no earlier version inherits it."""
 
     deleted: bool
     snapshot_id: str
@@ -41,5 +51,6 @@ class SnapshotDeleteResponse(BaseModel):
     rolled_back: bool
     rollback_to_version: int | None = None
     sent_record: SentRecord | None = None
+    review_discard: ReviewDiscard | None = None
     warnings: list[str]
-    pointers_rolled_back: list[str]
+    pointers_removed: list[str]

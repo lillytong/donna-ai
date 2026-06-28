@@ -226,6 +226,10 @@ CREATE TABLE counterparty_revision_sessions (
     id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     contract_id             UUID NOT NULL REFERENCES contracts(id),
     baseline_snapshot_id    UUID NOT NULL REFERENCES contract_snapshots(id),
+    -- The as_received (received version) this session diffs against. FK-correct link so
+    -- version-delete can cascade-discard the open review when that version is deleted
+    -- (DD-94). Nullable: legacy sessions carry NULL. Migration 0015.
+    as_received_snapshot_id UUID REFERENCES contract_snapshots(id),
     source                  TEXT NOT NULL DEFAULT 'counterparty'
                             CHECK (source IN ('counterparty','legal_team','internal')),  -- DD-47
     source_filename         TEXT,
@@ -427,6 +431,38 @@ CREATE INDEX negotiation_patterns_subject_idx
     WHERE is_deleted = false;
 
 -- ============================================================================
+-- Firm profile (F32 v1, DD-90 — pull-forward of the operator-seeded "Fixed" half).
+-- A single GLOBAL, firm-level free-text document: who the firm is, its commercial
+-- interests, and its standing positions / red-lines. Injected into Donna's
+-- revision-recommendation grounding as the firm's standing MANDATE (the F03c
+-- reviewer first; F10/F11 when built). Operator-authored only in v1 (Fixed mode —
+-- Donna never writes it; the Donna-evolving half is deferred to v2). A settings-
+-- style SINGLETON: the boolean PK + CHECK pins the table to exactly one row.
+-- ============================================================================
+
+CREATE TABLE firm_profile (
+    id         BOOLEAN PRIMARY KEY DEFAULT true CHECK (id),  -- singleton guard
+    content    TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO firm_profile (id) VALUES (true);
+
+-- ============================================================================
+-- Operator organization override (F25, DD-44 — makes the org identity editable).
+-- A DB-backed OVERRIDE over the DONNA_OPERATOR_ORG_NAME config value: when the
+-- override is non-empty it wins; when blank the config value (then the neutral
+-- default) resolves. The explicit DONNA_REDLINE_AUTHOR env author stays a separate
+-- config-only override and continues to win when set. Settings-style SINGLETON.
+-- ============================================================================
+
+CREATE TABLE operator_organization (
+    id                BOOLEAN PRIMARY KEY DEFAULT true CHECK (id),  -- singleton guard
+    organization_name TEXT NOT NULL DEFAULT '',
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO operator_organization (id) VALUES (true);
+
+-- ============================================================================
 -- Embeddings (pgvector) — built in Phase 2 (nodes) / Phase 2+ (comments).
 -- VECTOR DIMENSION IS PROVISIONAL: tied to the Phase-2 embedding-model choice
 -- (e.g. Voyage 1024, OpenAI 1536). Confirm/alter before first embed. [FLAGGED]
@@ -478,4 +514,7 @@ INSERT INTO schema_migrations (version) VALUES
     ('0005_contract_last_export_at'),
     ('0006_negotiation_patterns'),
     ('0007_brainstorm_summaries'),
-    ('0012_snapshot_version_number');
+    ('0012_snapshot_version_number'),
+    ('0013_firm_profile'),
+    ('0014_operator_organization'),
+    ('0015_revision_session_as_received_snapshot');

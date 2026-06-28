@@ -66,6 +66,13 @@ class ReviewHunk(BaseModel):
     donna_rationale: str | None
     verdict: StoredHunkVerdict
     final_text: str | None
+    # Cross-document consistency (DD-89, F34): the synthetic id of the cluster of identical
+    # counterparty edits this hunk belongs to (stable hash of the shared `revision_cluster`
+    # key), set ONLY when the same edit recurs in >1 clause; `cluster_size` is that member
+    # count. Derived at read time (no schema change) so the frontend can collapse the members
+    # into ONE grouped review stop ("this change appears in N clauses").
+    cluster_id: str | None = None
+    cluster_size: int = 1
 
 
 class ChangeContextSide(BaseModel):
@@ -179,6 +186,17 @@ class NodeDecideRequest(BaseModel):
     final_text: str | None = None
 
 
+class ClusterDecideRequest(BaseModel):
+    """DD-89 grouped-stop decision: ONE verdict applied to every member hunk of a cluster
+    (decide-once → fans to all). Same four-action vocabulary as `HunkDecideRequest`; `edit`
+    requires `final_text` (used as the applied text for every member); `counter` uses each
+    member's OWN staged `donna_counter_text` (members were judged once, so the counter is
+    consistent). Per-clause divergence is a peel-off via the per-hunk decide, not this route."""
+
+    verdict: HunkDecisionAction
+    final_text: str | None = None
+
+
 class ApplyResult(BaseModel):
     """Receipt for `POST .../apply`: what landed where (F08 paths) and which
     rejections seeded issues (§11 step 9)."""
@@ -214,6 +232,11 @@ class DocumentNode(BaseModel):
     role: Role
     depth: int
     text: str | None
+    # True when the node is a clause HEADING (heading set, empty/null body) — import's
+    # `typeLabel === "Heading"` signal (`heading and not body`), surfaced so the review
+    # pane bolds headings exactly like the first-import Source panel. `text` carries the
+    # heading string for such a node, so it still renders.
+    is_heading: bool = False
 
 
 class DocumentChange(BaseModel):
@@ -249,15 +272,53 @@ class AbstainMatch(BaseModel):
     confidence: float | None
 
 
+class ProjectedNode(BaseModel):
+    """One node in the PROJECTED reading order — the single linear sequence the frontend
+    renders without grafting by `proposed_parent_id`. The projected document is the
+    baseline with every NON-REJECTED change applied:
+      - unchanged baseline clause  -> change_id/change_kind None, numbered.
+      - edited baseline clause      -> change_kind "modified", numbered, text is the
+        baseline body (the redline is fetched on click via the review payload).
+      - added clause                -> change_kind "added", inserted at its REAL revised
+        position (from the matcher index, NOT the staged NULL parent). Numbered when
+        pending/accepted; EMITTED but UNNUMBERED (numbered=False, clause_number None) when
+        rejected — a struck trace, the symmetric mirror of an accepted/pending deletion
+        shown-in-place; it consumes no sibling position so survivors renumber as if absent.
+      - deleted baseline clause     -> change_kind "deleted"; KEPT + numbered when the
+        deletion was rejected/modified (clause survives), shown-in-place but UNNUMBERED
+        (clause_number None) when accepted/pending (clause removed from the projected tree).
+    `clause_number` is the role-aware DD-02/DD-43
+    number of the PROJECTED tree, so it shifts as verdicts change (insert pushes the next
+    section down; rejecting the insert renumbers it back). `node_id` is the baseline node
+    id for baseline-derived nodes and the revised synthetic id for added nodes (the
+    role-override target). `numbered` is the internal flag the numbering pass reads; it is
+    surfaced so the frontend can distinguish a kept-but-renumbered clause from a removed one."""
+
+    node_id: str
+    clause_number: str | None
+    role: Role
+    depth: int
+    text: str | None
+    change_id: str | None = None
+    change_kind: DocumentChangeKind | None = None
+    numbered: bool = True
+    # Heading flag mirrored from the source `DocumentNode` (see `DocumentNode.is_heading`),
+    # so the projected pane bolds headings like the first-import Source panel.
+    is_heading: bool = False
+
+
 class RevisionDocumentView(BaseModel):
     """The two-pane document payload: the baseline + revised document trees as ordered
-    nodes, the change overlay keyed to the revised side, and the abstain match-confirm
-    pairs. Light enough to render a 460+ node document — no hunk redline text here."""
+    nodes, the change overlay keyed to the revised side, the abstain match-confirm pairs,
+    and the `projected` linear reading order (baseline + non-rejected changes, role-aware
+    numbered) the frontend renders directly. Light enough to render a 460+ node document —
+    no hunk redline text here."""
 
     baseline: list[DocumentNode]
     revised: list[DocumentNode]
     changes: list[DocumentChange]
     abstain_matches: list[AbstainMatch]
+    projected: list[ProjectedNode]
 
 
 class NodeRoleOverrideRequest(BaseModel):

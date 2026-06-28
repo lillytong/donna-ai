@@ -12,7 +12,7 @@ columns. Mirrors the F11 recommendation pipeline (single linear shot, no LangGra
   2. Per hunk, build grounding by REUSING the F11 helpers (grounding.build_clause_grounding /
      build_label_map / build_pattern_grounding): the baseline clause subtree (edited/deleted →
      the matched node; new → the proposed parent's neighbors) plus the specific edit
-     (original_text → proposed_text). Render `revision_recommend_v1.txt` and call Claude at the
+     (original_text → proposed_text). Render `revision_recommend_v2.txt` and call Claude at the
      CAPABLE tier (high/Opus — counter-language is high-consequence, DD-35), structured JSON.
   3. Finalize each output: scrub any leaked id from the prose, and enforce the schema invariant
      that counter-language exists iff verdict == counter and a trivial hunk never carries it.
@@ -25,7 +25,7 @@ Idempotent: a decided change (status = complete) is skipped; re-running re-gener
 advisory columns for changes still pending/partial.
 
 PROMPT-INJECTION NOTE: the counterparty's edit text is adversarial input flowing into the
-prompt. `revision_recommend_v1.txt` frames all document text as DATA, not instructions. This
+prompt. `revision_recommend_v2.txt` frames all document text as DATA, not instructions. This
 remains a residual risk area (open product item on injection stance).
 
 Every LLM call goes through `services/llm.complete`, which logs model/tokens/latency/caller.
@@ -33,6 +33,8 @@ Every LLM call goes through `services/llm.complete`, which logs model/tokens/lat
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Any, Literal
 
 import structlog
@@ -40,6 +42,7 @@ from pydantic import ValidationError
 
 from backend.config.settings import get_settings
 from backend.db import acquire
+from backend.models.imports import StoredNode
 from backend.models.revision_recommend import (
     RevisionRecommendation,
     RevisionRecommendSummary,
@@ -47,13 +50,19 @@ from backend.models.revision_recommend import (
 )
 from backend.prompts.utils import render
 from backend.services.contract_repo import fetch_nodes
+from backend.services.cross_references import list_cross_references
+from backend.services.defined_terms import list_terms_for_deal
 from backend.services.donna.distillation import fetch_patterns_for_issue
 from backend.services.donna.grounding import (
     build_clause_grounding,
     build_label_map,
+    build_mandate_grounding,
     build_pattern_grounding,
+    build_reference_grounding,
 )
 from backend.services.donna.qa import scrub_leaked_ids
+from backend.services.firm_profile_repo import get_firm_profile
+from backend.services.import_.revision_cluster import cluster_key, normalize_segment
 from backend.services.llm import complete
 from backend.services.settings_repo import get_contract, get_contract_type
 
@@ -90,7 +99,7 @@ WHERE session_id = $1
 """
 
 _SELECT_HUNKS = """
-SELECT id, change_id, hunk_type, original_text, proposed_text
+SELECT id, change_id, hunk_type, significance, position_in_body, original_text, proposed_text
 FROM counterparty_revision_hunks
 WHERE change_id = ANY($1::uuid[])
 ORDER BY change_id, position_in_body NULLS FIRST, id
@@ -156,8 +165,80 @@ def parse_recommendation(text: str) -> RevisionRecommendation:
         return _FALLBACK
 
 
+def _cluster_key(hunk: Any) -> tuple[str, str] | None:
+    """Cross-document clustering key for an asyncpg hunk row (DD-89) — a thin wrapper over the
+    SHARED `revision_cluster.cluster_key` so recommend-time and read-time clustering can never
+    drift. Returns None for a trivial / whole-node / degenerate hunk (→ singleton bucket)."""
+    return cluster_key(hunk["significance"], hunk["original_text"], hunk["proposed_text"])
+
+
+def _word_spans(text: str) -> list[tuple[str, int, int]]:
+    """(word, start_offset, end_offset) for each whitespace-delimited token, so a token-level
+    diff can slice the exact source substring back out."""
+    spans: list[tuple[str, int, int]] = []
+    i, n = 0, len(text)
+    while i < n:
+        if text[i].isspace():
+            i += 1
+            continue
+        start = i
+        while i < n and not text[i].isspace():
+            i += 1
+        spans.append((text[start:i], start, i))
+    return spans
+
+
+def reconstruct_proposed_clause(
+    baseline_body: str, hunks: list[tuple[int, str | None, str | None]]
+) -> str:
+    """Recover the counterparty's full PROPOSED clause body by replaying every inline hunk
+    (position_in_body, original_text, proposed_text) over the baseline node body — the same
+    splice the adopt path produces for "accept all". Offsets are BASELINE char offsets, so the
+    hunks are applied in descending position to keep earlier offsets valid (mirrors
+    revision_review._apply)."""
+    out = baseline_body
+    for pos, original, proposed in sorted(hunks, key=lambda h: h[0], reverse=True):
+        repl = proposed or ""
+        if original is not None:
+            out = out[:pos] + repl + out[pos + len(original) :]
+        else:
+            out = out[:pos] + repl + out[pos:]
+    return out
+
+
+def reduce_counter_span(counter: str, proposed_clause: str, proposed_text: str) -> str | None:
+    """Reduce an LLM counter that echoed surrounding clause text down to ONLY its changed token
+    span, by stripping the prefix/suffix it shares with the counterparty's PROPOSED clause body.
+
+    Word-level `difflib.SequenceMatcher` (proposed clause vs counter) must find EXACTLY ONE
+    non-equal region, and that region's proposed side must equal this hunk's `proposed_text` —
+    i.e. the counter cleanly changes only the span this hunk owns. The counter side of that
+    region is the reduced counter (e.g. "7.5%"). Returns None when the reduction is ambiguous
+    (zero or multiple changed regions), does not align to this hunk, or is degenerate (empty
+    result) — the caller then keeps the raw counter unreduced rather than guess."""
+    prop = _word_spans(proposed_clause)
+    cnt = _word_spans(counter)
+    matcher = SequenceMatcher(None, [t[0] for t in prop], [t[0] for t in cnt], autojunk=False)
+    diffs = [op for op in matcher.get_opcodes() if op[0] != "equal"]
+    if len(diffs) != 1:
+        return None
+    _tag, i1, i2, j1, j2 = diffs[0]
+    proposed_region = proposed_clause[prop[i1][1] : prop[i2 - 1][2]] if i1 < i2 else ""
+    counter_region = counter[cnt[j1][1] : cnt[j2 - 1][2]] if j1 < j2 else ""
+    if normalize_segment(proposed_region) != normalize_segment(proposed_text):
+        return None
+    return counter_region.strip() or None
+
+
 def finalize_recommendation(
-    rec: RevisionRecommendation, id_labels: dict[str, str]
+    rec: RevisionRecommendation,
+    id_labels: dict[str, str],
+    original_text: str | None,
+    *,
+    proposed_text: str | None = None,
+    proposed_clause: str | None = None,
+    model: str | None = None,
+    hunk_id: str | None = None,
 ) -> RevisionRecommendation:
     """Pure post-LLM cleanup + invariant enforcement: scrub any leaked id out of the prose, and
     guarantee counter-language exists IFF verdict == counter — a trivial hunk never carries it
@@ -171,6 +252,39 @@ def finalize_recommendation(
 
     verdict = rec.verdict
     if rec.significance == "trivial":
+        counter = None
+
+    # DETERMINISTIC SPAN REDUCTION (inline edits only — `original_text` non-empty; a whole-node
+    # new/deleted hunk's whole-clause counter is correct and left untouched). The LLM sometimes
+    # echoes the whole surrounding sentence into counter_language; on adopt the redline splices
+    # that sentence over only the changed span (DD-64) and duplicates text. Reduce the counter
+    # to just its changed token span; if the reduction is ambiguous, keep the raw counter and
+    # warn — never guess (a wrong splice is worse than an over-long one).
+    if (
+        verdict == "counter"
+        and counter is not None
+        and original_text
+        and proposed_text
+        and proposed_clause
+    ):
+        reduced = reduce_counter_span(counter, proposed_clause, proposed_text)
+        if reduced is None:
+            log.warning(
+                "revision_recommend.counter_reduction_skipped", model=model, hunk_id=hunk_id
+            )
+        else:
+            counter = reduced
+
+    # A counter whose language merely restores our original span IS a reject: collapse it to
+    # `keep` so it applies as a no-op rather than splicing the echoed/whole-clause span as an
+    # addition (the redline replaces only the changed span — DD-64).
+    if (
+        verdict == "counter"
+        and counter is not None
+        and original_text is not None
+        and normalize_segment(counter) == normalize_segment(original_text)
+    ):
+        verdict = "keep"
         counter = None
     if verdict == "counter":
         if counter is None:
@@ -189,28 +303,46 @@ def finalize_recommendation(
 # --- orchestration -----------------------------------------------------------
 
 
-async def _analyze_hunk(
+@dataclass(frozen=True)
+class _Member:
+    """One target hunk plus the per-change grounding `finalize_recommendation` needs. A cluster's
+    members share one judge call (on a representative) but each finalizes against its OWN span
+    (DD-89: counter span-reduction is per-hunk — a reduced counter must never be fanned)."""
+
+    hunk: Any
+    kind: ChangeKind
+    clause: str
+    proposed_clause: str
+
+
+async def _judge(
     *,
     kind: ChangeKind,
     hunk: Any,
     deal_context: str,
     clause: str,
+    mandate_block: str,
     pattern_block: str,
-    id_labels: dict[str, str],
     max_tokens: int,
     temperature: float,
 ) -> RevisionRecommendation:
-    """One LLM call: ground the hunk, render the prompt, parse + finalize. The learned-pattern
-    block is appended AFTER the rendered prompt (not a template slot) so patterns stay visibly
-    non-authoritative and the prompt template/eval are untouched (mirrors F11, DD-76)."""
+    """One LLM call on a representative hunk → a RAW recommendation (verdict, significance,
+    un-reduced counter_language); parse only, NO finalize. Run ONCE per cluster; the caller then
+    runs `finalize_recommendation` per member against that member's own span (DD-89). The firm-
+    profile mandate (F32/DD-90) and the learned-pattern block are appended AFTER the rendered
+    prompt (not template slots) so both stay non-authoritative and the prompt template/eval stay
+    untouched (mirrors F11/F36, DD-76). The mandate (operator standing context) precedes the
+    patterns (soft heuristics)."""
     prompt = render(
-        "revision_recommend_v1.txt",
+        "revision_recommend_v2.txt",
         deal_context=deal_context,
         clause=clause or "(no baseline clause resolved)",
         change=build_change_focus(
             kind, hunk["hunk_type"], hunk["original_text"], hunk["proposed_text"]
         ),
     )
+    if mandate_block:
+        prompt = f"{prompt}\n\n{mandate_block}"
     if pattern_block:
         prompt = f"{prompt}\n\n{pattern_block}"
 
@@ -222,7 +354,7 @@ async def _analyze_hunk(
         temperature=temperature,
         json_response=True,
     )
-    return finalize_recommendation(parse_recommendation(result.text), id_labels)
+    return parse_recommendation(result.text)
 
 
 def _grounding_root(kind: ChangeKind, change: Any) -> str | None:
@@ -233,6 +365,24 @@ def _grounding_root(kind: ChangeKind, change: Any) -> str | None:
         return str(node_id) if node_id is not None else None
     parent = change["proposed_parent_id"]
     return str(parent) if parent is not None else None
+
+
+def _proposed_clause_for(
+    kind: ChangeKind, change: Any, hunks: list[Any], nodes_by_id: dict[str, StoredNode]
+) -> str:
+    """The counterparty's proposed clause body for span-reduction grounding: the matched node's
+    baseline body with this change's inline hunks replayed (reconstruct_proposed_clause). Only
+    edited changes have a baseline-clause-plus-inline-edits shape; for new/deleted (no inline
+    span to reduce against) return empty, which disables reduction for that change."""
+    if kind != "edited":
+        return ""
+    node = nodes_by_id.get(str(change["node_id"])) if change["node_id"] is not None else None
+    if node is None:
+        return ""
+    return reconstruct_proposed_clause(
+        node.body or "",
+        [(h["position_in_body"] or 0, h["original_text"], h["proposed_text"]) for h in hunks],
+    )
 
 
 async def recommend_session(session_id: str) -> RevisionRecommendSummary:
@@ -254,6 +404,15 @@ async def recommend_session(session_id: str) -> RevisionRecommendSummary:
         # Tier-8 retrieval (DD-76), cheap (one query): operator-style always, counterparty when
         # same client, deal-type when same contract type. Background heuristics, never cited.
         patterns = await fetch_patterns_for_issue(conn, contract_id)
+        # F36 / DD-93 reference-graph grounding inputs: the deal's defined-term registry (F16) +
+        # this contract's cross-references (F17). Two cheap reads, once per session.
+        deal_id = contract.deal_id if contract is not None else None
+        defined_terms = await list_terms_for_deal(conn, deal_id) if deal_id is not None else []
+        cross_refs = await list_cross_references(conn, contract_id)
+        # F32 v1 / DD-90: the global operator-authored firm profile — the firm's standing MANDATE
+        # (who we are, our interests, our red-lines). One read per session; injected as a session-
+        # level constant grounding block, identical for every change. Empty profile -> no-op.
+        firm_profile = await get_firm_profile(conn)
 
         change_rows = await conn.fetch(_SELECT_CHANGES, session_id)
         targets: list[tuple[Any, ChangeKind]] = []
@@ -266,30 +425,79 @@ async def recommend_session(session_id: str) -> RevisionRecommendSummary:
     deal_type = ctype.name if ctype is not None else "contract"
     deal_context = f"Contract type: {deal_type}\nRevision source: {session['source']}"
     labels = build_label_map(nodes)
+    nodes_by_id = {n.id: n for n in nodes}
     pattern_block = build_pattern_grounding(patterns)
+    mandate_block = build_mandate_grounding(firm_profile)
     settings = get_settings()
+    model = settings.models.high
     max_tokens = settings.llm.revision_recommend_max_tokens
     temperature = settings.llm.revision_recommend_temperature
+
+    # Build every target hunk into a _Member (with its per-change grounding), then cluster across
+    # the WHOLE session by `_cluster_key`: identical counterparty edits judged once, fanned to all
+    # (DD-89). Non-clusterable hunks (key None — trivial / whole-node / degenerate) each become a
+    # singleton bucket, which is exactly the old per-hunk path (judge once, finalize once).
+    # F36 / DD-93: the reference bundle is resolved ONCE per grounding-root node and cached, so a
+    # multi-member F34 cluster (and any changes sharing a root) resolve once, never per member.
+    ref_bundle_cache: dict[str, str] = {}
+
+    def _reference_bundle(root_id: str | None) -> str:
+        if root_id is None or root_id not in nodes_by_id:
+            return ""
+        if root_id not in ref_bundle_cache:
+            ref_bundle_cache[root_id] = build_reference_grounding(
+                nodes_by_id[root_id], nodes_by_id, defined_terms, cross_refs
+            )
+        return ref_bundle_cache[root_id]
+
+    members: list[_Member] = []
+    for change, kind in targets:
+        root_id = _grounding_root(kind, change)
+        clause = build_clause_grounding(nodes, root_id, labels)
+        bundle = _reference_bundle(root_id)
+        if bundle:
+            clause = f"{clause}\n\n{bundle}" if clause else bundle
+        change_hunks = hunks_by_change.get(str(change["id"]), [])
+        proposed_clause = _proposed_clause_for(kind, change, change_hunks, nodes_by_id)
+        for hunk in change_hunks:
+            members.append(
+                _Member(hunk=hunk, kind=kind, clause=clause, proposed_clause=proposed_clause)
+            )
+
+    clusters: dict[tuple[str, str], list[_Member]] = {}
+    for member in members:
+        key = _cluster_key(member.hunk)
+        bucket_key = key if key is not None else ("\x00singleton", str(member.hunk["id"]))
+        clusters.setdefault(bucket_key, []).append(member)
 
     tally = {"accept": 0, "counter": 0, "keep": 0}
     hunks_analyzed = 0
     writes: list[tuple[str, str, str | None, str, str]] = []
-    for change, kind in targets:
-        clause = build_clause_grounding(nodes, _grounding_root(kind, change), labels)
-        for hunk in hunks_by_change.get(str(change["id"]), []):
-            rec = await _analyze_hunk(
-                kind=kind,
-                hunk=hunk,
-                deal_context=deal_context,
-                clause=clause,
-                pattern_block=pattern_block,
-                id_labels=labels,
-                max_tokens=max_tokens,
-                temperature=temperature,
+    for bucket in clusters.values():
+        rep = bucket[0]
+        raw = await _judge(
+            kind=rep.kind,
+            hunk=rep.hunk,
+            deal_context=deal_context,
+            clause=rep.clause,
+            mandate_block=mandate_block,
+            pattern_block=pattern_block,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        for member in bucket:
+            rec = finalize_recommendation(
+                raw,
+                labels,
+                member.hunk["original_text"],
+                proposed_text=member.hunk["proposed_text"],
+                proposed_clause=member.proposed_clause,
+                model=model,
+                hunk_id=str(member.hunk["id"]),
             )
             writes.append(
                 (
-                    str(hunk["id"]),
+                    str(member.hunk["id"]),
                     rec.verdict,
                     rec.counter_language,
                     rec.significance,

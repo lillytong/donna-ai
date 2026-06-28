@@ -43,6 +43,7 @@ from backend.services.donna.grounding import (
     build_clause_grounding,
     build_issue_ledger,
     build_label_map,
+    build_mandate_grounding,
 )
 from backend.services.donna.windowing import (
     evicted_turn,
@@ -50,6 +51,7 @@ from backend.services.donna.windowing import (
     to_turns,
     window,
 )
+from backend.services.firm_profile_repo import get_firm_profile
 from backend.services.issue_repo import list_issues
 from backend.services.llm import complete
 
@@ -126,6 +128,9 @@ async def ask(
         messages = await fetch_messages(conn, conversation.id)
         issues = await list_issues(conn, contract_id)
         nodes = await fetch_nodes(conn, contract_id)
+        # F32 v1 / DD-90: the global operator-authored firm profile — the firm's standing MANDATE
+        # (who we are, our interests, our red-lines). One read per request, grounds every answer.
+        firm_profile = await get_firm_profile(conn)
 
     turns = to_turns(messages)
     labels = build_label_map(nodes)
@@ -138,6 +143,12 @@ async def ask(
         history=render_history(window(turns)) or "(no earlier conversation)",
         question=question,
     )
+    # The mandate is appended AFTER the rendered prompt (not a template slot) so it stays
+    # non-authoritative DATA/context and the prompt template/eval stay untouched (mirrors the
+    # revision recommender, F32/DD-90). Empty profile -> '' -> no-op.
+    mandate_block = build_mandate_grounding(firm_profile)
+    if mandate_block:
+        prompt = f"{prompt}\n\n{mandate_block}"
 
     settings = get_settings()
     result = await complete(

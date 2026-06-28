@@ -41,13 +41,14 @@ from backend.models.audit import (
 from backend.models.contract_tree import ParsedTree, Role, TreeNode
 from backend.models.imports import ContractTreeResponse, NodeTreeItem
 from backend.models.revision_import import StoredRevisionSession
-from backend.models.revision_match import ClauseNode
+from backend.models.revision_match import ClauseNode, RevisionMatchResult
 from backend.models.revision_review import (
     AbstainMatch,
     ApplyResult,
     ChangeContext,
     ChangeContextSide,
     ChangeKind,
+    ClusterDecideRequest,
     ConfirmMatchRequest,
     DocumentChange,
     DocumentChangeKind,
@@ -55,6 +56,7 @@ from backend.models.revision_review import (
     HunkDecideRequest,
     NodeDecideRequest,
     NodeRoleOverrideResult,
+    ProjectedNode,
     ReviewChange,
     ReviewHunk,
     ReviewPayload,
@@ -66,6 +68,7 @@ from backend.models.snapshots import SnapshotNode
 from backend.services import node_create, node_delete, node_edit
 from backend.services.audit_repo import record_event
 from backend.services.import_.numbering import derive_numbers
+from backend.services.import_.revision_cluster import cluster_id, cluster_key
 from backend.services.import_.revision_import import baseline_to_clause_nodes, extract_hunks
 from backend.services.import_.revision_match import match_revision
 from backend.services.snapshot import get_snapshot, get_snapshot_tree
@@ -109,6 +112,10 @@ class BadDecision(RevisionReviewError):
 
 class SessionNotReady(RevisionReviewError):
     status_code = 409
+
+
+class ClusterNotFound(RevisionReviewError):
+    status_code = 404
 
 
 class SessionAlreadyApplied(RevisionReviewError):
@@ -237,11 +244,6 @@ SELECT parent_id, order_index FROM nodes
 WHERE id = $1 AND contract_id = $2 AND is_deleted = false
 """
 
-_LIVE_NODES = """
-SELECT id, parent_id, order_index FROM nodes
-WHERE contract_id = $1 AND is_deleted = false
-"""
-
 # DD-54 role lookup for the document view. Baseline snapshot node ids ARE real live
 # node ids (snapshot.py dumps `nodes.id`), so this recovers the operator-confirmed F04
 # role the snapshot shape doesn't carry. is_deleted is NOT filtered — a baseline node
@@ -363,6 +365,34 @@ async def _hunks_for(conn: Any, change_ids: list[str]) -> dict[str, list[ReviewH
     return out
 
 
+def _stamp_clusters(changes: list[ReviewChange]) -> None:
+    """Stamp `cluster_id` + `cluster_size` (>1 only) onto every substantive replacement hunk that
+    recurs across the session (DD-89, F34), so the frontend can collapse identical counterparty
+    edits into ONE grouped review stop. IN PLACE.
+
+    Buckets by the SHARED `revision_cluster.cluster_key` — the SAME function Step-1 recommend-time
+    clustering uses — so the grouped stop can never drift from the verdicts Donna fanned out.
+    Abstains are excluded (recommend never judged them), matching the recommend-time population;
+    decided members stay in their bucket (the key is text-only, independent of verdict) so a
+    peeled-off member still shows in the group's mixed summary. Singletons are left untouched
+    (cluster_id None, size 1) and ride the existing per-hunk path."""
+    buckets: dict[tuple[str, str], list[ReviewHunk]] = {}
+    for change in changes:
+        if change.change_kind == "abstain":
+            continue
+        for hunk in change.hunks:
+            key = cluster_key(hunk.significance, hunk.original_text, hunk.proposed_text)
+            if key is not None:
+                buckets.setdefault(key, []).append(hunk)
+    for key, members in buckets.items():
+        if len(members) < 2:
+            continue
+        cid = cluster_id(key)
+        for hunk in members:
+            hunk.cluster_id = cid
+            hunk.cluster_size = len(members)
+
+
 # --------------------------------------------------------------------------- #
 # Text reconstruction (deterministic; reuses F03b's word-level diff)            #
 # --------------------------------------------------------------------------- #
@@ -416,31 +446,6 @@ async def _reconstruct_incoming(
 async def list_sessions(conn: Any, contract_id: str) -> list[StoredRevisionSession]:
     rows = await conn.fetch(_LIST_SESSIONS, contract_id)
     return [_to_session(r) for r in rows]
-
-
-async def _doc_order(conn: Any, contract_id: str) -> dict[str, int]:
-    """Pre-order DFS sequence over the live tree (parent before children, siblings
-    by order_index) — the document-order key for the Phase-2 content stream."""
-    rows = await conn.fetch(_LIVE_NODES, contract_id)
-    children: dict[str | None, list[Any]] = {}
-    for r in rows:
-        parent = str(r["parent_id"]) if r["parent_id"] is not None else None
-        children.setdefault(parent, []).append(r)
-    for sibs in children.values():
-        sibs.sort(key=lambda x: x["order_index"])
-    seq: dict[str, int] = {}
-    counter = 0
-
-    def walk(parent: str | None) -> None:
-        nonlocal counter
-        for r in children.get(parent, []):
-            nid = str(r["id"])
-            seq[nid] = counter
-            counter += 1
-            walk(nid)
-
-    walk(None)
-    return seq
 
 
 # --------------------------------------------------------------------------- #
@@ -497,7 +502,10 @@ def _empty_context(side: str) -> ChangeContextSide:
 
 
 def _build_side_context(
-    side: str, tree: ContractTreeResponse | None, target_id: str | None
+    side: str,
+    tree: ContractTreeResponse | None,
+    target_id: str | None,
+    number_by_id: dict[str, str] | None = None,
 ) -> ChangeContextSide:
     if tree is None or target_id is None:
         return _empty_context(side)
@@ -508,10 +516,16 @@ def _build_side_context(
     children_preview = [lbl for child in located.item.children if (lbl := _node_label(child))][
         :_CTX_MAX_CHILDREN
     ]
+    # `_locate`'s `number` is a NAIVE positional path that counts EVERY node (front-matter,
+    # recitals, sub-items) as consuming a position, so it inflates past the real clause count
+    # (e.g. clause 13.3 shown as 31.3.1). Prefer the canonical role-aware `derive_numbers`
+    # value (same scheme as the two-pane view + Mode A export) keyed by node id; fall back to
+    # the positional path only when the node isn't in the resolved map (e.g. unit tests).
+    number = (number_by_id or {}).get(target_id) or located.number
     return ChangeContextSide(
         side=cast(Any, side),
         found=True,
-        number=located.number,
+        number=number,
         heading=(located.item.heading or "").strip() or None,
         breadcrumb=breadcrumb,
         children_preview=children_preview,
@@ -551,21 +565,31 @@ async def _change_context(
     change: ReviewChange,
     baseline_tree: ContractTreeResponse | None,
     received_tree: ContractTreeResponse | None,
+    baseline_number_by_id: dict[str, str] | None = None,
+    revised_number_by_id: dict[str, str] | None = None,
 ) -> ChangeContext:
     """Resolve both sides of a change's structural context. Resolution is EXACT for
     settled changes (the change row carries the node id) and a body-match heuristic
     only where no incoming reference is stored (new / abstain):
       - edited / deleted ⇒ `baseline` located by `node_id`.
       - new              ⇒ `their` body-matched in the as_received tree.
-      - abstain          ⇒ `baseline` = candidate (`proposed_parent_id`) + `their`."""
+      - abstain          ⇒ `baseline` = candidate (`proposed_parent_id`) + `their`.
+
+    The `*_number_by_id` maps carry the canonical role-aware clause numbers (same scheme as
+    the two-pane view) so the context number is the REAL document number, not `_locate`'s
+    inflated positional path."""
     kind = change.change_kind
     baseline_ctx = _empty_context("baseline")
     their_ctx = _empty_context("their")
 
     if kind in ("edited", "deleted"):
-        baseline_ctx = _build_side_context("baseline", baseline_tree, change.node_id)
+        baseline_ctx = _build_side_context(
+            "baseline", baseline_tree, change.node_id, baseline_number_by_id
+        )
     elif kind == "abstain":
-        baseline_ctx = _build_side_context("baseline", baseline_tree, change.proposed_parent_id)
+        baseline_ctx = _build_side_context(
+            "baseline", baseline_tree, change.proposed_parent_id, baseline_number_by_id
+        )
 
     if kind in ("new", "abstain"):
         incoming_body = await _reconstruct_incoming(
@@ -581,29 +605,31 @@ async def _change_context(
                 contract_id=contract_id,
                 kind=kind,
             )
-        their_ctx = _build_side_context("their", received_tree, their_id)
+        their_ctx = _build_side_context("their", received_tree, their_id, revised_number_by_id)
 
     return ChangeContext(their=their_ctx, baseline=baseline_ctx)
 
 
 async def _attach_change_context(
-    conn: Any, session: StoredRevisionSession, changes: list[ReviewChange]
+    conn: Any,
+    session: StoredRevisionSession,
+    changes: list[ReviewChange],
+    baseline_tree: ContractTreeResponse | None,
+    received_tree: ContractTreeResponse | None,
+    baseline_number_by_id: dict[str, str],
+    revised_number_by_id: dict[str, str],
 ) -> None:
-    """Populate `context` on every change (both phases). Resolves the two snapshot
-    trees ONCE per payload; the received tree is the as_received snapshot the session's
-    `received` pointer points at (reliable while the session is `reviewing`)."""
-    if not changes:
-        return
-    baseline_tree = await get_snapshot_tree(conn, session.contract_id, session.baseline_snapshot_id)
-    received_id = await conn.fetchval(_FIND_RECEIVED_POINTER, session.contract_id, session.source)
-    received_tree = (
-        await get_snapshot_tree(conn, session.contract_id, str(received_id))
-        if received_id is not None
-        else None
-    )
+    """Populate `context` on every change (both phases) from the already-resolved trees +
+    role-aware number maps (computed once by `_resolve_document`)."""
     for change in changes:
         change.context = await _change_context(
-            conn, session.contract_id, change, baseline_tree, received_tree
+            conn,
+            session.contract_id,
+            change,
+            baseline_tree,
+            received_tree,
+            baseline_number_by_id,
+            revised_number_by_id,
         )
 
 
@@ -616,7 +642,22 @@ async def get_review_payload(conn: Any, session_id: str) -> ReviewPayload:
     change_rows = await conn.fetch(_SELECT_CHANGES, session_id)
     hunks_by_change = await _hunks_for(conn, [str(r["id"]) for r in change_rows])
     changes = [_to_change(r, hunks_by_change.get(str(r["id"]), [])) for r in change_rows]
-    await _attach_change_context(conn, session, changes)
+    _stamp_clusters(changes)
+
+    resolved = await _resolve_document(conn, session)
+    baseline_number_by_id = {
+        n.node_id: n.clause_number for n in resolved.baseline if n.clause_number
+    }
+    revised_number_by_id = {n.node_id: n.clause_number for n in resolved.revised if n.clause_number}
+    await _attach_change_context(
+        conn,
+        session,
+        changes,
+        resolved.baseline_tree,
+        resolved.revised_tree,
+        baseline_number_by_id,
+        revised_number_by_id,
+    )
 
     abstains = sorted(
         (c for c in changes if c.change_kind == "abstain"),
@@ -624,15 +665,7 @@ async def get_review_payload(conn: Any, session_id: str) -> ReviewPayload:
     )
 
     settled = [c for c in changes if c.change_kind != "abstain"]
-    seq = await _doc_order(conn, session.contract_id)
-
-    def order_key(c: ReviewChange) -> tuple[int, int, int]:
-        if c.change_kind == "new":
-            anchor = seq.get(c.proposed_parent_id, len(seq)) if c.proposed_parent_id else -1
-            return (anchor, 1, c.proposed_order_index or 0)
-        return (seq.get(cast(str, c.node_id), len(seq)), 0, 0)
-
-    phase2 = sorted(settled, key=order_key)
+    phase2 = sorted(settled, key=_document_order_key(resolved))
 
     return ReviewPayload(
         session=session,
@@ -707,7 +740,7 @@ async def _inherit_revised_roles(
     revised_snapshot_id: str | None,
     baseline: list[DocumentNode],
     revised: list[DocumentNode],
-) -> None:
+) -> RevisionMatchResult | None:
     """DD-28/DD-54 classification inheritance at render time: a revision is a DIFF, not
     a fresh import, so every revised node that MATCHES a baseline node inherits that
     baseline node's operator-confirmed `role` — unchanged, reworded, AND moved alike;
@@ -719,9 +752,12 @@ async def _inherit_revised_roles(
     `match_revision` on the SAME adapter inputs F03b's import used (baseline snapshot
     tree + the as_received tree reconstructed to its import-time incoming shape), so the
     map reproduces import exactly. One in-memory pass — the baseline roles are already
-    enriched in `baseline`; no per-node query."""
+    enriched in `baseline`; no per-node query.
+
+    Returns the `RevisionMatchResult` (baseline_id <-> incoming-index map) so the read
+    path can reuse it for document-order placement; None when no revised side / snapshot."""
     if not revised or revised_snapshot_id is None:
-        return
+        return None
     baseline_snapshot = await get_snapshot(conn, baseline_snapshot_id)
     revised_snapshot = await get_snapshot(conn, revised_snapshot_id)
     if (
@@ -730,7 +766,7 @@ async def _inherit_revised_roles(
         or revised_snapshot is None
         or revised_snapshot.tree is None
     ):
-        return
+        return None
 
     result = match_revision(
         baseline_to_clause_nodes(baseline_snapshot.tree),
@@ -754,6 +790,7 @@ async def _inherit_revised_roles(
         inherit(m.incoming_index, m.baseline_id)
     for ab in result.abstains:
         inherit(ab.incoming_index, ab.best_baseline_id)
+    return result
 
 
 async def fetch_role_overrides(conn: Any, session_id: str) -> dict[str, Role]:
@@ -806,6 +843,8 @@ def _flatten_document(tree: ContractTreeResponse | None) -> list[DocumentNode]:
 
     def walk(items: list[NodeTreeItem], depth: int) -> None:
         for item in items:
+            heading = (item.heading or "").strip()
+            body = (item.body or "").strip()
             out.append(
                 DocumentNode(
                     node_id=item.id,
@@ -813,6 +852,9 @@ def _flatten_document(tree: ContractTreeResponse | None) -> list[DocumentNode]:
                     role=item.role,
                     depth=depth,
                     text=(item.heading or item.body or "").strip() or None,
+                    # Heading-only node (heading set, empty body) — import's `typeLabel ===
+                    # "Heading"`. `text` above is `heading or body`, so it carries the heading.
+                    is_heading=bool(heading) and not body,
                 )
             )
             walk(item.children, depth + 1)
@@ -886,17 +928,26 @@ async def _abstain_match(
     )
 
 
-async def get_document_view(conn: Any, contract_id: str, session_id: str) -> RevisionDocumentView:
-    """The two-pane document payload (F03c rework): the baseline + revised document trees
-    as ordered nodes, the settled-change overlay keyed to the revised side, and the
-    abstain match-confirm pairs. Read-only; no hunk redline text (fetched on click)."""
-    session_row = await conn.fetchrow(_SELECT_SESSION, session_id)
-    if session_row is None:
-        raise SessionNotFound(session_id)
-    session = _to_session(session_row)
-    if session.contract_id != contract_id:
-        raise SessionNotFound(session_id)
+class _ResolvedDocument(NamedTuple):
+    """The role-resolved, role-aware-numbered baseline + revised document trees plus the
+    baseline<->revised match map — the single source of truth both `get_document_view`
+    (two-pane render) and `get_review_payload` (change context numbers + document-order
+    placement) read, so the two surfaces never disagree on a clause's number/position."""
 
+    baseline: list[DocumentNode]
+    revised: list[DocumentNode]
+    baseline_tree: ContractTreeResponse | None
+    revised_tree: ContractTreeResponse | None
+    match: RevisionMatchResult | None
+    received_snapshot_id: str | None
+
+
+async def _resolve_document(conn: Any, session: StoredRevisionSession) -> _ResolvedDocument:
+    """Resolve both document sides to role-aware-numbered `DocumentNode`s ONCE:
+    baseline roles from live `nodes`, revised roles inherited from their matched baseline
+    (DD-28/DD-54) + operator overrides, then the canonical role-aware `derive_numbers`
+    pass on each side. Also returns the matcher result so callers can place new/edited
+    nodes by REAL document position instead of the staged (often null) parent pointer."""
     baseline_tree = await get_snapshot_tree(conn, session.contract_id, session.baseline_snapshot_id)
     received_id = await conn.fetchval(_FIND_RECEIVED_POINTER, session.contract_id, session.source)
     revised_tree = (
@@ -906,40 +957,280 @@ async def get_document_view(conn: Any, contract_id: str, session_id: str) -> Rev
     )
 
     baseline = _flatten_document(baseline_tree)
-    # Recover the operator-confirmed DD-54 role the snapshot shape drops: baseline node
-    # ids are real live `nodes` ids, so they join. The revised (as_received) tree carries
-    # synthetic ids that do NOT join — its matched nodes instead INHERIT the baseline
-    # role via `_inherit_revised_roles` below (DD-28); only genuinely-new clauses keep
-    # the snapshot default `clause` (the frontend falls back to a generic label).
     role_by_id = await _roles_for(conn, [n.node_id for n in baseline])
     for n in baseline:
         role = role_by_id.get(n.node_id)
         if role is not None:
             n.role = role
-    # Numbers are role-aware (DD-02/DD-43): stamped only after the baseline roles are
-    # resolved so front/back-matter is excluded from the clause count.
     _assign_clause_numbers(baseline)
+
     revised = _flatten_document(revised_tree)
-    # DD-28/DD-54: a revision is a diff — matched revised nodes INHERIT the baseline's
-    # operator-confirmed role instead of all falling back to the snapshot default.
-    await _inherit_revised_roles(
-        conn,
-        session.baseline_snapshot_id,
-        str(received_id) if received_id is not None else None,
-        baseline,
-        revised,
+    received_snapshot_id = str(received_id) if received_id is not None else None
+    match = await _inherit_revised_roles(
+        conn, session.baseline_snapshot_id, received_snapshot_id, baseline, revised
     )
-    # Mode B classification editing (Phase 1): operator role overrides WIN over the
-    # render-time inheritance for their node_id. Applied before numbering so a re-type
-    # to/from `clause` correctly changes the role-aware numbers. One batched fetch.
-    _apply_role_overrides(revised, await fetch_role_overrides(conn, session_id))
-    # Re-derive role-aware numbers on the revised side AFTER inheritance + overrides
-    # have fixed its roles (flatten left numbers None).
+    _apply_role_overrides(revised, await fetch_role_overrides(conn, session.id))
     _assign_clause_numbers(revised)
+
+    return _ResolvedDocument(
+        baseline=baseline,
+        revised=revised,
+        baseline_tree=baseline_tree,
+        revised_tree=revised_tree,
+        match=match,
+        received_snapshot_id=received_snapshot_id,
+    )
+
+
+def _baseline_to_revised_order(
+    match: RevisionMatchResult | None, revised_order_by_id: dict[str, int]
+) -> dict[str, int]:
+    """Map each surviving baseline node id -> its position in the REVISED reading order
+    (matched first, abstain best-candidate as fallback). The bridge that lets an edited
+    clause be placed in revised-document order even though its change row carries only the
+    baseline node id."""
+    out: dict[str, int] = {}
+    if match is None:
+        return out
+    for m in match.matches:
+        pos = revised_order_by_id.get(str(m.incoming_index))
+        if pos is not None:
+            out[m.baseline_id] = pos
+    for ab in match.abstains:
+        if ab.best_baseline_id is not None and ab.best_baseline_id not in out:
+            pos = revised_order_by_id.get(str(ab.incoming_index))
+            if pos is not None:
+                out[ab.best_baseline_id] = pos
+    return out
+
+
+def _document_order_key(
+    resolved: _ResolvedDocument,
+) -> Callable[[ReviewChange], tuple[float, int]]:
+    """Sort key placing every settled change in REVISED reading order — the position the
+    clause actually occupies in the counterparty's document.
+
+    The pre-fix `order_key` keyed `new` changes by their staged `proposed_parent_id`, which
+    F03b leaves NULL for a genuinely-new top-level clause (and for a child of another new
+    clause). A null parent anchored at -1, so those clauses floated to the TOP of the stream
+    instead of sitting where the counterparty put them. Here a `new` clause is keyed by its
+    OWN revised reading position (`received_node_id`), an `edited` clause by its matched
+    revised position, and a `deleted` clause (absent from the revised side) by the slot just
+    after its nearest surviving predecessor — so nothing floats and the seam around an
+    inserted section stays in document order."""
+    revised_order_by_id = {n.node_id: i for i, n in enumerate(resolved.revised)}
+    b2r = _baseline_to_revised_order(resolved.match, revised_order_by_id)
+    end = float(len(resolved.revised))
+
+    # Deleted baseline nodes have no revised position: anchor each just after the nearest
+    # preceding baseline node that DID survive (matched), walking baseline reading order.
+    deleted_anchor: dict[str, float] = {}
+    last_surviving = -1.0
+    for n in resolved.baseline:
+        pos = b2r.get(n.node_id)
+        if pos is not None:
+            last_surviving = float(pos)
+        else:
+            deleted_anchor[n.node_id] = last_surviving + 0.5
+
+    def key(c: ReviewChange) -> tuple[float, int]:
+        if c.change_kind == "new":
+            if c.received_node_id is not None and c.received_node_id in revised_order_by_id:
+                pos = float(revised_order_by_id[c.received_node_id])
+            elif c.proposed_parent_id is not None and c.proposed_parent_id in b2r:
+                pos = b2r[c.proposed_parent_id] + 0.5
+            else:
+                pos = end
+            tiebreak = int(c.received_node_id) if c.received_node_id is not None else 0
+            return (pos, tiebreak)
+        node_id = cast(str, c.node_id)
+        if node_id in b2r:
+            return (float(b2r[node_id]), 0)
+        return (deleted_anchor.get(node_id, end), 0)
+
+    return key
+
+
+# --------------------------------------------------------------------------- #
+# Projected reading order (verdict-aware) — the single linear sequence          #
+# --------------------------------------------------------------------------- #
+
+
+def _primary_verdict(change: ReviewChange) -> StoredHunkVerdict:
+    """The whole-node verdict for a new/deleted change (one hunk after staging /
+    match-confirm). `pending` when no hunk is staged or none decided — pending counts
+    as APPLIED for projection (an undecided insert is shown inserted, an undecided
+    delete is shown removed) so numbering reflects the live in-progress document."""
+    return change.hunks[0].verdict if change.hunks else "pending"
+
+
+def _assign_projected_numbers(nodes: list[ProjectedNode]) -> None:
+    """Stamp the role-aware DD-02/DD-43 clause number onto the projected sequence IN
+    PLACE, reusing the canonical `derive_numbers` (same scheme as Mode A / export /
+    the two-pane view). The flat list is pre-order DFS, so each node's parent is the
+    nearest preceding node at `depth - 1`. A node with `numbered=False` (an accepted /
+    pending deletion — removed from the projected tree) is fed to `derive_numbers` as a
+    non-clause role so it gets NO number AND consumes NO sibling position, which is what
+    renumbers the survivors down/up as deletions are kept or removed."""
+    last_at_depth: dict[int, int] = {}
+    tree_nodes: list[TreeNode] = []
+    for i, n in enumerate(nodes):
+        parent_index = last_at_depth.get(n.depth - 1) if n.depth > 0 else None
+        last_at_depth[n.depth] = i
+        role: Role = n.role if n.numbered else "drafting_note"
+        tree_nodes.append(
+            TreeNode(
+                index=i,
+                parent_index=parent_index,
+                depth=n.depth,
+                order_index=i,
+                kind="prose",
+                text=n.text or "",
+                role=role,
+            )
+        )
+    numbers = derive_numbers(ParsedTree(nodes=tree_nodes))
+    for i, n in enumerate(nodes):
+        n.clause_number = numbers.get(i)
+
+
+def _build_projected(
+    resolved: _ResolvedDocument, changes: list[ReviewChange]
+) -> list[ProjectedNode]:
+    """Project the baseline into a single linear reading order with every NON-REJECTED
+    change applied, then role-aware-number it.
+
+    Placement is by REVISED position, not the staged (often NULL) `proposed_parent_id`
+    that floated new clauses to the top: each baseline survivor carries its revised
+    coordinate (`_baseline_to_revised_order`), each non-rejected added clause its own
+    revised coordinate (`received_node_id` -> revised index), and each deleted baseline
+    node (absent from the revised side) is anchored just after its nearest surviving
+    predecessor in baseline order. Sorting by that coordinate reproduces the
+    counterparty's document order (a new section lands AFTER the preceding section's whole
+    subtree because revised positions are DFS order), so the frontend renders it linearly.
+
+    Verdict semantics (read from the persisted hunk verdicts, recomputed per request):
+      - added rejected   -> emitted IN PLACE at its real revised position but NOT numbered
+        (numbered=False, clause_number=None) — a struck trace of the rejected addition, the
+        symmetric mirror of an accepted/pending deletion shown-in-place. It consumes no
+        sibling position, so the surrounding clauses renumber back exactly as if it were absent.
+      - added otherwise  -> emitted, numbered.
+      - deleted rejected/modified -> clause survives, numbered.
+      - deleted accepted/pending  -> clause shown in place, NOT numbered (numbered=False).
+      - edited / unchanged -> always present, numbered."""
+    baseline = resolved.baseline
+    revised = resolved.revised
+    revised_order_by_id = {n.node_id: i for i, n in enumerate(revised)}
+    if resolved.match is not None:
+        b2r = _baseline_to_revised_order(resolved.match, revised_order_by_id)
+    else:
+        b2r = {n.node_id: i for i, n in enumerate(baseline)}
+
+    change_by_baseline: dict[str, ReviewChange] = {
+        c.node_id: c
+        for c in changes
+        if c.change_kind in ("edited", "deleted") and c.node_id is not None
+    }
+
+    events: list[tuple[float, int, ProjectedNode]] = []
+
+    last_surv = -1.0
+    for bidx, bnode in enumerate(baseline):
+        change = change_by_baseline.get(bnode.node_id)
+        kind: DocumentChangeKind | None = None
+        change_id: str | None = None
+        numbered = True
+        if change is not None and change.change_kind == "edited":
+            kind = "modified"
+            change_id = change.id
+        elif change is not None and change.change_kind == "deleted":
+            kind = "deleted"
+            change_id = change.id
+            numbered = _primary_verdict(change) in ("rejected", "modified")
+        pnode = ProjectedNode(
+            node_id=bnode.node_id,
+            clause_number=None,
+            role=bnode.role,
+            depth=bnode.depth,
+            text=bnode.text,
+            change_id=change_id,
+            change_kind=kind,
+            numbered=numbered,
+            is_heading=bnode.is_heading,
+        )
+        rpos = b2r.get(bnode.node_id)
+        if rpos is not None:
+            last_surv = float(rpos)
+            events.append((float(rpos), bidx, pnode))
+        else:
+            events.append((last_surv + 0.5, bidx, pnode))
+
+    end = float(len(revised))
+    for c in changes:
+        if c.change_kind != "new":
+            continue
+        # A rejected addition is still EMITTED (struck trace) but unnumbered, so it consumes
+        # no sibling position and the surrounding clauses renumber as if it were absent.
+        numbered = _primary_verdict(c) != "rejected"
+        flatpos = revised_order_by_id.get(c.received_node_id) if c.received_node_id else None
+        if flatpos is not None:
+            rnode = revised[flatpos]
+            node_id, role_, depth, text = rnode.node_id, rnode.role, rnode.depth, rnode.text
+            is_heading = rnode.is_heading
+            coord = float(flatpos)
+        else:
+            node_id = c.received_node_id or c.id
+            role_, depth = "clause", 0
+            text = c.hunks[0].proposed_text if c.hunks else None
+            is_heading = False
+            coord = end
+        events.append(
+            (
+                coord,
+                -1,
+                ProjectedNode(
+                    node_id=node_id,
+                    clause_number=None,
+                    role=role_,
+                    depth=depth,
+                    text=text,
+                    change_id=c.id,
+                    change_kind="added",
+                    numbered=numbered,
+                    is_heading=is_heading,
+                ),
+            )
+        )
+
+    events.sort(key=lambda e: (e[0], e[1]))
+    projected = [e[2] for e in events]
+    _assign_projected_numbers(projected)
+    return projected
+
+
+async def get_document_view(conn: Any, contract_id: str, session_id: str) -> RevisionDocumentView:
+    """The two-pane document payload (F03c rework): the baseline + revised document trees
+    as ordered nodes, the settled-change overlay keyed to the revised side, the abstain
+    match-confirm pairs, and the verdict-aware `projected` linear reading order. Read-only;
+    no hunk redline text (fetched on click)."""
+    session_row = await conn.fetchrow(_SELECT_SESSION, session_id)
+    if session_row is None:
+        raise SessionNotFound(session_id)
+    session = _to_session(session_row)
+    if session.contract_id != contract_id:
+        raise SessionNotFound(session_id)
+
+    # Role-resolve + role-aware-number both sides ONCE (the single source of truth shared
+    # with get_review_payload, so the two-pane render and the change context never disagree
+    # on a clause's number). Baseline roles join live `nodes`; revised (as_received synthetic
+    # ids that don't join) inherit their matched baseline role (DD-28/DD-54) + overrides.
+    resolved = await _resolve_document(conn, session)
+    baseline, revised, revised_tree = resolved.baseline, resolved.revised, resolved.revised_tree
 
     change_rows = await conn.fetch(_SELECT_CHANGES, session_id)
     hunks_by_change = await _hunks_for(conn, [str(r["id"]) for r in change_rows])
     changes = [_to_change(r, hunks_by_change.get(str(r["id"]), [])) for r in change_rows]
+    _stamp_clusters(changes)
 
     overlay = [
         DocumentChange(
@@ -966,6 +1257,7 @@ async def get_document_view(conn: Any, contract_id: str, session_id: str) -> Rev
         revised=revised,
         changes=overlay,
         abstain_matches=abstain_matches,
+        projected=_build_projected(resolved, changes),
     )
 
 
@@ -1117,6 +1409,106 @@ async def decide_hunk(conn: Any, hunk_id: str, req: HunkDecideRequest) -> Review
     return await _change_view(conn, change_id)
 
 
+async def decide_cluster(
+    conn: Any, session_id: str, cluster_id_: str, req: ClusterDecideRequest
+) -> ReviewPayload:
+    """DD-89 grouped-stop decision (F34): apply ONE verdict to every member hunk of a cluster in a
+    single transaction (decide-once → fans to all). Resolves the cluster's members by re-deriving
+    the SAME `_stamp_clusters` grouping the read payload exposed (so cluster ids can't drift),
+    reuses `_map_hunk_verdict` per member (each `counter` reads its OWN staged counter-text), then
+    refreshes progress for every DISTINCT affected change (members span multiple change rows).
+    Returns the refreshed review payload (members span clauses — one patch wouldn't cover them)."""
+    await _assert_session_reviewing(conn, session_id)
+    change_rows = await conn.fetch(_SELECT_CHANGES, session_id)
+    hunks_by_change = await _hunks_for(conn, [str(r["id"]) for r in change_rows])
+    changes = [_to_change(r, hunks_by_change.get(str(r["id"]), [])) for r in change_rows]
+    _stamp_clusters(changes)
+
+    members = [h for c in changes for h in c.hunks if h.cluster_id == cluster_id_]
+    if not members:
+        raise ClusterNotFound(cluster_id_)
+
+    hunk_req = HunkDecideRequest(verdict=req.verdict, final_text=req.final_text)
+    affected_change_ids = {h.change_id for h in members}
+    async with conn.transaction():
+        for h in members:
+            verdict, final_text = _map_hunk_verdict(hunk_req, _hunk_decision_fields(h))
+            await conn.execute(_UPDATE_HUNK_VERDICT, h.id, verdict, final_text)
+        for cid in affected_change_ids:
+            await _refresh_progress(conn, cid, session_id)
+    return await get_review_payload(conn, session_id)
+
+
+def _hunk_decision_fields(hunk: ReviewHunk) -> dict[str, str | None]:
+    """The three text fields `_map_hunk_verdict` reads, as a row-shaped dict so the SAME mapper
+    serves both the asyncpg per-hunk path and the cluster (ReviewHunk) path."""
+    return {
+        "proposed_text": hunk.proposed_text,
+        "original_text": hunk.original_text,
+        "donna_counter_text": hunk.donna_counter_text,
+    }
+
+
+def _descendant_received_ids(tree: ContractTreeResponse | None, root_received_id: str) -> set[str]:
+    """All proper-descendant node ids under the as_received (revised) node
+    `root_received_id` (the rejected added node's subtree root). The as_received snapshot
+    tree node ids ARE the `received_node_id` values change rows carry, so these map straight
+    back to change rows. Empty set when the root is absent / no tree."""
+    if tree is None:
+        return set()
+
+    def find(items: list[NodeTreeItem]) -> NodeTreeItem | None:
+        for item in items:
+            if str(item.id) == root_received_id:
+                return item
+            hit = find(item.children)
+            if hit is not None:
+                return hit
+        return None
+
+    root = find(tree.nodes)
+    if root is None:
+        return set()
+    out: set[str] = set()
+
+    def collect(items: list[NodeTreeItem]) -> None:
+        for item in items:
+            out.add(str(item.id))
+            collect(item.children)
+
+    collect(root.children)
+    return out
+
+
+async def _cascade_reject_added_descendants(
+    conn: Any, session: StoredRevisionSession, parent_row: Any
+) -> None:
+    """Rejecting an ADDED parent clause auto-rejects every ADDED descendant in the same txn
+    (you can't keep a sub-clause without its added section). ASYMMETRIC: accept does NOT
+    cascade (children stay pending for individual review). Descendants are located in the
+    as_received (revised) tree under the parent's `received_node_id` subtree root (loaded the
+    same way the read path does, via `_resolve_document`), mapped back to change rows by
+    `received_node_id`; only NEW/added descendants are rejected — any other kind is left."""
+    root_received_id = parent_row["received_node_id"]
+    if root_received_id is None:
+        return
+    resolved = await _resolve_document(conn, session)
+    descendant_ids = _descendant_received_ids(resolved.revised_tree, str(root_received_id))
+    if not descendant_ids:
+        return
+    for crow in await conn.fetch(_SELECT_CHANGES, session.id):
+        if _derive_kind(crow) != "new":
+            continue
+        rid = crow["received_node_id"]
+        if rid is None or str(rid) not in descendant_ids:
+            continue
+        child_id = str(crow["id"])
+        child_hunks = (await _hunks_for(conn, [child_id])).get(child_id, [])
+        for h in child_hunks:
+            await conn.execute(_UPDATE_HUNK_VERDICT, h.id, "rejected", h.original_text)
+        await _refresh_progress(conn, child_id, session.id)
+
+
 async def decide_node(conn: Any, change_id: str, req: NodeDecideRequest) -> ReviewChange:
     row, hunks = await _load_change(conn, change_id)
     await _assert_session_reviewing(conn, str(row["session_id"]))
@@ -1142,6 +1534,9 @@ async def decide_node(conn: Any, change_id: str, req: NodeDecideRequest) -> Revi
         for h in hunks:
             await conn.execute(_UPDATE_HUNK_VERDICT, h.id, verdict, final_text)
         await _refresh_progress(conn, change_id, str(row["session_id"]))
+        if req.verdict == "reject" and kind == "new":
+            session = _to_session(await conn.fetchrow(_SELECT_SESSION, str(row["session_id"])))
+            await _cascade_reject_added_descendants(conn, session, row)
     return await _change_view(conn, change_id)
 
 

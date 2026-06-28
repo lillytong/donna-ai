@@ -132,7 +132,7 @@ async def test_latest_delete_rollback_inverse_pair_oracle(tmp_path: Any) -> None
         assert res is not None
         assert res.deleted and res.rolled_back
         assert res.rollback_to_version == 1
-        assert res.pointers_rolled_back == ["counterparty"]
+        assert res.pointers_removed == ["counterparty"]
 
         # ORACLE: live working tree == v1 snapshot tree (structurally).
         live_after = await _live_tree(conn, contract_id)
@@ -142,12 +142,12 @@ async def test_latest_delete_rollback_inverse_pair_oracle(tmp_path: Any) -> None
         assert "thirty days" in str(_project(live_after.nodes))
         assert "ninety days" not in str(_project(live_after.nodes))
 
-        # The redline baseline pointer rolled back to v1; v2 is wiped.
+        # v2 HELD the redline-baseline tag; deleting it DROPS the tag — v1 does NOT
+        # inherit it (DD-87 §4(b), amended). No counterparty/shared pointer remains.
         pointers = await list_pointers(conn, contract_id)
-        baseline = next(
-            p for p in pointers if (p.party, p.direction) == ("counterparty", "shared")
+        assert not any(
+            (p.party, p.direction) == ("counterparty", "shared") for p in pointers
         )
-        assert baseline.snapshot_id == v1.snapshot_id
         view = await get_lineage(conn, contract_id)
         assert [e.version for e in view.timeline] == [1]
     finally:

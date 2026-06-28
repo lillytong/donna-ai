@@ -2,7 +2,7 @@
 
 from functools import lru_cache
 
-from pydantic import Field, model_validator
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # DD-44/F25: neutral fallback when no operator org is configured. Never blank,
@@ -110,7 +110,8 @@ class Settings(BaseSettings):
     # F25: the operator's organization identity (DD-44). A config value, not a DB
     # entity — surfaced read-only in Settings → Your Organization.
     operator_org_name: str = Field(default="", alias="DONNA_OPERATOR_ORG_NAME")
-    # Explicit author override; when unset the org name flows in via the validator.
+    # Explicit per-deployment author override, kept RAW (empty unless set) so it doubles as
+    # the "explicit author?" signal the DB-aware resolver needs (services/operator_org_repo).
     redline_author: str = Field(default="", alias="DONNA_REDLINE_AUTHOR")
     operator_actor: str = "operator"
     log_level: str = "INFO"
@@ -119,21 +120,16 @@ class Settings(BaseSettings):
     llm: LlmSettings = Field(default_factory=LlmSettings)
     distillation: DistillationSettings = Field(default_factory=DistillationSettings)
 
-    @model_validator(mode="after")
-    def _wire_export_author(self) -> "Settings":
-        # DD-44/F25: the redline/export author is the operator org name — never
-        # "Donna", never blank. Priority: explicit DONNA_REDLINE_AUTHOR → org name →
-        # neutral default. Populating redline_author here means the export read-site
-        # (services/export/redline.py: `redline_author or operator_actor`) resolves to
-        # the org name with no change at that call site.
-        if not self.redline_author.strip():
-            self.redline_author = self.operator_org_name.strip() or DEFAULT_OPERATOR_ORG_NAME
-        return self
-
     @property
     def export_author(self) -> str:
-        """The resolved redline/export author (DD-44). Never blank, never 'Donna'."""
-        return self.redline_author
+        """The config-resolved redline/export author (DD-44). Never blank, never 'Donna'.
+        Priority: explicit DONNA_REDLINE_AUTHOR → org name → neutral default. The editable
+        DB org-name override is layered on top in services/operator_org_repo."""
+        return (
+            self.redline_author.strip()
+            or self.operator_org_name.strip()
+            or DEFAULT_OPERATOR_ORG_NAME
+        )
 
 
 @lru_cache

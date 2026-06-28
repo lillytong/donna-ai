@@ -240,16 +240,18 @@ def test_default_body_size_is_11pt_and_body_after_title_is_left_aligned() -> Non
     assert body_run.text == "Some plain body text."
 
 
-def test_all_caps_span_in_body_renders_bold_inline() -> None:
-    """An all-caps emphasis span (≥4 caps) in body text renders as its own bold run
-    while the surrounding text stays regular (DD-37 inline house style)."""
-    nodes = [_node("a", None, 100, body="The CONFIDENTIALITY clause applies.")]
+def test_legal_word_bolds_acronym_does_not_in_body() -> None:
+    """Inline bolding keys on a fixed legal-connective allowlist, not on caps length:
+    a legal connective (WHEREAS) bolds as its own run, while an arbitrary all-caps
+    acronym (DBO) stays regular (the DBO/JVA fix — DD-37 inline house style)."""
+    nodes = [_node("a", None, 100, body="WHEREAS the DBO and the JVA apply.")]
     data = render_contract_docx(nodes, {})
     doc = Document(io.BytesIO(data))
     runs = _runs(doc.paragraphs[0])
     bolded = [r for r in runs if r.font.bold]
-    assert [r.text for r in bolded] == ["CONFIDENTIALITY"]
-    assert any(r.text == "The " and r.font.bold is False for r in runs)
+    assert [r.text for r in bolded] == ["WHEREAS"]
+    assert any("DBO" in r.text and r.font.bold is False for r in runs)
+    assert all("JVA" not in r.text or r.font.bold is False for r in runs)
 
 
 def test_leading_defined_term_renders_bold_inline() -> None:

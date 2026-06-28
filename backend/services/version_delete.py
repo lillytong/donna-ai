@@ -15,9 +15,13 @@ added after it, with `updated_at = predecessor.created_at` so the DD-75 divergen
 probe does not false-flag the freshly-restored content as "edited since sent".
 
 `confirm=false` is a no-mutation preview (the DD-85 warnings); `confirm=true` executes.
-Returns None when the snapshot is missing / not the contract's (route → 404); raises
-`VersionDeleteConflict` when a revision session's baseline rests on the target
-(route → 409, DD-87 §4d — not reachable in v1 data, kept defensive).
+Returns None when the snapshot is missing / not the contract's (route → 404).
+
+When the target version anchors an OPEN revision review — as its baseline OR its
+as_received (received) version — the delete CASCADE-DISCARDS that review in the same
+transaction (DD-94, replaces the DD-87 §4d 409 guard), so no dangling `reviewing`
+session is left behind a stale resume bar. The preview reports the discard (count +
+already-decided) as a non-blocking warning (DD-85 pattern).
 """
 
 from __future__ import annotations
@@ -26,17 +30,12 @@ from typing import Any
 
 from backend.config.settings import get_settings
 from backend.models.audit import EVENT_VERSION_DELETED, AuditEvent
-from backend.models.version_delete import SentRecord, SnapshotDeleteResponse
+from backend.models.version_delete import ReviewDiscard, SentRecord, SnapshotDeleteResponse
 from backend.services.audit_repo import record_event
 from backend.services.snapshot import get_snapshot
 
 # schema pointer party → operator-facing side label (matches lineage._SIDE).
 _SIDE = {"counterparty": "counterparty", "legal_team": "legal", "internal": "internal"}
-
-
-class VersionDeleteConflict(Exception):
-    """The target version is structurally protected (a revision-session baseline rests
-    on it). Maps to HTTP 409 at the route (DD-87 §4d)."""
 
 
 _MAX_VERSION = """
@@ -57,11 +56,32 @@ FROM snapshot_pointers
 WHERE contract_id = $1::uuid AND snapshot_id = $2::uuid
 """
 
-_BASELINE_GUARD = """
-SELECT 1 FROM counterparty_revision_sessions
-WHERE baseline_snapshot_id = $1::uuid
-LIMIT 1
+# OPEN revision sessions the target version anchors: deleting the baseline the review
+# diffs against OR the as_received version it reviews invalidates the review (DD-94).
+_DEPENDENT_SESSIONS = """
+SELECT id, changes_count, changes_reviewed_count
+FROM counterparty_revision_sessions
+WHERE contract_id = $1::uuid
+  AND status = 'reviewing'
+  AND (baseline_snapshot_id = $2::uuid OR as_received_snapshot_id = $2::uuid)
 """
+
+# Discard one dependent session, children-first (DD-94 §3, extends DD-87 §4 cascade).
+_DISCARD_HUNKS = """
+DELETE FROM counterparty_revision_hunks
+WHERE change_id IN (
+    SELECT id FROM counterparty_revision_changes WHERE session_id = $1::uuid
+)
+"""
+_DISCARD_OVERRIDES = (
+    "DELETE FROM counterparty_revision_node_overrides WHERE session_id = $1::uuid"
+)
+_NULL_ISSUE_SESSION = (
+    "UPDATE issues SET counterparty_revision_session_id = NULL "
+    "WHERE counterparty_revision_session_id = $1::uuid"
+)
+_DISCARD_CHANGES = "DELETE FROM counterparty_revision_changes WHERE session_id = $1::uuid"
+_DISCARD_SESSION = "DELETE FROM counterparty_revision_sessions WHERE id = $1::uuid"
 
 _RESTORE_NODE = """
 UPDATE nodes
@@ -80,11 +100,6 @@ _DELETE_PENDING_VERSIONS = """
 DELETE FROM node_versions
 WHERE snapshot_id IS NULL
   AND node_id IN (SELECT id FROM nodes WHERE contract_id = $1::uuid)
-"""
-
-_MOVE_POINTERS = """
-UPDATE snapshot_pointers SET snapshot_id = $1::uuid, set_at = now()
-WHERE contract_id = $2::uuid AND snapshot_id = $3::uuid
 """
 
 _DELETE_POINTERS = """
@@ -124,9 +139,18 @@ async def delete_version(
     will_rollback = is_latest and has_predecessor
     pred_version = int(pred["version_number"]) if pred is not None else None
 
-    # A revision session's baseline can't be NULLed (NOT NULL FK) — refuse (DD-87 §4d).
-    if await conn.fetchval(_BASELINE_GUARD, snapshot_id):
-        raise VersionDeleteConflict("version is a revision baseline")
+    # OPEN revision review(s) this version anchors (baseline OR as_received). Deleting the
+    # version invalidates the review, so the delete cascade-discards it (DD-94) rather than
+    # leaving a dangling `reviewing` session behind a stale resume bar. At most one open
+    # session per contract in v1, but the find/discard handles any matched set.
+    dependent_rows = await conn.fetch(_DEPENDENT_SESSIONS, contract_id, snapshot_id)
+    dependent_session_ids = [str(r["id"]) for r in dependent_rows]
+    review_discard: ReviewDiscard | None = None
+    if dependent_rows:
+        review_discard = ReviewDiscard(
+            changes_count=sum(int(r["changes_count"]) for r in dependent_rows),
+            reviewed=sum(int(r["changes_reviewed_count"]) for r in dependent_rows),
+        )
 
     # The send this version carried (a `shared` pointer rests on it), for the warning.
     pointer_rows = await conn.fetch(_POINTERS_ON, contract_id, snapshot_id)
@@ -148,8 +172,13 @@ async def delete_version(
     if sent_record is not None:
         warnings.append(
             "Deleting a sent version erases the record of what was sent to "
-            f"{sent_record.party} on {sent_record.date} and rolls the redline baseline "
-            "back to the previous version."
+            f"{sent_record.party} on {sent_record.date}. This version holds the redline "
+            "baseline tag, so deleting it removes that tag — no earlier version inherits it."
+        )
+    if review_discard is not None:
+        warnings.append(
+            "This also discards the in-progress revision review — "
+            f"{review_discard.changes_count} changes, {review_discard.reviewed} already decided."
         )
 
     rollback_to_version = pred_version if will_rollback else None
@@ -164,11 +193,12 @@ async def delete_version(
             rolled_back=False,
             rollback_to_version=rollback_to_version,
             sent_record=sent_record,
+            review_discard=review_discard,
             warnings=warnings,
-            pointers_rolled_back=[],
+            pointers_removed=[],
         )
 
-    pointers_rolled_back = sorted({_SIDE.get(r["party"], r["party"]) for r in pointer_rows})
+    pointers_removed = sorted({_SIDE.get(r["party"], r["party"]) for r in pointer_rows})
 
     async with conn.transaction():
         # (a) Latest-delete → restore the working copy to the predecessor (UPDATE-restore).
@@ -196,15 +226,24 @@ async def delete_version(
             # Discard the unsent edits the rollback throws away (DD-85).
             await conn.execute(_DELETE_PENDING_VERSIONS, contract_id)
 
-        # (b) Roll back every pointer resting on the target to the predecessor (or clear).
-        if has_predecessor and pred is not None:
-            await conn.execute(_MOVE_POINTERS, str(pred["id"]), contract_id, snapshot_id)
-        else:
-            await conn.execute(_DELETE_POINTERS, contract_id, snapshot_id)
+        # (b) A pointer on the target carries that version's lifecycle tag (shared or
+        # received); the version is gone, so DROP the tag — never roll it back to the
+        # predecessor, which would wrongly re-tag it (DD-87 §4(b), amended 2026-06-27).
+        await conn.execute(_DELETE_POINTERS, contract_id, snapshot_id)
 
         # (c) Nullable issue references → SET NULL.
         await conn.execute(_NULL_OPENED, snapshot_id)
         await conn.execute(_NULL_RESOLVED, snapshot_id)
+
+        # (c.5) Cascade-discard every OPEN review anchored on the target (DD-94), children-
+        # first. The session FK-references the snapshot (baseline + as_received), so the
+        # session MUST be gone before the snapshot delete below or the FK blocks it.
+        for sid in dependent_session_ids:
+            await conn.execute(_DISCARD_HUNKS, sid)
+            await conn.execute(_DISCARD_OVERRIDES, sid)
+            await conn.execute(_NULL_ISSUE_SESSION, sid)
+            await conn.execute(_DISCARD_CHANGES, sid)
+            await conn.execute(_DISCARD_SESSION, sid)
 
         # (d) The target's own node_versions group, then (e) the snapshot row.
         await conn.execute(_DELETE_TARGET_VERSIONS, snapshot_id)
@@ -224,7 +263,8 @@ async def delete_version(
                     "is_latest": is_latest,
                     "rolled_back": will_rollback,
                     "rollback_to_version": rollback_to_version,
-                    "pointers_rolled_back": pointers_rolled_back,
+                    "pointers_removed": pointers_removed,
+                    "reviews_discarded": dependent_session_ids,
                 },
             ),
         )
@@ -238,6 +278,7 @@ async def delete_version(
         rolled_back=will_rollback,
         rollback_to_version=rollback_to_version,
         sent_record=sent_record,
+        review_discard=review_discard,
         warnings=warnings,
-        pointers_rolled_back=pointers_rolled_back,
+        pointers_removed=pointers_removed,
     )

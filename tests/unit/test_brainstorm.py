@@ -82,3 +82,69 @@ async def test_delete_contract_clears_brainstorm_summaries_before_issues() -> No
     issues_idx = next(i for i, s in enumerate(conn.sql) if "DELETE FROM issues" in s)
     # FK ordering: brainstorm_summaries (FK issue_id) must clear before its issues.
     assert bs_idx < issues_idx
+
+
+# --- brainstorm_turn firm-profile mandate grounding (F32 v1 / DD-90) ---------
+# The global operator-authored firm profile is appended to the brainstorm prompt as the firm's
+# standing MANDATE so Donna grounds every exploratory turn in the firm's identity + red-lines.
+# Synthetic profile — NOT real firm/contract data (public repo).
+
+_MANDATE_MARK = "FIRM PROFILE / MANDATE"
+_PROFILE = "We are a licensing firm. Standing red-line: never accept uncapped liability."
+_REPLY = '{"reply": "One angle: cap at fees paid.", "kind": "answer", "citations": []}'
+
+
+def _run_brainstorm_turn(monkeypatch: Any, model_text: str, firm_profile: str = "") -> str:
+    """Patch brainstorm_turn's I/O seams, capture the prompt sent to `complete`, return it."""
+    import asyncio
+
+    from backend.models.brainstorm import BrainstormTurnRequest
+    from backend.services.donna import brainstorm as svc
+
+    prompts: list[str] = []
+
+    @asynccontextmanager
+    async def fake_acquire() -> AsyncIterator[Any]:
+        yield object()
+
+    async def fake_nodes(*_a: Any) -> list[Any]:
+        return []
+
+    async def fake_issues(*_a: Any) -> list[Any]:
+        return []
+
+    async def fake_get_issue(*_a: Any) -> None:
+        return None
+
+    async def fake_firm_profile(_conn: Any) -> str:
+        return firm_profile
+
+    class _Result:
+        text = model_text
+
+    async def fake_complete(**kwargs: Any) -> Any:
+        prompts.append(kwargs["messages"][0]["content"])
+        return _Result()
+
+    monkeypatch.setattr(svc, "acquire", fake_acquire)
+    monkeypatch.setattr(svc, "fetch_nodes", fake_nodes)
+    monkeypatch.setattr(svc, "list_issues", fake_issues)
+    monkeypatch.setattr(svc, "get_issue", fake_get_issue)
+    monkeypatch.setattr(svc, "get_firm_profile", fake_firm_profile)
+    monkeypatch.setattr(svc, "render", lambda *_a, **_k: "prompt")
+    monkeypatch.setattr(svc, "complete", fake_complete)
+
+    request = BrainstormTurnRequest(issue_id="i1", message="Where should the cap land?")
+    asyncio.run(svc.brainstorm_turn("c1", request))
+    return prompts[0]
+
+
+def test_brainstorm_turn_injects_firm_profile_mandate(monkeypatch: Any) -> None:
+    prompt = _run_brainstorm_turn(monkeypatch, _REPLY, firm_profile=_PROFILE)
+    assert _MANDATE_MARK in prompt  # the labelled mandate block is present
+    assert _PROFILE in prompt  # the operator's profile text reaches the model
+
+
+def test_brainstorm_turn_empty_firm_profile_not_injected(monkeypatch: Any) -> None:
+    prompt = _run_brainstorm_turn(monkeypatch, _REPLY, firm_profile="")
+    assert _MANDATE_MARK not in prompt  # unset profile -> no-op

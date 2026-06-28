@@ -35,12 +35,12 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
-from backend.config.settings import get_settings
 from backend.models.imports import StoredNode
 from backend.models.redline import DeletedNode, MovedNode, NodeDiff
 from backend.models.snapshots import SnapshotNode, StoredSnapshot
 from backend.services.contract_repo import fetch_nodes
 from backend.services.export.render_redline import render_redline_docx
+from backend.services.operator_org_repo import resolve_export_author
 from backend.services.snapshot import get_snapshot
 
 
@@ -74,9 +74,10 @@ ORDER BY nv.node_id, nv.created_at
 """
 
 
-def _resolve_author() -> str:
-    settings = get_settings()
-    return settings.redline_author or settings.operator_actor
+async def _resolve_author(conn: Any) -> str:
+    # DD-44/F25: the editable org-name override (DB) → config org name → neutral default;
+    # explicit DONNA_REDLINE_AUTHOR still wins. Never blank, never "Donna".
+    return await resolve_export_author(conn)
 
 
 def _now_iso() -> str:
@@ -281,7 +282,7 @@ async def build_redline(
         diffs,
         deleted,
         style_config,
-        _resolve_author(),
+        await _resolve_author(conn),
         _now_iso(),
         moved,
         inserted_tables,

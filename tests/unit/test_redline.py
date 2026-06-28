@@ -473,17 +473,33 @@ async def test_edited_and_moved_node_shows_text_change_and_move() -> None:
     assert "New wording." in xml and "<w:ins " in xml  # inserted (edited) at new position
 
 
-def test_resolve_author_falls_back_to_operator_actor(monkeypatch: Any) -> None:
-    class _S:
-        redline_author = ""
-        operator_actor = "Operator Org"
+async def test_resolve_author_uses_db_override_then_explicit(monkeypatch: Any) -> None:
+    # _resolve_author now delegates to the DB-aware resolver (F25, DD-44): the editable
+    # org-name override is the export author; an explicit DONNA_REDLINE_AUTHOR still wins.
+    from backend.config.settings import Settings
+    from backend.services import operator_org_repo
 
-    monkeypatch.setattr(redline, "get_settings", lambda: _S())
-    assert redline._resolve_author() == "Operator Org"
+    class _OrgConn:
+        def __init__(self, override: str) -> None:
+            self._override = override
 
-    class _S2:
-        redline_author = "Configured Org"
-        operator_actor = "Operator Org"
+        async def fetchrow(self, _sql: str, *_args: Any) -> dict[str, Any]:
+            return {"organization_name": self._override}
 
-    monkeypatch.setattr(redline, "get_settings", lambda: _S2())
-    assert redline._resolve_author() == "Configured Org"
+    def _clean_settings(**env: str) -> Settings:
+        monkeypatch.setenv("DATABASE_URL", "postgresql://donna:donna@localhost:5432/donna")
+        for key in ("DONNA_OPERATOR_ORG_NAME", "DONNA_REDLINE_AUTHOR"):
+            monkeypatch.delenv(key, raising=False)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        return Settings(_env_file=None)
+
+    monkeypatch.setattr(operator_org_repo, "get_settings", lambda: _clean_settings())
+    assert await redline._resolve_author(_OrgConn("Configured Org")) == "Configured Org"
+
+    monkeypatch.setattr(
+        operator_org_repo,
+        "get_settings",
+        lambda: _clean_settings(DONNA_REDLINE_AUTHOR="Legal Department"),
+    )
+    assert await redline._resolve_author(_OrgConn("Configured Org")) == "Legal Department"
