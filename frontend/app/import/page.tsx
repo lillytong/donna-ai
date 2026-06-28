@@ -5,6 +5,7 @@ import styles from "./review.module.css";
 import ContextStep, { type ContractContext } from "./ContextStep";
 import ImportTopBar, { type ImportStep } from "./ImportTopBar";
 import { deriveNumbers, deriveParents } from "../lib/numbering";
+import { renderRich } from "../lib/richText";
 import {
   commitTree,
   previewDocx,
@@ -138,32 +139,6 @@ function buildCommitNodes(rows: Row[]): NodeRow[] {
       has_placeholder: r.hasPlaceholder,
     };
   });
-}
-
-// Source-panel rich text: bold quoted defined terms ("Agreement") everywhere, and
-// — in front/back matter — bold ALL-CAPS connective/legal words (WHEREAS, AND,
-// THEREFORE, party names). Mirrors the legal-doc style guide so the rendered
-// source reads like the finished document and mis-tags stand out.
-const QUOTED = "[“”\"][^“”\"]+[“”\"]";
-const CAPS = "\\b[A-Z]{2,}\\b";
-function renderRich(text: string, capsBold: boolean): React.ReactNode {
-  const re = new RegExp(capsBold ? `${QUOTED}|${CAPS}` : QUOTED, "g");
-  const out: React.ReactNode[] = [];
-  let last = 0;
-  let key = 0;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    if (m.index > last) out.push(text.slice(last, m.index));
-    out.push(
-      <strong key={key++} className={styles.sBold}>
-        {m[0]}
-      </strong>,
-    );
-    last = m.index + m[0].length;
-    if (m.index === re.lastIndex) re.lastIndex++; // guard against a zero-length match
-  }
-  if (last < text.length) out.push(text.slice(last));
-  return out;
 }
 
 // Numbers follow clause position only (DD-02 / DD-54): non-clause roles consume
@@ -1121,7 +1096,7 @@ export default function ImportReview() {
                         className={isHeading ? styles.sHeadingText : undefined}
                         style={{ marginLeft: r.depth * 18 }}
                       >
-                        {renderRich(r.text, capsBold)}
+                        {renderRich(r.text, capsBold, styles.sBold)}
                       </span>
                     </p>
                   );

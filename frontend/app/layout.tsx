@@ -25,7 +25,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
-      <body>
+      <body suppressHydrationWarning>
         <SiteNav />
         <div className="appMain">{children}</div>
       </body>

@@ -25,7 +25,7 @@
 // under its proposed parent. This is robust under renumbering (ids, not numbers).
 
 import Link from "next/link";
-import { memo, use, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import styles from "./review.module.css";
 import bs from "../../../cockpit.module.css";
 import {
@@ -34,12 +34,14 @@ import {
   brainstormTurn,
   closeBrainstorm,
   confirmMatch,
+  decideCluster,
   decideHunk,
   decideNode,
   donnaErrorMessage,
   getRevisionDocument,
   getRevisionReview,
   getSnapshotTree,
+  resetRevisionSession,
   type AbstainMatch,
   type ApplyResult,
   type BrainstormTurn,
@@ -50,12 +52,14 @@ import {
   type HunkDecisionAction,
   type NodeDecisionAction,
   type NodeTreeItem,
+  type ProjectedNode,
   type ReviewChange,
   type ReviewHunk,
   type ReviewPayload,
   type RevisionDocumentView,
   type Role,
 } from "../../../../lib/api";
+import { renderRich } from "../../../../lib/richText";
 
 type Phase = "structure" | "content";
 
@@ -66,36 +70,21 @@ type Phase = "structure" | "content";
 // distils nothing to persist (no issue to attach to). See the report's follow-up.
 const NIL_ISSUE_ID = "00000000-0000-0000-0000-000000000000";
 
-// One node of an inline diff segment. ins/del/donna carry a hunkId so the renderer can
-// make them click targets for the hunk menu. "same" segments are never interactive.
-//   - ins/del: a counterparty insertion / deletion (green underline / red strikethrough).
-//   - donna:   the language the operator adopted from Donna's counter (purple, solid).
-//   - pending: true while the change is undecided → DOTTED line; false once decided →
-//              SOLID (the decision-state axis). "donna" is always solid.
-//   - struck:  a rejected counterparty ADDITION kept as a green SOLID strikethrough
-//              trace (the document view is the audit trail).
-type DiffSeg = { type: "same" | "ins" | "del" | "donna"; text: string; hunkId?: string; pending?: boolean; struck?: boolean };
-
-// Decision-state axis for a hunk's tracked-change markup:
-//   - "pending" : not yet decided → dotted line.
-//   - "donna"   : operator adopted Donna's counter ("Use Donna's") → the resulting
-//                 language renders purple/solid. Detected because the backend maps the
-//                 "counter" action to verdict "modified" with final_text == donna_counter_text.
-//   - "decided" : any other settled verdict (accept theirs / operator edit / reject) →
-//                 solid line, appearance unchanged from before.
-type TcState = "pending" | "decided" | "donna";
-function hunkTcState(h: ReviewHunk): TcState {
-  if (h.verdict === "pending") return "pending";
-  if (
-    h.verdict === "modified" &&
-    h.donna_counter_text != null &&
-    h.final_text != null &&
-    h.final_text === h.donna_counter_text
-  ) {
-    return "donna";
-  }
-  return "decided";
-}
+// One node of an inline diff segment. ins/del/donna/kept/declined carry a hunkId so the
+// renderer can make them click targets. "same" segments are never interactive.
+//   - ins/del:  a counterparty insertion / deletion (green underline / red strikethrough).
+//   - donna:    the language the operator adopted from Donna's counter (purple, solid).
+//   - DD-91 reject-trace pair (both SOLID; a rejected MODIFICATION shows BOTH):
+//     - declined: a REJECTED counterparty's declined NEW text — their addition, or the
+//                 new-text side of a modification — rendered GREY strikethrough (distinct
+//                 from the RED `del` strike, which is an active/accepted deletion).
+//     - kept:     a REJECTED counterparty change's retained ORIGINAL text — a kept deletion,
+//                 or the original side of a modification — rendered SOLID BLACK underline
+//                 (distinct from the GREEN `ins` underline by colour).
+//   - pending:  true while the change is undecided → a soft tinted PILL (background fill of
+//               its own hue) reading "needs your decision"; false once decided → no pill,
+//               just colored text + solid underline/strike. Lines are SOLID everywhere.
+type DiffSeg = { type: "same" | "ins" | "del" | "donna" | "kept" | "declined"; text: string; hunkId?: string; pending?: boolean };
 
 function pct(conf: number | null): string {
   return conf == null ? "—" : `${Math.round(conf * 100)}%`;
@@ -151,6 +140,42 @@ function donnaPrettyVerdict(v: string | null): string {
   return DONNA_VERDICT_LABEL[key] ?? (v.charAt(0).toUpperCase() + v.slice(1));
 }
 
+// Content-type typography in the document pane — REUSED from the import parse-review
+// "Source" panel (app/import/page.tsx renderRich + .sBold/.sHeadingText): bold quoted
+// defined terms everywhere, and in front/back matter additionally bold ALL-CAPS
+// connectives/party names; heading-role lines bold whole. DocumentNode here carries no
+// content_type, so headings are styled by role (title / appendix title).
+const FRONT_MATTER_ROLES: ReadonlySet<Role> = new Set<Role>([
+  "title",
+  "date",
+  "parties",
+  "recital",
+  "agreement_statement",
+]);
+const BACK_MATTER_ROLES: ReadonlySet<Role> = new Set<Role>([
+  "appendix",
+  "appendix_title",
+  "signature_block",
+]);
+const HEADING_ROLES: ReadonlySet<Role> = new Set<Role>(["title", "appendix_title"]);
+
+function capsBoldForRole(role: Role): boolean {
+  return FRONT_MATTER_ROLES.has(role) || BACK_MATTER_ROLES.has(role);
+}
+
+// Plain (non-redline) clause body with import-parity typography: rich emphasis, with
+// heading lines bolded whole. A line is a heading when the backend flags it
+// (is_heading, mirroring import's content_type==="Heading") OR by structural role
+// (title / appendix title) as the pre-ship fallback while is_heading is undefined.
+function renderDocText(text: string, role: Role, isHeading: boolean): React.ReactNode {
+  const rich = renderRich(text, capsBoldForRole(role), styles.sBold);
+  return HEADING_ROLES.has(role) || isHeading ? (
+    <span className={styles.sHeadingText}>{rich}</span>
+  ) : (
+    rich
+  );
+}
+
 // The side that carries a content change's identity: their incoming clause for a new
 // node, the baseline clause for an edit/deletion.
 function primarySide(c: ReviewChange): ChangeContextSide | undefined {
@@ -181,8 +206,11 @@ function flattenBaseline(nodes: NodeTreeItem[], depth = 0): FlatBaseline[] {
 // ---- a memoized document row (perf: only changed/toggled rows re-render) -------------
 
 interface RowProps {
-  node: DocumentNode;
+  node: ProjectedNode;
   added: boolean;
+  // numbered===false on a projected node: an accepted/pending DELETION shown in place,
+  // struck/greyed via .docRowDeleted (the clause is removed from the renumbered tree).
+  struck: boolean;
   kinds: DocumentChangeKind[];
   changeId: string | null;
   active: boolean;
@@ -203,6 +231,7 @@ interface RowProps {
 const DocRow = memo(function DocRow({
   node,
   added,
+  struck,
   kinds,
   changeId,
   active,
@@ -216,13 +245,13 @@ const DocRow = memo(function DocRow({
   inlineRedline,
 }: RowProps) {
   const changed = changeId !== null;
-  const deleted = kinds.includes("deleted");
-  const indent = 10 + node.depth * 18 + (added ? 18 : 0);
+  // Placement + depth come from the backend's projected sequence, so indent is depth only.
+  const indent = 10 + node.depth * 18;
   const cls = [
     styles.docRow,
     changed ? styles.docRowChanged : "",
     added ? styles.docRowAdded : "",
-    deleted ? styles.docRowDeleted : "",
+    struck ? styles.docRowDeleted : "",
     active ? styles.docRowActive : "",
     decided ? styles.docRowDecided : "",
   ].join(" ");
@@ -267,14 +296,20 @@ const DocRow = memo(function DocRow({
         )}
         {node.clause_number ? (
           <span className={styles.docNum}>{node.clause_number}</span>
-        ) : (
+        ) : node.role !== "clause" ? (
           <span className={styles.docCat}>{CATEGORY_LABEL[node.role]}</span>
+        ) : (
+          // A clause-role node with no number = a removed deletion (numbered===false);
+          // keep the number-column width, show no number.
+          <span className={styles.docNum} aria-hidden />
         )}
         {/* When an inlineRedline is provided (edited clauses), suppress node.text so the
             plain baseline does not show alongside the tracked-changes body. The span is kept
             as an empty flex-1 spacer so the tags stay right-aligned in docRowLine. */}
         <span className={styles.docText}>
-          {inlineRedline != null ? "" : (node.text ?? "(empty clause)")}
+          {inlineRedline != null
+            ? ""
+            : renderDocText(node.text ?? "(empty clause)", node.role, node.is_heading ?? false)}
         </span>
         {changed && (
           <span className={styles.docTags} aria-hidden>
@@ -559,6 +594,11 @@ export default function RevisionReview({
   // Ephemeral — client-side only, no DB/API (mirrors Mode A import view pattern).
   const [collapsedDocNodes, setCollapsedDocNodes] = useState<Set<string>>(new Set());
 
+  // DD-89 grouped stop: which cluster panels are peeled open (showing per-clause member rows),
+  // and which member is currently being inline-edited as a peel-off override. Client-only.
+  const [expandedClusters, setExpandedClusters] = useState<Set<string>>(new Set());
+  const [peelEditHunk, setPeelEditHunk] = useState<string | null>(null);
+
   // Re-match picker (Phase 1) — lazily-loaded baseline tree, shared across abstains.
   const [baseline, setBaseline] = useState<{
     loading: boolean;
@@ -568,12 +608,17 @@ export default function RevisionReview({
   const [rematchOpen, setRematchOpen] = useState(false);
 
   const [applied, setApplied] = useState<ApplyResult | null>(null);
+  // DD-86 "Start over": two-stage inline confirm before the destructive reset.
+  const [confirmReset, setConfirmReset] = useState(false);
   const [brainstormSeed, setBrainstormSeed] = useState<{ anchor: string; seed: string } | null>(null);
 
   // change-id → row element, for the rail-click scroll + the scroll spy.
   const rowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const docPaneRef = useRef<HTMLDivElement | null>(null);
   const applyBtnRef = useRef<HTMLButtonElement | null>(null);
+  // Monotonic refetch token (DD-78 live renumber): a stale projected refetch is ignored
+  // when a newer one has started, so out-of-order responses never clobber fresh numbers.
+  const refreshSeq = useRef(0);
 
   const load = useCallback(async () => {
     setState({ kind: "loading" });
@@ -594,6 +639,35 @@ export default function RevisionReview({
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Re-fetch ONLY the document view (not the full review) so the projected sequence
+  // renumbers/re-places live after a decision, without resetting phase or the cursor
+  // (activeChangeId/selectedHunkId are untouched; node_ids are stable so `stops`
+  // recompute consistently). Race-guarded: a superseded refetch is dropped (DD-78).
+  const refreshDoc = useCallback(async () => {
+    const seq = ++refreshSeq.current;
+    try {
+      const d = await getRevisionDocument(id, sessionId);
+      if (seq === refreshSeq.current) setDoc(d);
+    } catch {
+      // Best-effort: keep the optimistic doc if the renumber refetch fails.
+    }
+  }, [id, sessionId]);
+
+  // Rejecting an added PARENT cascades reject to its added descendants server-side
+  // (their verdicts change but aren't in the single decideNode response). Refetch the
+  // review payload so the cascaded children re-render struck. Preserves the cursor
+  // (activeChangeId/selectedHunkId are separate state).
+  const reviewSeq = useRef(0);
+  const refreshReview = useCallback(async () => {
+    const seq = ++reviewSeq.current;
+    try {
+      const r = await getRevisionReview(sessionId);
+      if (seq === reviewSeq.current) setReview(r);
+    } catch {
+      // Best-effort: keep the optimistic review if the cascade refetch fails.
+    }
+  }, [sessionId]);
 
   const abstains = review?.phase1.abstains ?? [];
   const stream = review?.phase2 ?? [];
@@ -632,90 +706,36 @@ export default function RevisionReview({
     return m;
   }, [doc]);
 
-  // The Phase-2 document spine: baseline nodes in reading order, each carrying its
-  // edited/deleted change; added changes inserted right after their proposed parent.
-  type RenderItem =
-    | { key: string; kind: "node"; node: DocumentNode; change: ReviewChange | null }
-    | { key: string; kind: "added"; node: DocumentNode; change: ReviewChange };
+  // The Phase-2 document spine is now the backend's projected reading order (DD-78):
+  // baseline clauses in order, each non-rejected added clause already spliced at its real
+  // position, deletions anchored in place. `clause_number`/`depth`/`numbered` are
+  // recomputed server-side from the current verdicts, so they renumber on each decision.
+  const projected = useMemo<ProjectedNode[]>(() => doc?.projected ?? [], [doc]);
 
-  const renderItems = useMemo<RenderItem[]>(() => {
-    if (!doc) return [];
-    const editedDeleted = new Map<string, ReviewChange>();
-    const addedByParent = new Map<string, ReviewChange[]>();
-    for (const c of stream) {
-      if (c.change_kind === "new") {
-        const key = c.proposed_parent_id ?? "__root__";
-        (addedByParent.get(key) ?? addedByParent.set(key, []).get(key)!).push(c);
-      } else if (c.node_id) {
-        editedDeleted.set(c.node_id, c);
-      }
-    }
-    for (const arr of addedByParent.values()) {
-      arr.sort((a, b) => (a.proposed_order_index ?? 0) - (b.proposed_order_index ?? 0));
-    }
-    // Synthesize a DocumentNode for an added change from its incoming-side context.
-    const addedNode = (c: ReviewChange, depth: number): DocumentNode => ({
-      node_id: `added-${c.id}`,
-      clause_number: c.context?.their?.number ?? null,
-      role: "clause",
-      depth,
-      text: c.context?.their?.body ?? c.hunks[0]?.proposed_text ?? null,
-    });
-
-    const items: RenderItem[] = [];
-    for (const c of addedByParent.get("__root__") ?? []) {
-      items.push({ key: `added-${c.id}`, kind: "added", node: addedNode(c, 0), change: c });
-    }
-    for (const node of doc.baseline) {
-      items.push({
-        key: node.node_id,
-        kind: "node",
-        node,
-        change: editedDeleted.get(node.node_id) ?? null,
-      });
-      for (const c of addedByParent.get(node.node_id) ?? []) {
-        items.push({
-          key: `added-${c.id}`,
-          kind: "added",
-          node: addedNode(c, node.depth + 1),
-          change: c,
-        });
-      }
-    }
-    // Any added change whose parent isn't in the baseline (defensive — shouldn't happen).
-    const placed = new Set(items.filter((i) => i.kind === "added").map((i) => i.change.id));
-    for (const c of stream) {
-      if (c.change_kind === "new" && !placed.has(c.id)) {
-        items.push({ key: `added-${c.id}`, kind: "added", node: addedNode(c, 0), change: c });
-      }
-    }
-    return items;
-  }, [doc, stream]);
-
-  // Keys of renderItems nodes that have at least one child in document order (the next
-  // item is strictly deeper). A node must be in this set to receive a collapse chevron.
+  // node_ids of projected nodes with at least one child in document order (the next
+  // projected node is strictly deeper). A node must be here to receive a collapse chevron.
   const docNodeParents = useMemo<Set<string>>(() => {
     const s = new Set<string>();
-    for (let i = 0; i < renderItems.length - 1; i++) {
-      if (renderItems[i + 1].node.depth > renderItems[i].node.depth) s.add(renderItems[i].key);
+    for (let i = 0; i < projected.length - 1; i++) {
+      if (projected[i + 1].depth > projected[i].depth) s.add(projected[i].node_id);
     }
     return s;
-  }, [renderItems]);
+  }, [projected]);
 
-  // Flat renderItems filtered to only the rows currently visible — a collapsed node hides
-  // every subsequent item with a strictly greater depth until depth returns to its own.
-  const visibleRenderItems = useMemo(() => {
-    if (collapsedDocNodes.size === 0) return renderItems;
-    const out: RenderItem[] = [];
+  // Projected nodes filtered to only the rows currently visible — a collapsed node hides
+  // every subsequent node with a strictly greater depth until depth returns to its own.
+  const visibleProjected = useMemo(() => {
+    if (collapsedDocNodes.size === 0) return projected;
+    const out: ProjectedNode[] = [];
     let hideDeeperThan = Infinity;
-    for (const item of renderItems) {
-      if (item.node.depth > hideDeeperThan) continue;
+    for (const node of projected) {
+      if (node.depth > hideDeeperThan) continue;
       hideDeeperThan = Infinity;
-      out.push(item);
-      if (collapsedDocNodes.has(item.key)) hideDeeperThan = item.node.depth;
+      out.push(node);
+      if (collapsedDocNodes.has(node.node_id)) hideDeeperThan = node.depth;
     }
     return out;
-  }, [renderItems, collapsedDocNodes]);
+  }, [projected, collapsedDocNodes]);
 
   const docAllExpanded = collapsedDocNodes.size === 0;
 
@@ -734,6 +754,18 @@ export default function RevisionReview({
     });
   }, []);
 
+  // DD-89: peel a grouped stop open / closed (the per-clause member list). Closing also drops
+  // any in-progress per-member inline edit.
+  const toggleCluster = useCallback((clusterId: string) => {
+    setPeelEditHunk(null);
+    setExpandedClusters((prev) => {
+      const next = new Set(prev);
+      if (next.has(clusterId)) next.delete(clusterId);
+      else next.add(clusterId);
+      return next;
+    });
+  }, []);
+
   // Document-order change list for the far-left rail (review.phase2 is already ordered).
   const railChanges = stream;
 
@@ -742,29 +774,59 @@ export default function RevisionReview({
     else rowRefs.current.delete(changeId);
   }, []);
 
+  // ---- cross-document clusters (DD-89 / F34) --------------------------------
+  // Member hunks of each cluster (the SAME counterparty edit recurring across clauses),
+  // collected in document order. The backend stamps cluster_id/cluster_size on every member
+  // (>1); here we group them so the cursor can treat a cluster as ONE grouped stop and the
+  // panel can render the peel-off list + mixed summary.
+  const clusterMembers = useMemo<Map<string, { hunk: ReviewHunk; change: ReviewChange }[]>>(() => {
+    const m = new Map<string, { hunk: ReviewHunk; change: ReviewChange }[]>();
+    for (const node of projected) {
+      if (!node.change_id) continue;
+      const c = changeById.get(node.change_id);
+      if (!c) continue;
+      for (const h of c.hunks) {
+        if (h.cluster_id && h.cluster_size > 1) {
+          const arr = m.get(h.cluster_id) ?? [];
+          arr.push({ hunk: h, change: c });
+          m.set(h.cluster_id, arr);
+        }
+      }
+    }
+    return m;
+  }, [projected, changeById]);
+
   // ---- the guided decision cursor (DD-83) -----------------------------------
   // A "stop" is one decision unit in strict document order: each hunk of an edited clause,
-  // or the single whole-node hunk of an added/deleted clause. The cursor walks OPEN stops
-  // top-to-bottom; the fixed dock shows the focused stop's controls.
-  type Stop = { changeId: string; hunkId: string };
+  // or the single whole-node hunk of an added/deleted clause. A CLUSTER (DD-89) folds all its
+  // member hunks into ONE stop (carrying `clusterId`) placed at the FIRST member's clause; the
+  // other members are not separate stops. The cursor walks OPEN stops top-to-bottom.
+  type Stop = { changeId: string; hunkId: string; clusterId?: string };
 
   const stops = useMemo<Stop[]>(() => {
     const out: Stop[] = [];
-    for (const item of renderItems) {
-      const c = item.change;
+    const seenCluster = new Set<string>();
+    for (const node of projected) {
+      if (!node.change_id) continue;
+      const c = changeById.get(node.change_id);
       if (!c) continue;
-      if (c.change_kind === "edited") {
-        const sorted = [...c.hunks].sort(
-          (a, b) => (a.position_in_body ?? 0) - (b.position_in_body ?? 0),
-        );
-        for (const h of sorted) out.push({ changeId: c.id, hunkId: h.id });
-      } else {
-        const h = c.hunks[0];
-        if (h) out.push({ changeId: c.id, hunkId: h.id });
+      const hunks =
+        c.change_kind === "edited"
+          ? [...c.hunks].sort((a, b) => (a.position_in_body ?? 0) - (b.position_in_body ?? 0))
+          : c.hunks.slice(0, 1);
+      for (const h of hunks) {
+        if (!h) continue;
+        if (h.cluster_id && h.cluster_size > 1) {
+          if (seenCluster.has(h.cluster_id)) continue;
+          seenCluster.add(h.cluster_id);
+          out.push({ changeId: c.id, hunkId: h.id, clusterId: h.cluster_id });
+        } else {
+          out.push({ changeId: c.id, hunkId: h.id });
+        }
       }
     }
     return out;
-  }, [renderItems]);
+  }, [projected, changeById]);
 
   const liveHunk = useCallback(
     (stop: Stop): ReviewHunk | null => {
@@ -774,14 +836,21 @@ export default function RevisionReview({
     [changeById],
   );
 
-  // OPEN = a cursor stop: hunk verdict still pending, OR re-opened to re-decide.
+  // OPEN = a cursor stop: hunk verdict still pending, OR re-opened to re-decide. A CLUSTER stop
+  // is open while ANY member is still pending/re-opened — deciding the group (or peeling every
+  // member) closes it; a peel-off that diverges keeps every member decided, so the group stays
+  // closed (decided-with-exception, DD-89), surfaced as the mixed summary, not a re-opened stop.
   const isOpen = useCallback(
     (stop: Stop): boolean => {
+      if (stop.clusterId) {
+        const members = clusterMembers.get(stop.clusterId) ?? [];
+        return members.some(({ hunk }) => reopened.has(hunk.id) || hunk.verdict === "pending");
+      }
       if (reopened.has(stop.hunkId)) return true;
       const h = liveHunk(stop);
       return h ? h.verdict === "pending" : false;
     },
-    [reopened, liveHunk],
+    [reopened, liveHunk, clusterMembers],
   );
 
   const scrollToChange = useCallback((changeId: string) => {
@@ -793,9 +862,26 @@ export default function RevisionReview({
       setActiveChangeId(stop.changeId);
       setSelectedHunkId(stop.hunkId);
       setEditing(false);
+      // BUG 2 fix: drop any reopened-but-undecided hunks belonging to a clause we're leaving.
+      // An abandoned re-open must NOT keep rendering a decided change (esp. a REJECT) through
+      // the pending branch — that re-shows the counterparty addition green and reads as
+      // "accepted". Only the focused clause may hold reopened hunks; a fresh decision clears
+      // them (runHunk/runNode), and plain navigation (focusChange/stepClause/stepOpen all go
+      // through here) prunes them, so a reject reverts to its persisted kept-original render.
+      setReopened((prev) => {
+        if (prev.size === 0) return prev;
+        const keep = new Set(changeById.get(stop.changeId)?.hunks.map((h) => h.id) ?? []);
+        let dropped = false;
+        const next = new Set<string>();
+        for (const id of prev) {
+          if (keep.has(id)) next.add(id);
+          else dropped = true;
+        }
+        return dropped ? next : prev;
+      });
       if (scroll) scrollToChange(stop.changeId);
     },
-    [scrollToChange],
+    [scrollToChange, changeById],
   );
 
   // End of the walk: drop the focus and send the cursor to the Apply affordance.
@@ -808,18 +894,24 @@ export default function RevisionReview({
   }, []);
 
   // Rail/row click: focus a change's FIRST open stop; if every stop is already decided,
-  // re-open the first one so the operator can re-decide (returns it to pending/dotted).
+  // focus the first WITHOUT re-opening it — navigation must not flip a settled verdict back
+  // to pending (BUG 2: an adopted Donna clause would re-render as a raw accepted counterparty
+  // change). The persisted verdict keeps rendering; re-deciding still works (decideFocused
+  // overwrites the verdict regardless of the reopened flag). A deliberate fragment click
+  // (focusHunk) is the gesture that re-opens for re-decide.
   function focusChange(changeId: string) {
     const changeStops = stops.filter((s) => s.changeId === changeId);
-    if (changeStops.length === 0) return;
-    const open = changeStops.find(isOpen);
-    if (open) {
-      focusStop(open);
+    if (changeStops.length === 0) {
+      // A clause whose only change is a FOLDED cluster member (its stop lives under the cluster
+      // representative, a different clause): focus the grouped stop instead of nothing.
+      const c = changeById.get(changeId);
+      const member = c?.hunks.find((h) => h.cluster_id && h.cluster_size > 1);
+      const rep = member?.cluster_id ? stops.find((s) => s.clusterId === member.cluster_id) : null;
+      if (rep) focusStop(rep);
       return;
     }
-    const first = changeStops[0];
-    setReopened((p) => new Set(p).add(first.hunkId));
-    focusStop(first);
+    const open = changeStops.find(isOpen);
+    focusStop(open ?? changeStops[0]);
   }
 
   // Fragment click: focus a specific hunk; re-open it if already decided.
@@ -844,6 +936,51 @@ export default function RevisionReview({
     focusApply();
   }
 
+  // ---- clause-level navigation (DD-83) ------------------------------------
+  // Auto-advance stays WITHIN a clause; moving BETWEEN clauses is manual (the Prev/Next
+  // buttons here, or < / > for fine-grained open-stop nav). clauseOrder = document-order
+  // unique changeIds; openClauseIds = clauses with >=1 OPEN stop.
+  const clauseOrder = useMemo<string[]>(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const s of stops) {
+      if (!seen.has(s.changeId)) {
+        seen.add(s.changeId);
+        out.push(s.changeId);
+      }
+    }
+    return out;
+  }, [stops]);
+
+  const openClauseIds = useMemo<Set<string>>(() => {
+    const s = new Set<string>();
+    for (const stop of stops) if (isOpen(stop)) s.add(stop.changeId);
+    return s;
+  }, [stops, isOpen]);
+
+  const hasOpenClauses = openClauseIds.size > 0;
+
+  // Prev/Next clause: from activeChangeId, cyclically find the next/prev clause that has
+  // an open stop and focus its FIRST open stop.
+  const stepClause = useCallback(
+    (dir: 1 | -1) => {
+      const n = clauseOrder.length;
+      if (n === 0) return;
+      let cur = activeChangeId ? clauseOrder.indexOf(activeChangeId) : -1;
+      if (cur === -1) cur = dir === 1 ? -1 : 0;
+      for (let k = 1; k <= n; k++) {
+        const cid = clauseOrder[(((cur + dir * k) % n) + n) % n];
+        if (!openClauseIds.has(cid)) continue;
+        const first = stops.find((s) => s.changeId === cid && isOpen(s));
+        if (first) {
+          focusStop(first);
+          return;
+        }
+      }
+    },
+    [clauseOrder, activeChangeId, openClauseIds, stops, isOpen, focusStop],
+  );
+
   // Decide the focused stop. Maps the operator actions onto the edited-hunk endpoint
   // (accept/counter/edit/keep) or the whole-node endpoint (accept/reject/edit). The cursor
   // auto-advances afterwards via the advance effect (once state settles).
@@ -852,6 +989,13 @@ export default function RevisionReview({
     const c = changeById.get(activeChangeId);
     const h = c?.hunks.find((x) => x.id === selectedHunkId);
     if (!c || !h) return;
+    // Grouped stop (DD-89): one decision fans to every member of the cluster.
+    if (h.cluster_id && h.cluster_size > 1) {
+      if (action === "accept") void runCluster(h.cluster_id, "accept");
+      else if (action === "reject") void runCluster(h.cluster_id, "keep");
+      else if (action === "donna" && h.donna_counter_text) void runCluster(h.cluster_id, "counter");
+      return;
+    }
     if (c.change_kind === "edited") {
       if (action === "accept") void runHunk(h, "accept");
       else if (action === "reject") void runHunk(h, "keep");
@@ -874,7 +1018,8 @@ export default function RevisionReview({
     const c = changeById.get(activeChangeId);
     const h = c?.hunks.find((x) => x.id === selectedHunkId);
     if (!c || !h) return;
-    if (c.change_kind === "edited") void runHunk(h, "edit", text);
+    if (h.cluster_id && h.cluster_size > 1) void runCluster(h.cluster_id, "edit", text);
+    else if (c.change_kind === "edited") void runHunk(h, "edit", text);
     else void runNode(c, "edit", text);
   }
 
@@ -883,22 +1028,20 @@ export default function RevisionReview({
   // effect so it sees the freshly-patched verdict + cleared re-open flag.
   useEffect(() => {
     if (!advanceTarget) return;
-    const i = stops.findIndex((s) => s.hunkId === advanceTarget.hunkId);
+    const { changeId, hunkId } = advanceTarget;
+    const i = stops.findIndex((s) => s.hunkId === hunkId);
     setAdvanceTarget(null);
+    // Auto-advance ONLY to the next OPEN stop WITH THE SAME changeId (same-clause stops are
+    // contiguous, but filter by changeId to be safe). When the clause has no more open
+    // stops, STOP — keep the cursor on the just-decided clause; the operator uses Prev/Next
+    // (or < / >) to move on (DD-83). No auto-jump to another clause or to Apply.
     for (let j = i + 1; j < stops.length; j++) {
-      if (isOpen(stops[j])) {
+      if (stops[j].changeId === changeId && isOpen(stops[j])) {
         focusStop(stops[j]);
         return;
       }
     }
-    for (let j = 0; j < stops.length; j++) {
-      if (isOpen(stops[j])) {
-        focusStop(stops[j]);
-        return;
-      }
-    }
-    focusApply();
-  }, [advanceTarget, stops, isOpen, focusStop, focusApply]);
+  }, [advanceTarget, stops, isOpen, focusStop]);
 
   // On first entry to the content phase, focus the first open stop (no scroll yank).
   const contentInitRef = useRef(false);
@@ -966,8 +1109,19 @@ export default function RevisionReview({
   }
 
   function patchChange(updated: ReviewChange) {
+    // The decide endpoints return the change WITHOUT `context` (the redline's
+    // baseline/their body + heading). Context is static across a verdict change, so
+    // carry it forward from the prior change — otherwise the inline redline loses its
+    // source and the whole clause falls back to plain text.
     setReview((p) =>
-      p ? { ...p, phase2: p.phase2.map((c) => (c.id === updated.id ? updated : c)) } : p,
+      p
+        ? {
+            ...p,
+            phase2: p.phase2.map((c) =>
+              c.id === updated.id ? { ...updated, context: updated.context ?? c.context } : c,
+            ),
+          }
+        : p,
     );
   }
 
@@ -985,6 +1139,7 @@ export default function RevisionReview({
       });
       setEditing(false);
       setAdvanceTarget({ changeId: updated.id, hunkId: hunk.id });
+      void refreshDoc();
     } catch (e) {
       setActionError(
         e instanceof ApiError && e.status === 422
@@ -1015,8 +1170,43 @@ export default function RevisionReview({
         setAdvanceTarget({ changeId: updated.id, hunkId });
       }
       setEditing(false);
+      void refreshDoc();
+      // Reject of an added clause cascades to its added sub-clauses server-side.
+      if (verdict === "reject" && change.change_kind === "new") void refreshReview();
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Couldn't record that decision.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // DD-89 grouped-stop decision: one verdict fanned to every member of the cluster in a single
+  // transaction. Members span multiple change rows, so the server returns the refreshed review
+  // payload — apply it wholesale (one refresh), clear any re-open flags on the members, and
+  // re-fetch the document view so the projected numbers settle.
+  async function runCluster(clusterId: string, verdict: HunkDecisionAction, finalText?: string) {
+    setBusy(clusterId);
+    setActionError(null);
+    try {
+      const payload = await decideCluster(sessionId, clusterId, verdict, finalText);
+      setReview(payload);
+      setReopened((p) => {
+        const members = clusterMembers.get(clusterId);
+        if (p.size === 0 || !members) return p;
+        const n = new Set(p);
+        for (const { hunk } of members) n.delete(hunk.id);
+        return n;
+      });
+      setEditing(false);
+      void refreshDoc();
+    } catch (e) {
+      setActionError(
+        verdict === "counter" && e instanceof ApiError && e.status === 422
+          ? "Donna hasn't staged counter-language for this one — edit it instead."
+          : e instanceof Error
+            ? e.message
+            : "Couldn't record that decision.",
+      );
     } finally {
       setBusy(null);
     }
@@ -1103,6 +1293,41 @@ export default function RevisionReview({
     }
   }
 
+  // DD-86 reset: discard every decision and re-seat the review at its fresh all-pending
+  // state WITHOUT a full reload — apply the returned payload exactly like a fresh load,
+  // clear local UI state, refresh the document view, and re-derive the phase.
+  async function runReset() {
+    setBusy("reset");
+    setActionError(null);
+    try {
+      const payload = await resetRevisionSession(id, sessionId);
+      setReview(payload);
+      setReopened(new Set());
+      setActiveChangeId(null);
+      setSelectedHunkId(null);
+      setEditing(false);
+      setApplied(null);
+      setRematchOpen(false);
+      setCollapsedDocNodes(new Set());
+      contentInitRef.current = false;
+      setPhase(payload.phase1.abstains.length > 0 ? "structure" : "content");
+      await refreshDoc();
+      setConfirmReset(false);
+    } catch (e) {
+      setActionError(
+        e instanceof ApiError && e.status === 409
+          ? "This review was already applied to your working copy — it can't be reset."
+          : e instanceof ApiError && e.status === 404
+            ? "This review session is no longer available."
+            : e instanceof Error
+              ? e.message
+              : "Couldn't start over.",
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
   function openBrainstorm(c: ReviewChange) {
     setBrainstormSeed({ anchor: anchorLabel(c) || "this change", seed: composeSeed(c) });
   }
@@ -1164,7 +1389,7 @@ export default function RevisionReview({
         <Link href="/" className={styles.brand} aria-label="donna.ai home">
           donna<span className={styles.dot}>.</span>ai
         </Link>
-        <span className={styles.crumb}>Revision review</span>
+        <span className={styles.crumb}>Reviewing {sourceLabel}</span>
       </div>
       <div className={styles.topMeta}>
         {review && (
@@ -1181,16 +1406,55 @@ export default function RevisionReview({
           ← Back to contract
         </Link>
         {!applied && (
-          <button
-            ref={applyBtnRef}
-            type="button"
-            className={styles.applyBtn}
-            disabled={!allDecided || busy === "apply"}
-            title={allDecided ? "Apply every decision to the working copy" : "Decide every change first"}
-            onClick={() => void runApply()}
-          >
-            {busy === "apply" ? "Applying…" : "Apply to working copy"}
-          </button>
+          <>
+            {confirmReset ? (
+              <span
+                className={styles.startOverConfirm}
+                role="alertdialog"
+                aria-label="Start over?"
+              >
+                <span className={styles.startOverText}>
+                  Discard all your decisions and restart this review?
+                </span>
+                <button
+                  type="button"
+                  className={styles.startOverDanger}
+                  disabled={busy === "reset"}
+                  onClick={() => void runReset()}
+                >
+                  {busy === "reset" ? "Starting over…" : "Start over"}
+                </button>
+                <button
+                  type="button"
+                  className={styles.btnText}
+                  disabled={busy === "reset"}
+                  onClick={() => setConfirmReset(false)}
+                >
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <button
+                type="button"
+                className={styles.btnGhost}
+                disabled={busy != null}
+                title="Discard every decision and restart this review"
+                onClick={() => setConfirmReset(true)}
+              >
+                Start over
+              </button>
+            )}
+            <button
+              ref={applyBtnRef}
+              type="button"
+              className={styles.applyBtn}
+              disabled={!allDecided || busy === "apply"}
+              title={allDecided ? "Apply every decision to the working copy" : "Decide every change first"}
+              onClick={() => void runApply()}
+            >
+              {busy === "apply" ? "Applying…" : "Apply to working copy"}
+            </button>
+          </>
         )}
       </div>
     </header>
@@ -1393,7 +1657,6 @@ export default function RevisionReview({
                 </main>
               )
             : renderContent()}
-        {phase === "content" && !nothingToDo && renderDock()}
       </div>
 
       {brainstormSeed && (
@@ -1584,11 +1847,25 @@ export default function RevisionReview({
       <main className={styles.docPane} ref={docPaneRef}>
         <div className={styles.docHead}>
           <div className={styles.docHeadRow}>
-            <div>
-              <h2 className={styles.subheadTitle}>Their revision, in your document</h2>
-              <p className={styles.subheadHint}>
-                Changed clauses are highlighted. Open one to see the redline and Donna&apos;s read.
-              </p>
+            <div className={styles.docNav}>
+              <button
+                type="button"
+                className={styles.docNavBtn}
+                disabled={!hasOpenClauses}
+                title="Previous clause with an open change"
+                onClick={() => stepClause(-1)}
+              >
+                ‹ Prev
+              </button>
+              <button
+                type="button"
+                className={styles.docNavBtn}
+                disabled={!hasOpenClauses}
+                title="Next clause with an open change"
+                onClick={() => stepClause(1)}
+              >
+                Next ›
+              </button>
             </div>
             {docNodeParents.size > 0 && (
               <button
@@ -1602,57 +1879,69 @@ export default function RevisionReview({
           </div>
         </div>
         <div className={styles.docScroll}>
-          {visibleRenderItems.map((item) => {
-            const c = item.change;
-            const dc = c ? docChangeById.get(c.id) : undefined;
-            const kinds: DocumentChangeKind[] = dc
-              ? dc.kinds
-              : item.kind === "added"
-                ? ["added"]
-                : [];
+          {visibleProjected.map((node) => {
+            const c = node.change_id ? (changeById.get(node.change_id) ?? null) : null;
+            // Tags chip from the projected node's single change_kind ("shifted" never tagged).
+            const kinds: DocumentChangeKind[] =
+              node.change_kind && node.change_kind !== "shifted" ? [node.change_kind] : [];
             const isActive = c != null && activeChangeId === c.id;
 
             // The inline tracked-changes redline rendered in the row body in place of plain
             // node.text, for EVERY change kind (edited / added / deleted) — ONCE (DD-83),
-            // never a box-below copy. Clicking a change fragment focuses that hunk; the dock
-            // (not an inline panel) carries the controls. The focused clause highlights its
-            // selected fragment; re-opened decisions render pending (dotted) via `reopened`.
+            // never a box-below copy. Clicking a change fragment focuses that hunk; the inline
+            // decision panel (rendered under the active row, below) carries the controls. The
+            // focused clause highlights its selected fragment; re-opened decisions render
+            // pending (dotted) via `reopened`.
             const inlineRedline = c
               ? renderInlineTrackedClause(
                   c,
                   isActive ? selectedHunkId : null,
-                  (hunkId) => {
-                    if (hunkId) focusHunk(c.id, hunkId);
+                  (hunkId, rejectTrace) => {
+                    if (!hunkId) return;
+                    // Reject-trace spans (kept / declined) focus WITHOUT re-opening — the
+                    // grey-strike / black-underline stays and the dock offers re-decide
+                    // (DD-91). Pending/countered spans re-open via focusHunk to re-decide.
+                    if (rejectTrace) focusStop({ changeId: c.id, hunkId });
+                    else focusHunk(c.id, hunkId);
                   },
                   reopened,
+                  node.role,
                 )
               : undefined;
 
             return (
-              <DocRow
-                key={item.key}
-                node={item.node}
-                added={item.kind === "added"}
-                kinds={kinds}
-                changeId={c?.id ?? null}
-                active={isActive}
-                decided={c?.status === "complete"}
-                onSelect={focusChange}
-                registerRef={registerRef}
-                nodeKey={item.key}
-                isParent={docNodeParents.has(item.key)}
-                collapsed={collapsedDocNodes.has(item.key)}
-                onToggleCollapse={toggleDocNode}
-                inlineRedline={inlineRedline}
-              />
+              <Fragment key={node.node_id}>
+                <DocRow
+                  node={node}
+                  added={node.change_kind === "added"}
+                  // A rejected addition is also numbered===false, but it must read as a
+                  // struck ADDITION (its inline redline handles that), not the grey deletion
+                  // row — so the grey treatment applies only to removed deletions.
+                  struck={node.numbered === false && node.change_kind !== "added"}
+                  kinds={kinds}
+                  changeId={c?.id ?? null}
+                  active={isActive}
+                  decided={c?.status === "complete"}
+                  onSelect={focusChange}
+                  registerRef={registerRef}
+                  nodeKey={node.node_id}
+                  isParent={docNodeParents.has(node.node_id)}
+                  collapsed={collapsedDocNodes.has(node.node_id)}
+                  onToggleCollapse={toggleDocNode}
+                  inlineRedline={inlineRedline}
+                />
+                {isActive && c && renderInlinePanel(c)}
+                {/* Non-focused changes surface Donna's recommendation read-only and compact
+                    (verdict + rationale + counter), so EVERY change shows the rec up front —
+                    not just the focused one. The focused change renders its rec inside
+                    renderInlinePanel (with the full controls), so this branch is !isActive
+                    only → no double-render. Shown for ALL changes with a rec regardless of
+                    status (DD-91: the rec persists through decided states). */}
+                {!isActive && c && renderDonnaRec(c)}
+              </Fragment>
             );
           })}
         </div>
-        {actionError && (
-          <p className={styles.streamError} role="alert">
-            {actionError}
-          </p>
-        )}
       </main>
     );
   }
@@ -1684,57 +1973,105 @@ export default function RevisionReview({
     );
   }
 
-  // ---- the stable decision dock (DD-83) ----------------------------------
-  // The single home for Phase-2 decision controls: a fixed panel in the right pane that
-  // reads the FOCUSED cursor stop (activeChangeId + selectedHunkId) and renders the
-  // clause context, Donna's recommendation, and the action buttons. The inline document
-  // never hosts controls — clicking a change focuses it here; the cursor walk / `<`/`>`
-  // move the focus; Edit commits on SAVE (advancing the cursor), not on click.
-  function renderDock() {
-    const c = activeChangeId ? changeById.get(activeChangeId) : null;
-    const h = c && selectedHunkId ? (c.hunks.find((x) => x.id === selectedHunkId) ?? null) : null;
+  // Compact, read-only Donna recommendation surfaced under EVERY non-focused change that
+  // has one — the verdict + a concise rationale line (+ counter language if staged). It
+  // uses the change's representative hunk (first hunk carrying a verdict or counter) and
+  // self-guards null when none exists, so rec-less rows stay clean. Deliberately lighter
+  // than the focused panel's filled .donna box — a hairline Donna-purple rule + small mark
+  // + prominent verdict — so a 30+ change stack stays scannable, not a wall of purple boxes.
+  // No controls: those live only in the focused panel (renderInlinePanel).
+  function renderDonnaRec(c: ReviewChange) {
+    const h = c.hunks.find((x) => x.donna_verdict || x.donna_counter_text);
+    if (!h) return null;
+    const verdictLabel = h.donna_verdict ? donnaPrettyVerdict(h.donna_verdict) : null;
+    return (
+      <p className={styles.donnaRec}>
+        <span className={styles.donnaRecMark} aria-hidden>
+          Donna
+        </span>
+        {verdictLabel && <strong className={styles.donnaRecVerdict}>{verdictLabel}</strong>}
+        {h.donna_rationale && <span className={styles.donnaRecRationale}>{h.donna_rationale}</span>}
+        {h.donna_counter_text && (
+          <span className={styles.donnaRecCounter}>&ldquo;{h.donna_counter_text}&rdquo;</span>
+        )}
+      </p>
+    );
+  }
 
-    // No focused stop → the cursor is at the end (everything decided → Apply) or nothing
-    // is selected yet. A non-interactive prompt; the walk lands a real stop here.
-    if (!c || !h) {
-      return (
-        <aside className={styles.dock} aria-label="Decision">
-          <div className={styles.dockEmpty}>
-            {allDecided
-              ? "Every change is decided — apply to your working copy above."
-              : "Pick a change on the left, or press › to walk to the next open one."}
-          </div>
-        </aside>
-      );
-    }
+  // ---- the inline decision panel (DD-83, revised: dock relocated inline) ---------
+  // The single home for Phase-2 decision controls, rendered INLINE in the document flow
+  // directly below the FOCUSED clause's row (activeChangeId + selectedHunkId). Only the
+  // focused clause shows a panel (one at a time). The redline stays in place in the row
+  // above; this panel carries the clause context, Donna's recommendation, and the action
+  // buttons. Clicking a change focuses it (rendering this panel under it); the cursor walk
+  // / `<`/`>` move the focus; Edit commits on SAVE (advancing the cursor), not on click.
+  function renderInlinePanel(c: ReviewChange) {
+    const h = selectedHunkId ? (c.hunks.find((x) => x.id === selectedHunkId) ?? null) : null;
+    // No selected hunk for the focused clause (defensive — focusStop always sets one).
+    if (!h) return null;
 
-    const isEdited = c.change_kind === "edited";
     const added = c.change_kind === "new";
-    const decided = isEdited ? h.verdict !== "pending" : c.status === "complete";
-    const dv = (h.donna_verdict ?? "").trim().toLowerCase();
-    const recommended: "accept" | "counter" | "keep" | null =
-      dv === "accept" ? "accept" : dv === "counter" ? "counter" : dv === "keep" ? "keep" : null;
-    const acceptLabel = added ? "Accept addition" : c.change_kind === "deleted" ? "Accept removal" : "Accept theirs";
-    const kindLabel = added ? "Added clause" : c.change_kind === "deleted" ? "Deleted clause" : "Modified";
-    const busyHere = busy === c.id || busy === h.id;
+    // Two-signal button encoding (DD-83): rec = what Donna recommends, chosen = the operator's
+    // committed decision. Both render on the SAME row so agreement vs override is legible at a glance.
+    const rec = recButton(h.donna_verdict);
+    const chosen = chosenButton(h);
+    // DD-89 grouped stop: this clause's edit recurs across `cluster_size` clauses, so the
+    // decision buttons fan to ALL members (decide-once); the panel adds the "appears in N"
+    // header, an expand-to-peel-off list, and a mixed summary once a member is overridden.
+    const isCluster = !!h.cluster_id && h.cluster_size > 1;
+    const clusterId = h.cluster_id;
+    const members = isCluster && clusterId ? (clusterMembers.get(clusterId) ?? []) : [];
+    const expanded = !!clusterId && expandedClusters.has(clusterId);
+    const tally = clusterTally(members);
+    const mixed = isCluster && clusterDivergent(members);
+    const majority = clusterMajority(tally);
+    const allTag = isCluster ? ` · all ${h.cluster_size}` : "";
+    const acceptBase = added ? "Accept addition" : c.change_kind === "deleted" ? "Accept removal" : "Accept theirs";
+    const acceptLabel = `${acceptBase}${allTag}`;
+    const busyHere = busy === c.id || busy === h.id || (clusterId ? busy === clusterId : false);
 
     return (
-      <aside className={styles.dock} aria-label="Decision">
-        <div className={styles.dockHead}>
-          <span className={styles.dockAnchor}>{anchorLabel(c)}</span>
-          <span className={styles.dockKind}>{kindLabel}</span>
-        </div>
-        {renderDonnaBlock(h)}
-        {decided && !editing && (
-          <div className={styles.decided}>
-            <span className={styles.decidedChip} data-tone={verdictTone(h.verdict)}>
-              {VERDICT_LABEL[h.verdict]}
-            </span>
-            {h.final_text && h.verdict === "modified" && (
-              <span className={styles.decidedText}>{h.final_text}</span>
-            )}
+      <div className={styles.inlinePanel} aria-label="Decision">
+        {isCluster && clusterId && (
+          <div className={styles.clusterHead}>
+            <span className={styles.clusterBadge}>This change appears in {h.cluster_size} clauses</span>
+            <button
+              type="button"
+              className={styles.clusterToggle}
+              aria-expanded={expanded}
+              onClick={() => toggleCluster(clusterId)}
+            >
+              {expanded ? "Hide clauses" : "Review each clause"}
+            </button>
           </div>
         )}
+        {mixed && (
+          <p className={styles.clusterMixed}>
+            {(["accepted", "rejected", "modified", "pending"] as ReviewHunk["verdict"][])
+              .filter((v) => tally[v] > 0)
+              .map((v, i) => (
+                <span key={v} className={styles.clusterCount} data-verdict={v}>
+                  {i > 0 && <span className={styles.clusterCountSep}>·</span>}
+                  {tally[v]} {STORED_VERDICT_LABEL[v]}
+                </span>
+              ))}
+            {majority && (
+              <span className={styles.clusterMixedNote}>
+                {" — "}
+                {members
+                  .filter((m) => m.hunk.verdict !== majority)
+                  .map((m) => clusterMemberLabel(m.change))
+                  .join(", ")}{" "}
+                overridden
+              </span>
+            )}
+          </p>
+        )}
+        {/* Donna's recommendation persists through pending/decided/adopted/re-opened states
+            (BUG 3: it must not vanish after "Use Donna's"). renderDonnaBlock self-guards null
+            when no recommendation exists, so the box shows exactly when there is one.
+            No clause-number/kind head: the clause number already shows on the row above. */}
+        {renderDonnaBlock(h)}
         {editing ? (
           <InlineEditor
             seed={h.donna_counter_text ?? h.proposed_text ?? h.original_text ?? ""}
@@ -1743,10 +2080,11 @@ export default function RevisionReview({
             onCancel={() => setEditing(false)}
           />
         ) : (
+          // All five controls on one line: the four decisions + Brainstorm.
           <div className={styles.menuActions}>
             <button
               type="button"
-              className={recommended === "accept" ? styles.btnRecommended : styles.btnGhost}
+              className={buttonStateClass("accept", rec, chosen)}
               disabled={busyHere}
               onClick={() => decideFocused("accept")}
             >
@@ -1754,43 +2092,121 @@ export default function RevisionReview({
             </button>
             <button
               type="button"
-              className={recommended === "counter" ? styles.btnRecommended : styles.btnDonna}
+              className={buttonStateClass("useDonna", rec, chosen)}
               disabled={busyHere || !h.donna_counter_text}
               title={h.donna_counter_text ? undefined : "Donna hasn't staged counter-language here"}
               onClick={() => decideFocused("donna")}
             >
-              Use Donna&apos;s
+              Use Donna&apos;s{allTag}
             </button>
             <button
               type="button"
-              className={styles.btnGhost}
+              className={buttonStateClass("edit", rec, chosen)}
               disabled={busyHere}
               onClick={() => editFocused()}
             >
-              Edit
+              {isCluster ? "Edit all" : "Edit"}
             </button>
             <button
               type="button"
-              className={recommended === "keep" ? styles.btnRecommended : styles.btnGhost}
+              className={buttonStateClass("reject", rec, chosen)}
               disabled={busyHere}
               onClick={() => decideFocused("reject")}
             >
-              Reject
+              Reject{allTag}
+            </button>
+            <button type="button" className={styles.btnDonna} onClick={() => openBrainstorm(c)}>
+              Brainstorm with Donna ↗
             </button>
           </div>
         )}
-        <div className={styles.escalate}>
-          <button type="button" className={styles.btnDonna} onClick={() => openBrainstorm(c)}>
-            Brainstorm with Donna ↗
-          </button>
-        </div>
+        {isCluster && expanded && (
+          <ul className={styles.clusterMembers}>
+            {members.map(({ hunk: mh, change: mc }) => {
+              const mrec = recButton(mh.donna_verdict);
+              const mchosen = chosenButton(mh);
+              const mbusy = busy === mh.id || busy === mc.id;
+              return (
+                <li key={mh.id} className={styles.clusterMember}>
+                  <div className={styles.clusterMemberHead}>
+                    <button
+                      type="button"
+                      className={styles.clusterMemberLabel}
+                      onClick={() => scrollToChange(mc.id)}
+                      title="Scroll to this clause"
+                    >
+                      {clusterMemberLabel(mc)}
+                    </button>
+                    <span className={styles.clusterMemberState} data-verdict={mh.verdict}>
+                      {STORED_VERDICT_LABEL[mh.verdict]}
+                    </span>
+                  </div>
+                  {peelEditHunk === mh.id ? (
+                    <InlineEditor
+                      seed={mh.donna_counter_text ?? mh.proposed_text ?? mh.original_text ?? ""}
+                      busy={mbusy}
+                      onSave={(text) => {
+                        setPeelEditHunk(null);
+                        void runHunk(mh, "edit", text);
+                      }}
+                      onCancel={() => setPeelEditHunk(null)}
+                    />
+                  ) : (
+                    <div className={styles.menuActions}>
+                      <button
+                        type="button"
+                        className={buttonStateClass("accept", mrec, mchosen)}
+                        disabled={mbusy}
+                        onClick={() => void runHunk(mh, "accept")}
+                      >
+                        Accept theirs
+                      </button>
+                      <button
+                        type="button"
+                        className={buttonStateClass("useDonna", mrec, mchosen)}
+                        disabled={mbusy || !mh.donna_counter_text}
+                        title={mh.donna_counter_text ? undefined : "Donna hasn't staged counter-language here"}
+                        onClick={() => void runHunk(mh, "counter")}
+                      >
+                        Use Donna&apos;s
+                      </button>
+                      <button
+                        type="button"
+                        className={buttonStateClass("edit", mrec, mchosen)}
+                        disabled={mbusy}
+                        onClick={() => setPeelEditHunk(mh.id)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className={buttonStateClass("reject", mrec, mchosen)}
+                        disabled={mbusy}
+                        onClick={() => void runHunk(mh, "keep")}
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
         {actionError && (
           <p className={styles.streamError} role="alert">
             {actionError}
           </p>
         )}
-      </aside>
+      </div>
     );
+  }
+
+  // The short clause anchor for a cluster member row: its canonical (live, role-aware) number,
+  // else the full anchor label (heading / category) so a non-numbered clause is still named.
+  function clusterMemberLabel(change: ReviewChange): string {
+    const num = change.node_id ? (canonicalNumberByNodeId.get(change.node_id) ?? null) : null;
+    return num ?? anchorLabel(change);
   }
 }
 
@@ -1824,33 +2240,106 @@ const CompareRow = memo(function CompareRow({
   );
 });
 
-const VERDICT_LABEL: Record<ReviewHunk["verdict"], string> = {
-  pending: "Pending",
-  accepted: "Accepted theirs",
-  rejected: "Rejected",
-  modified: "Countered",
-};
+// ---- per-button decision-state encoding (DD-83 visual system) ----------------
+// Two signals on the SAME action row, legible at once: what Donna RECOMMENDS (rec) and what
+// the operator actually CHOSE (chosen). The faded-purple REC marker PERSISTS on Donna's
+// recommended button even after a DIFFERENT button is chosen — so "Donna said reject /
+// I chose accept" shows as faded-purple Reject + solid-green Accept simultaneously.
+type DecisionButton = "accept" | "useDonna" | "edit" | "reject";
 
-function verdictTone(v: ReviewHunk["verdict"]): string {
-  if (v === "accepted") return "accept";
-  if (v === "rejected") return "reject";
-  if (v === "modified") return "modify";
-  return "pending";
+// Whitespace-tolerant equality for the Donna-adopted basis (DD-82): a `modified` hunk whose
+// final_text equals donna_counter_text is an adoption ("Use Donna's"), else the operator's own counter.
+function sameLanguage(a: string | null, b: string | null): boolean {
+  if (a == null || b == null) return false;
+  return a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();
 }
 
+// donna_verdict -> recommended button (Edit is never the recommendation).
+function recButton(donnaVerdict: string | null): DecisionButton | null {
+  const dv = (donnaVerdict ?? "").trim().toLowerCase();
+  return dv === "accept" ? "accept" : dv === "keep" ? "reject" : dv === "counter" ? "useDonna" : null;
+}
+
+// Committed hunk verdict -> chosen button (pending => none chosen).
+function chosenButton(h: ReviewHunk): DecisionButton | null {
+  switch (h.verdict) {
+    case "accepted":
+      return "accept";
+    case "rejected":
+      return "reject";
+    case "modified":
+      return sameLanguage(h.final_text, h.donna_counter_text) ? "useDonna" : "edit";
+    default:
+      return null;
+  }
+}
+
+// State-class precedence (highest first): adopted/agreed (solid purple) > chosen override
+// (solid green/red/slate) > Donna's persisting recommendation (faded purple) > neutral.
+function buttonStateClass(
+  btn: DecisionButton,
+  rec: DecisionButton | null,
+  chosen: DecisionButton | null,
+): string {
+  const isRec = btn === rec;
+  const isChosen = btn === chosen;
+  if (isChosen && isRec) return styles.btnAdopted;
+  if (isChosen && btn === "useDonna") return styles.btnAdopted;
+  if (isChosen && btn === "accept") return styles.btnChosenAccept;
+  if (isChosen && btn === "reject") return styles.btnChosenReject;
+  if (isChosen && btn === "edit") return styles.btnChosenEdit;
+  if (isRec) return styles.btnRec;
+  return styles.btnGhost;
+}
+
+// ---- grouped-stop (cluster) summary helpers (DD-89) -------------------------
+type ClusterTally = { accepted: number; rejected: number; modified: number; pending: number };
+
+function clusterTally(members: { hunk: ReviewHunk }[]): ClusterTally {
+  const t: ClusterTally = { accepted: 0, rejected: 0, modified: 0, pending: 0 };
+  for (const { hunk } of members) t[hunk.verdict] += 1;
+  return t;
+}
+
+// The members disagree once they hold more than one distinct verdict state (a peel-off
+// override, or a partial decision) — the trigger for the mixed summary.
+function clusterDivergent(members: { hunk: ReviewHunk }[]): boolean {
+  return new Set(members.map((m) => m.hunk.verdict)).size > 1;
+}
+
+// The dominant DECIDED verdict, or null on a tie / nothing decided — used to single out the
+// minority (overridden) members by name in the mixed summary.
+function clusterMajority(t: ClusterTally): ReviewHunk["verdict"] | null {
+  const ranked: [ReviewHunk["verdict"], number][] = [
+    ["accepted", t.accepted],
+    ["rejected", t.rejected],
+    ["modified", t.modified],
+  ];
+  ranked.sort((a, b) => b[1] - a[1]);
+  if (ranked[0][1] === 0 || ranked[0][1] === ranked[1][1]) return null;
+  return ranked[0][0];
+}
+
+const STORED_VERDICT_LABEL: Record<ReviewHunk["verdict"], string> = {
+  accepted: "accepted",
+  rejected: "rejected",
+  modified: "edited",
+  pending: "undecided",
+};
 
 // Compose the encoding classes for one segment. Colour comes from the type
 // (ins=green / del=red / donna=purple / same=normal); the decision-state axis adds
-// .tcDotted when the change is still pending (solid otherwise); a rejected counterparty
-// addition keeps its green colour but draws a solid strikethrough via .diffStruck.
+// .tcPending (a tinted background pill) when the change is still pending. Decided segments
+// drop the pill — colour + solid line only.
 function segClasses(seg: DiffSeg): string {
   const cls: string[] = [];
   if (seg.type === "ins") cls.push(styles.diffIns);
   else if (seg.type === "del") cls.push(styles.diffDel);
   else if (seg.type === "donna") cls.push(styles.diffDonna);
+  else if (seg.type === "kept") cls.push(styles.keptOriginal);
+  else if (seg.type === "declined") cls.push(styles.declinedText);
   else cls.push(styles.diffSame);
-  if (seg.pending) cls.push(styles.tcDotted);
-  if (seg.struck) cls.push(styles.diffStruck);
+  if (seg.pending) cls.push(styles.tcPending);
   return cls.join(" ");
 }
 
@@ -1860,18 +2349,24 @@ function segClasses(seg: DiffSeg): string {
 // colour/line-style are decided here, from the persisted verdict + final_text.
 //   pending  -> their del (red) + their ins (green), both DOTTED.
 //   accepted -> same, SOLID.
-//   rejected -> their deletion restored to normal; their insertion kept as a green SOLID
-//               strikethrough trace.
-//   modified -> what was swapped out (baseline, or their addition when there is no
-//               baseline) red SOLID strikethrough + the operator's final language purple
-//               SOLID underline (Use Donna's / Edit).
+//   rejected -> DD-91 reject trace (both SOLID, scales from a fragment to a whole clause):
+//               the declined counterparty NEW text (their addition / the new side of a
+//               modification) renders GREY strikethrough (`declined`); the retained ORIGINAL
+//               (a kept deletion / the original side of a modification) renders SOLID BLACK
+//               underline (`kept`). A modification emits BOTH; an addition only `declined`; a
+//               deletion only `kept`. Never silently plain — every reject leaves a trace.
+//   modified -> their PROPOSED text red SOLID strikethrough (their ask) + the operator's
+//               final language purple SOLID underline (our counter) — "their ask -> our
+//               counter" (Use Donna's / Edit). The baseline is NOT shown: the swap reads as
+//               striking THEIR proposal, not the original. Falls back to the baseline only
+//               when there is no proposed text (a whole-node change with no counterparty ask).
 function hunkChangeSegs(h: ReviewHunk, forcePending = false): DiffSeg[] {
   const orig = h.original_text ?? "";
   const proposed = h.proposed_text ?? "";
   const final = h.final_text ?? "";
   const segs: DiffSeg[] = [];
-  // A re-opened decision (DD-83) renders as pending/dotted again until re-decided, even
-  // though the persisted verdict is still settled.
+  // A re-opened decision (DD-83) renders as pending again until re-decided (a tinted pill),
+  // even though the persisted verdict is still settled.
   const verdict = forcePending ? "pending" : h.verdict;
   switch (verdict) {
     case "pending":
@@ -1883,11 +2378,16 @@ function hunkChangeSegs(h: ReviewHunk, forcePending = false): DiffSeg[] {
       if (proposed) segs.push({ type: "ins", text: proposed, hunkId: h.id });
       break;
     case "rejected":
-      if (orig) segs.push({ type: "same", text: orig });
-      if (proposed) segs.push({ type: "ins", text: proposed, hunkId: h.id, struck: true });
+      // DD-91 reject trace. The declined counterparty NEW text (an addition, or the new side
+      // of a modification) renders GREY strikethrough (`declined`); the retained ORIGINAL (a
+      // kept deletion, or the original side of a modification) renders SOLID BLACK underline
+      // (`kept`). A modification emits BOTH. Both carry the hunkId so the span is a click
+      // target. Never silently plain — a decided reject is always marked.
+      if (proposed) segs.push({ type: "declined", text: proposed, hunkId: h.id });
+      if (orig) segs.push({ type: "kept", text: orig, hunkId: h.id });
       break;
     case "modified": {
-      const swappedOut = orig || proposed;
+      const swappedOut = proposed || orig;
       if (swappedOut) segs.push({ type: "del", text: swappedOut, hunkId: h.id });
       if (final) segs.push({ type: "donna", text: final, hunkId: h.id });
       break;
@@ -1913,8 +2413,7 @@ function inContextSegs(body: string, hunks: ReviewHunk[], reopened?: Set<string>
       last &&
       last.type === seg.type &&
       last.hunkId === seg.hunkId &&
-      last.pending === seg.pending &&
-      last.struck === seg.struck
+      last.pending === seg.pending
     ) {
       last.text += seg.text;
     } else {
@@ -1937,8 +2436,10 @@ function inContextSegs(body: string, hunks: ReviewHunk[], reopened?: Set<string>
 
 // Inline segments for ANY change kind, rendered ONCE in the clause body (DD-83):
 //   - edited:  the hunks spliced into the full baseline body (redline in place).
-//   - new:     the whole added clause as one green insertion (dotted->solid->struck).
-//   - deleted: the whole removed clause as one red deletion (dotted->solid->restored).
+//   - new:     the whole added clause as one green insertion (pending) -> grey strikethrough
+//              on reject (declined) -> green solid on accept.
+//   - deleted: the whole removed clause as one red deletion (pending) -> black underline on
+//              reject (kept original).
 function changeInlineSegs(c: ReviewChange, reopened?: Set<string>): DiffSeg[] {
   if (c.change_kind === "edited") {
     const body = c.context?.baseline?.body;
@@ -1956,17 +2457,23 @@ function changeInlineSegs(c: ReviewChange, reopened?: Set<string>): DiffSeg[] {
 function renderInlineTrackedClause(
   c: ReviewChange,
   selectedHunkId: string | null,
-  onSelectHunk: (hunkId: string | null) => void,
+  onSelectHunk: (hunkId: string | null, rejectTrace?: boolean) => void,
   reopened?: Set<string>,
+  clauseRole: Role = "clause",
 ) {
   const segs = changeInlineSegs(c, reopened);
   if (segs.length === 0) return null;
+  const capsBold = capsBoldForRole(clauseRole);
   return (
     <div className={styles.inlineClause}>
       <p className={styles.inlineClauseBody}>
         {segs.map((seg, i) => {
           if (seg.hunkId) {
             const isSelected = selectedHunkId === seg.hunkId;
+            // A reject-trace span (kept original / declined new text) FOCUSES on click but
+            // must NOT re-open the change (DD-91): the dock shows its current verdict + the
+            // re-decide buttons while the trace stays put. Pending/countered spans re-open.
+            const rejectTrace = seg.type === "kept" || seg.type === "declined";
             return (
               <span
                 key={i}
@@ -1979,23 +2486,25 @@ function renderInlineTrackedClause(
                 aria-pressed={isSelected}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onSelectHunk(isSelected ? null : seg.hunkId!);
+                  onSelectHunk(isSelected ? null : seg.hunkId!, rejectTrace);
                 }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
                     e.stopPropagation();
-                    onSelectHunk(isSelected ? null : seg.hunkId!);
+                    onSelectHunk(isSelected ? null : seg.hunkId!, rejectTrace);
                   }
                 }}
               >
-                {seg.text}
+                {seg.type === "same" || seg.type === "kept"
+                  ? renderRich(seg.text, capsBold, styles.sBold)
+                  : seg.text}
               </span>
             );
           }
           return (
             <span key={i} className={segClasses(seg)}>
-              {seg.text}
+              {renderRich(seg.text, capsBold, styles.sBold)}
             </span>
           );
         })}

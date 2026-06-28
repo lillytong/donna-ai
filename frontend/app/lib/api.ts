@@ -231,7 +231,11 @@ async function getJson<T>(path: string): Promise<T> {
   return res.json();
 }
 
-async function sendJson<T>(method: "POST" | "PATCH", path: string, payload: unknown): Promise<T> {
+async function sendJson<T>(
+  method: "POST" | "PATCH" | "PUT",
+  path: string,
+  payload: unknown,
+): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers: { "Content-Type": "application/json" },
@@ -244,6 +248,7 @@ async function sendJson<T>(method: "POST" | "PATCH", path: string, payload: unkn
 const postJson = <T>(path: string, payload: unknown): Promise<T> => sendJson("POST", path, payload);
 const patchJson = <T>(path: string, payload: unknown): Promise<T> =>
   sendJson("PATCH", path, payload);
+const putJson = <T>(path: string, payload: unknown): Promise<T> => sendJson("PUT", path, payload);
 
 async function deleteReq(path: string): Promise<void> {
   const res = await fetch(`${API_BASE}${path}`, { method: "DELETE" });
@@ -273,9 +278,10 @@ export const updateDeal = (id: string, payload: DealUpdate): Promise<StoredDeal>
 export const deleteDeal = (id: string): Promise<void> => deleteReq(`/deals/${id}`);
 
 // --- Operator organization (F25, DD-44) ------------------------------------
-// The operator's org identity. A config value (config/.env), not a DB entity, so
-// it is read-only here: `editable` is false and there is no write path.
-// `export_author` is the name authored on every redline / export — never "Donna".
+// The operator's org identity. `organization_name` is a DB-backed override over the
+// DONNA_OPERATOR_ORG_NAME config value, editable here via PUT (`editable` is true).
+// `export_author` is the resolved name authored on every redline / export — explicit
+// DONNA_REDLINE_AUTHOR if set, else the org name, else a default; never "Donna".
 export interface OperatorOrganization {
   organization_name: string;
   export_author: string;
@@ -283,6 +289,21 @@ export interface OperatorOrganization {
 }
 
 export const getOrganization = (): Promise<OperatorOrganization> => getJson("/organization");
+export const setOrganization = (organization_name: string): Promise<OperatorOrganization> =>
+  putJson("/organization", { organization_name });
+
+// --- Firm profile (F32 v1, DD-90) ------------------------------------------
+// A single global, operator-authored free-text mandate (who the firm is, its
+// commercial interests, its standing positions / red-lines). Donna injects it as
+// grounding before recommending on a counterparty change. `content` is the whole
+// document; PUT is a singleton upsert that echoes back the stored content.
+export interface FirmProfile {
+  content: string;
+}
+
+export const getFirmProfile = (): Promise<FirmProfile> => getJson("/firm-profile");
+export const setFirmProfile = (content: string): Promise<FirmProfile> =>
+  putJson("/firm-profile", { content });
 
 export const listContractTypes = (): Promise<StoredContractType[]> => getJson("/contract-types");
 export const createContractType = (payload: ContractTypeCreate): Promise<StoredContractType> =>
@@ -446,8 +467,9 @@ export const getSnapshotTree = (
 // DD-85/DD-87 version delete. Two-call (mirrors Mark-as-sent): preview first (no
 // mutation, surfaces warnings), then execute. `sent_record` is set when the target
 // carries a `shared` pointer. `will_rollback`/`rollback_to_version` describe the
-// latest-delete working-copy rollback. 404 if not the contract's snapshot; 409 if
-// it's a revision baseline (show the error message).
+// latest-delete working-copy rollback. `review_discard` is set when the target anchors
+// an OPEN revision review the delete will discard (DD-94, non-blocking warning). 404 if
+// not the contract's snapshot.
 export interface SnapshotDeleteResponse {
   deleted: boolean;
   snapshot_id: string;
@@ -456,9 +478,10 @@ export interface SnapshotDeleteResponse {
   will_rollback: boolean;
   rollback_to_version: number | null;
   sent_record: { party: string; date: string } | null;
+  review_discard: { changes_count: number; reviewed: number } | null;
   warnings: string[];
   rolled_back: boolean;
-  pointers_rolled_back: string[];
+  pointers_removed: string[];
 }
 
 // confirm omitted → PREVIEW (no mutation).
@@ -1014,6 +1037,12 @@ export interface ReviewHunk {
   donna_rationale: string | null;
   verdict: StoredHunkVerdict;
   final_text: string | null;
+  // Cross-document consistency (DD-89 / F34). When the SAME counterparty edit recurs in >1
+  // clause, every member hunk carries the same synthetic `cluster_id` and the member count
+  // `cluster_size` (>1) — derived at read time. Lets the review collapse the members into ONE
+  // grouped stop. `cluster_id` is null / `cluster_size` 1 for a unique (unclustered) edit.
+  cluster_id: string | null;
+  cluster_size: number;
 }
 
 // Structural context for one side (baseline/incoming) of a review change (F03c UX).
@@ -1088,6 +1117,11 @@ export interface NodeDecideRequest {
   verdict: NodeDecisionAction;
   final_text?: string | null;
 }
+// DD-89 grouped-stop decision: one verdict fanned to every member of a cluster.
+export interface ClusterDecideRequest {
+  verdict: HunkDecisionAction;
+  final_text?: string | null;
+}
 
 // Receipt for apply: what landed where (F08 paths) + which rejections seeded issues.
 export interface ApplyResult {
@@ -1145,6 +1179,7 @@ export interface DocumentNode {
   role: Role;
   depth: number;
   text: string | null;
+  is_heading: boolean;
 }
 
 export interface DocumentChange {
@@ -1164,11 +1199,33 @@ export interface AbstainMatch {
   confidence: number | null;
 }
 
+// One node in the PROJECTED reading order — the linear sequence the document pane
+// renders directly (no client-side grafting). `clause_number` is the role-aware number
+// of the projected tree (recomputed server-side from current verdicts, so it shifts as
+// decisions land); `numbered=false` + `clause_number=null` marks an accepted/pending
+// deletion shown in place (struck). `change_id`/`change_kind` link a node to its change
+// (null = unchanged baseline clause).
+export interface ProjectedNode {
+  node_id: string;
+  clause_number: string | null;
+  role: Role;
+  depth: number;
+  text: string | null;
+  change_id: string | null;
+  change_kind: "added" | "deleted" | "modified" | "shifted" | null;
+  numbered: boolean;
+  // A heading-only node (matches import's content_type==="Heading"): rendered bold-whole
+  // via .sHeadingText, mirroring the import Source panel. undefined until the backend ships
+  // the field (falsy → no bold) — see the doc-pane render note.
+  is_heading: boolean;
+}
+
 export interface RevisionDocumentView {
   baseline: DocumentNode[];
   revised: DocumentNode[];
   changes: DocumentChange[];
   abstain_matches: AbstainMatch[];
+  projected: ProjectedNode[];
 }
 
 export const getRevisionDocument = (
@@ -1194,6 +1251,30 @@ export const decideHunk = (hunkId: string, body: HunkDecideRequest): Promise<Rev
 export const decideNode = (changeId: string, body: NodeDecideRequest): Promise<ReviewChange> =>
   postJson(`/revisions/changes/${changeId}/decide-node`, body);
 
+// DD-89 grouped-stop decision: apply ONE verdict to every member hunk of a cluster (decide-once
+// → fans to all). `counter` uses each member's own staged counter-text; `edit` requires
+// `finalText`. Members span multiple change rows, so the server returns the refreshed full
+// review payload (same shape as getRevisionReview) rather than a single change.
+export const decideCluster = (
+  sessionId: string,
+  clusterId: string,
+  verdict: HunkDecisionAction,
+  finalText?: string,
+): Promise<ReviewPayload> =>
+  postJson(`/revisions/sessions/${sessionId}/clusters/${clusterId}/decide`, {
+    verdict,
+    final_text: finalText ?? null,
+  });
+
 // Apply every decision to the working copy (409 if any change is still undecided).
 export const applyRevisionSession = (sessionId: string): Promise<ApplyResult> =>
   postJson(`/revisions/sessions/${sessionId}/apply`, {});
+
+// DD-86 reset: discard every decision and return the fresh all-pending ReviewPayload
+// (same shape as getRevisionReview). 409 if the session was already applied; 404 if
+// the session is stale/gone. No body.
+export const resetRevisionSession = (
+  contractId: string,
+  sessionId: string,
+): Promise<ReviewPayload> =>
+  postJson(`/contracts/${contractId}/revisions/sessions/${sessionId}/reset`, {});

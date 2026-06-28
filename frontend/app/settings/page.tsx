@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import styles from "./settings.module.css";
 import {
   createClient,
@@ -9,24 +9,26 @@ import {
   deleteClient,
   deleteContractType,
   deleteDeal,
+  getFirmProfile,
   getOrganization,
   listClients,
   listContractTypes,
   listDeals,
+  setFirmProfile,
+  setOrganization,
   updateClient,
   updateContractType,
   updateDeal,
   type ClientStatus,
   type DealPosition,
   type DealStatus,
-  type OperatorOrganization,
   type RelationshipType,
   type StoredClient,
   type StoredContractType,
   type StoredDeal,
 } from "../lib/api";
 
-type Tab = "clients" | "deals" | "types" | "organization";
+type Tab = "clients" | "deals" | "types" | "firm" | "organization";
 
 // Enum values mirror backend/models/settings.py exactly — never invented here.
 const RELATIONSHIP_OPTIONS: { value: RelationshipType; label: string }[] = [
@@ -116,18 +118,16 @@ export default function SettingsPage() {
   const [clients, setClients] = useState<StoredClient[]>([]);
   const [deals, setDeals] = useState<StoredDeal[]>([]);
   const [types, setTypes] = useState<StoredContractType[]>([]);
-  const [org, setOrg] = useState<OperatorOrganization | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([listClients(), listDeals(), listContractTypes(), getOrganization()])
-      .then(([c, d, t, o]) => {
+    Promise.all([listClients(), listDeals(), listContractTypes()])
+      .then(([c, d, t]) => {
         setClients(c);
         setDeals(d);
         setTypes(t);
-        setOrg(o);
       })
       .catch((e) => setLoadError(e instanceof Error ? e.message : "Could not load settings"))
       .finally(() => setLoading(false));
@@ -141,6 +141,7 @@ export default function SettingsPage() {
     { id: "clients", label: "Clients", count: clients.length },
     { id: "deals", label: "Deals", count: deals.length },
     { id: "types", label: "Contract types", count: types.length },
+    { id: "firm", label: "Firm profile" },
     { id: "organization", label: "Your Organization" },
   ];
 
@@ -188,7 +189,8 @@ export default function SettingsPage() {
               <DealsSection clients={clients} deals={deals} onCreated={reloadDeals} />
             )}
             {tab === "types" && <ContractTypesSection types={types} onCreated={reloadTypes} />}
-            {tab === "organization" && <OrganizationSection org={org} />}
+            {tab === "firm" && <FirmProfileSection />}
+            {tab === "organization" && <OrganizationSection />}
           </>
         )}
       </main>
@@ -196,12 +198,286 @@ export default function SettingsPage() {
   );
 }
 
-/* ---- Your Organization (F25, DD-44) ----
-   Read-only: the org identity is a config value (config/.env), not a DB entity, so
-   there is no save path here. It authors every redline / export — never "Donna". */
+/* ---- Firm profile (F32 v1, DD-90) ----
+   A single global, operator-authored free-text mandate. Loads its own value on
+   mount (own loading state, separate from the page's clients/deals/types bundle),
+   saves via PUT. Donna injects it as grounding before recommending on a
+   counterparty change. */
 
-function OrganizationSection({ org }: { org: OperatorOrganization | null }) {
-  const hasName = !!org && org.organization_name.trim() !== "";
+function CheckIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+function FirmProfileSection() {
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saved, setSaved] = useState("");
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    getFirmProfile()
+      .then((p) => {
+        if (!active) return;
+        setSaved(p.content);
+        setDraft(p.content);
+        setStatus("ready");
+      })
+      .catch((e) => {
+        if (!active) return;
+        setLoadError(e instanceof Error ? e.message : "Could not load the firm profile");
+        setStatus("error");
+      });
+    return () => {
+      active = false;
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+    };
+  }, []);
+
+  const dirty = draft !== saved;
+  const isEmpty = saved.trim() === "";
+
+  async function save() {
+    if (!dirty || saving) return;
+    setSaving(true);
+    setSaveError(null);
+    setJustSaved(false);
+    if (savedTimer.current) clearTimeout(savedTimer.current);
+    try {
+      const updated = await setFirmProfile(draft);
+      setSaved(updated.content);
+      setDraft(updated.content);
+      setJustSaved(true);
+      savedTimer.current = setTimeout(() => setJustSaved(false), 4000);
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Could not save the firm profile");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (status === "loading") {
+    return (
+      <div
+        className={styles.firmPanel}
+        role="tabpanel"
+        id="panel-firm"
+        aria-labelledby="tab-firm"
+      >
+        <div className={styles.loading} aria-live="polite">
+          <div className={styles.progressTrack}>
+            <div className={styles.progressBar} />
+          </div>
+          <span className={styles.loadingLabel}>Loading your firm profile…</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (status === "error") {
+    return (
+      <div
+        className={styles.firmPanel}
+        role="tabpanel"
+        id="panel-firm"
+        aria-labelledby="tab-firm"
+      >
+        <p className={styles.loadError} role="alert">
+          {loadError}. Check that the API is running, then reload.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className={styles.firmPanel} role="tabpanel" id="panel-firm" aria-labelledby="tab-firm">
+      <div className={styles.firmCard}>
+        <h2 className={styles.formTitle}>Firm profile</h2>
+        <p className={styles.formLead}>
+          Donna reads this before she recommends any change to a contract — whether
+          that&apos;s a revision from a counterparty or a copy back from your own legal team —
+          and before she answers anything in chat or brainstorm. It keeps all her advice
+          anchored to your firm&apos;s positions. Describe who your firm is, what it cares
+          about commercially, and the standing positions and red-lines you hold across
+          deals. You write it; Donna won&apos;t change it.
+        </p>
+
+        {isEmpty && !dirty && (
+          <p className={styles.firmEmpty}>
+            No firm profile yet. Write your firm&apos;s mandate below so Donna can ground her
+            recommendations in it — until then, her advice has no standing context to lean on.
+          </p>
+        )}
+
+        <div className={styles.field}>
+          <label className={styles.label} htmlFor="firm-mandate">
+            Firm mandate
+          </label>
+          <textarea
+            id="firm-mandate"
+            className={[styles.control, styles.firmTextarea].join(" ")}
+            placeholder={
+              "e.g. We are the licensor in technology-licensing deals. We protect our IP and " +
+              "background rights, never grant exclusivity beyond the named field, and require " +
+              "royalties to survive termination. We push back on uncapped indemnities and on any " +
+              "assignment without our consent."
+            }
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            spellCheck
+          />
+        </div>
+
+        {saveError && (
+          <p className={styles.error} role="alert">
+            {saveError}
+          </p>
+        )}
+
+        <div className={styles.firmActions}>
+          <div className={styles.firmStatus} aria-live="polite">
+            {saving ? (
+              <span className={styles.firmSaving}>
+                <span className={styles.firmSpinner} aria-hidden="true" />
+                Saving…
+              </span>
+            ) : justSaved ? (
+              <span className={styles.firmSaved}>
+                <CheckIcon />
+                Saved
+              </span>
+            ) : dirty ? (
+              <span className={styles.firmDirty}>Unsaved changes</span>
+            ) : null}
+          </div>
+          <button
+            className={styles.submit}
+            type="button"
+            onClick={save}
+            disabled={!dirty || saving}
+          >
+            {saving ? "Saving…" : "Save profile"}
+          </button>
+        </div>
+        {saving && <div className={styles.submitBar} />}
+      </div>
+    </div>
+  );
+}
+
+/* ---- Your Organization (F25, DD-44) ----
+   Editable: `organization_name` is a DB-backed override over the DONNA_OPERATOR_ORG_NAME
+   config value. Loads its own value on mount (own loading state), saves via PUT — same
+   load / saving / saved pattern as the firm-profile editor. The name authors every
+   redline / export (never "Donna"); `export_author` is the resolved author it produces. */
+
+function OrganizationSection() {
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saved, setSaved] = useState("");
+  const [draft, setDraft] = useState("");
+  const [exportAuthor, setExportAuthor] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    getOrganization()
+      .then((o) => {
+        if (!active) return;
+        setSaved(o.organization_name);
+        setDraft(o.organization_name);
+        setExportAuthor(o.export_author);
+        setStatus("ready");
+      })
+      .catch((e) => {
+        if (!active) return;
+        setLoadError(e instanceof Error ? e.message : "Could not load your organization");
+        setStatus("error");
+      });
+    return () => {
+      active = false;
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+    };
+  }, []);
+
+  const dirty = draft.trim() !== saved.trim();
+
+  async function save() {
+    if (!dirty || saving) return;
+    setSaving(true);
+    setSaveError(null);
+    setJustSaved(false);
+    if (savedTimer.current) clearTimeout(savedTimer.current);
+    try {
+      const updated = await setOrganization(draft.trim());
+      setSaved(updated.organization_name);
+      setDraft(updated.organization_name);
+      setExportAuthor(updated.export_author);
+      setJustSaved(true);
+      savedTimer.current = setTimeout(() => setJustSaved(false), 4000);
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Could not save your organization");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (status === "loading") {
+    return (
+      <div
+        className={styles.orgPanel}
+        role="tabpanel"
+        id="panel-organization"
+        aria-labelledby="tab-organization"
+      >
+        <div className={styles.loading} aria-live="polite">
+          <div className={styles.progressTrack}>
+            <div className={styles.progressBar} />
+          </div>
+          <span className={styles.loadingLabel}>Loading your organization…</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (status === "error") {
+    return (
+      <div
+        className={styles.orgPanel}
+        role="tabpanel"
+        id="panel-organization"
+        aria-labelledby="tab-organization"
+      >
+        <p className={styles.loadError} role="alert">
+          {loadError}. Check that the API is running, then reload.
+        </p>
+      </div>
+    );
+  }
+
+  const usingFallback = saved.trim() === "";
+
   return (
     <div
       className={styles.orgPanel}
@@ -217,26 +493,60 @@ function OrganizationSection({ org }: { org: OperatorOrganization | null }) {
         </p>
 
         <div className={styles.field}>
-          <label className={styles.label}>Organization name</label>
-          <div
-            className={[styles.orgValue, hasName ? "" : styles.orgValueMuted].join(" ")}
-          >
-            {hasName ? org!.organization_name : org ? `Not set — exports use “${org.export_author}”` : "—"}
-          </div>
+          <label className={styles.label} htmlFor="org-name">
+            Organization name
+          </label>
+          <input
+            id="org-name"
+            className={styles.control}
+            placeholder="e.g. Northwind Trading Ltd"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+          />
         </div>
 
         <div className={styles.field}>
           <label className={styles.label}>Document author</label>
-          <div className={styles.orgValue}>{org ? org.export_author : "—"}</div>
-        </div>
-
-        <div className={styles.orgNote}>
-          <span>
-            This is a configuration value, not an editable record. Set it per deployment
-            via <code>DONNA_OPERATOR_ORG_NAME</code> in your environment, then restart the
-            app. If unset, exports are authored as “{org ? org.export_author : "Operator Organization"}”.
+          <div className={styles.orgValue}>{exportAuthor}</div>
+          <span className={styles.orgHint}>
+            {usingFallback
+              ? "No organization name set — exports are authored with this default until you save one."
+              : "The author stamped on every tracked change and exported document."}
           </span>
         </div>
+
+        {saveError && (
+          <p className={styles.error} role="alert">
+            {saveError}
+          </p>
+        )}
+
+        <div className={styles.firmActions}>
+          <div className={styles.firmStatus} aria-live="polite">
+            {saving ? (
+              <span className={styles.firmSaving}>
+                <span className={styles.firmSpinner} aria-hidden="true" />
+                Saving…
+              </span>
+            ) : justSaved ? (
+              <span className={styles.firmSaved}>
+                <CheckIcon />
+                Saved
+              </span>
+            ) : dirty ? (
+              <span className={styles.firmDirty}>Unsaved changes</span>
+            ) : null}
+          </div>
+          <button
+            className={styles.submit}
+            type="button"
+            onClick={save}
+            disabled={!dirty || saving}
+          >
+            {saving ? "Saving…" : "Save organization"}
+          </button>
+        </div>
+        {saving && <div className={styles.submitBar} />}
       </div>
     </div>
   );

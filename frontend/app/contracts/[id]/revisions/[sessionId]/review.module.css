@@ -115,6 +115,45 @@
   box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
 }
 
+/* DD-86 "Start over" inline confirm — the two-stage destructive pattern from the
+   home card delete, sized for the topbar. */
+.startOverConfirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.startOverText {
+  font-size: 12.5px;
+  line-height: 1.3;
+  color: #b4232f;
+  white-space: nowrap;
+}
+.startOverDanger {
+  flex-shrink: 0;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #fff;
+  background: #c8102e;
+  border: 1px solid #c8102e;
+  border-radius: 7px;
+  padding: 7px 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s ease;
+}
+.startOverDanger:hover:not(:disabled) {
+  background: #a60d26;
+}
+.startOverDanger:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.startOverDanger:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(200, 16, 46, 0.4);
+}
+
 /* ---- body: two panes ---- */
 .body {
   flex: 1;
@@ -124,7 +163,7 @@
 
 /* ---- left rail ---- */
 .rail {
-  width: 304px;
+  width: 256px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -521,6 +560,19 @@
   white-space: pre-wrap;
 }
 
+/* content-type typography — mirrors the import parse-review Source panel (.sBold /
+   .sHeadingText). Bold quoted defined terms + ALL-CAPS connectives/party names; heading
+   roles (title / appendix title) bold whole. Applied to plain clause bodies in DocRow
+   and to "same" runs in the inline redline so the document reads with import's hierarchy. */
+.sBold {
+  font-weight: 700;
+  color: #1f2328;
+}
+.sHeadingText {
+  font-weight: 700;
+  color: #1f2328;
+}
+
 /* ---- per-hunk control rows (no duplicate diff — diff is above in inlineClause) ---- */
 .hunkList {
   /* wrapper so :first-child selects correctly regardless of surrounding siblings */
@@ -656,26 +708,38 @@
 .diffSame {
   color: #2b3038;
 }
+/* DECIDED state (the base): coloured text + a SOLID underline/strike, NO background fill.
+   The provenance channel is colour + line shape; pending vs decided is the background
+   channel (the pill below), so lines are solid everywhere — no dotted. */
 .diffIns {
   color: #0a6b5d;
-  background: #e7f4f1;
   text-decoration: underline;
   text-decoration-color: #5bb3a6;
-  border-radius: 2px;
+  text-decoration-style: solid;
+  border-radius: 3px;
 }
 .diffDel {
   color: #b42318;
-  background: #fdecea;
   text-decoration: line-through;
   text-decoration-color: #e0897f;
-  border-radius: 2px;
+  text-decoration-style: solid;
+  border-radius: 3px;
 }
-/* Decision-state axis: a counterparty change that is still PENDING (operator has not
-   decided) draws a DOTTED line; once DECIDED (accept theirs / edit / reject) it goes
-   SOLID — the default for .diffIns/.diffDel. Declared after them so this longhand wins
-   on equal specificity. Applied as a modifier alongside .diffIns / .diffDel. */
-.tcDotted {
-  text-decoration-style: dotted;
+/* Decision-state axis = BACKGROUND FILL, not line style. A PENDING change segment gets a
+   soft tinted "pill" — a light wash of its own hue (green behind a pending addition, pink
+   behind a pending deletion) reading "needs your decision". A DECIDED change drops the pill
+   (the no-fill base above). The pill is slightly stronger than the existing #e7f4f1/#fdecea
+   tints so the pending/decided difference is obvious. Declared after .diffIns/.diffDel so it
+   wins on equal specificity; applied as .tcPending alongside .diffIns / .diffDel. Coexists
+   with the focus ring (.fragSelected): fill is the background channel, the ring the border
+   channel — both render without muddiness on a focused pending segment. */
+.diffIns.tcPending {
+  background: #d3ede6;
+  border-radius: 3px;
+}
+.diffDel.tcPending {
+  background: #fbdcd6;
+  border-radius: 3px;
 }
 /* Donna-adopted language: when the operator takes Donna's counter ("Use Donna's"), the
    resulting language renders PURPLE with a SOLID underline (the Donna purple #6d5bd0). */
@@ -687,15 +751,30 @@
   text-decoration-style: solid;
   border-radius: 2px;
 }
-/* Rejected counterparty ADDITION: keep the green addition colour (.diffIns) but draw a
-   SOLID strikethrough instead of the underline — the proposed insertion stays visible as
-   a struck trace of what was thrown out (DD-83). Declared after .diffIns / .tcDotted so
-   these longhands win on equal specificity. Applied as a modifier alongside .diffIns. */
-.diffStruck {
-  text-decoration-line: line-through;
+/* DD-91 kept original: a REJECTED counterparty change restores the original text. It renders
+   in normal body colour with a SOLID BLACK underline — colour is the differentiator from the
+   green "added" underline (.diffIns), reading as decided/kept rather than added. Carries its
+   hunkId, so the span is clickable to re-open the change (the counterparty proposal returns). */
+.keptOriginal {
+  color: #2b3038;
+  text-decoration: underline;
+  text-decoration-color: #1a1d22;
   text-decoration-style: solid;
+  text-underline-offset: 2px;
+  border-radius: 3px;
 }
-
+/* DD-91 declined text: a REJECTED counterparty ADDITION (or the new-text side of a rejected
+   MODIFICATION) renders a SOLID GREY strikethrough — a muted neutral grey (#8a929c text /
+   #9aa1ab line), deliberately distinct from the RED `.diffDel` strike (#b42318 / #e0897f),
+   which means an active/accepted deletion. Carries its hunkId so the span re-focuses the
+   change (focus-only, no re-open). */
+.declinedText {
+  color: #8a929c;
+  text-decoration: line-through;
+  text-decoration-color: #9aa1ab;
+  text-decoration-style: solid;
+  border-radius: 3px;
+}
 /* ---- Donna's read ---- */
 .donna {
   display: flex;
@@ -737,6 +816,43 @@
   font-size: 13.5px;
   line-height: 1.55;
   color: #2b3038;
+}
+
+/* Compact Donna recommendation — surfaced read-only under EVERY non-focused change that
+   has a rec (DD-91: persists through all decision states). Deliberately lighter than the
+   focused panel's filled .donna box so a long stack stays scannable: a hairline purple
+   rule + small Donna mark + prominent verdict + one muted rationale line, counter on its
+   own line. No filled box, no controls. The focused change shows its rec in the panel. */
+.donnaRec {
+  margin: 4px 0 10px;
+  padding: 2px 0 2px 11px;
+  border-left: 2px solid #ddd5f5;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #6c6685;
+}
+.donnaRecMark {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: #8a7ad6;
+  margin-right: 8px;
+}
+.donnaRecVerdict {
+  color: #4a3fa6;
+  font-weight: 700;
+  margin-right: 6px;
+}
+.donnaRecRationale {
+  color: #6c6685;
+}
+.donnaRecCounter {
+  display: block;
+  margin-top: 3px;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #4a4658;
 }
 
 /* ---- decided state ---- */
@@ -785,7 +901,12 @@
 }
 .btnPrimary,
 .btnGhost,
-.btnDonna {
+.btnDonna,
+.btnRec,
+.btnAdopted,
+.btnChosenAccept,
+.btnChosenReject,
+.btnChosenEdit {
   font: inherit;
   font-size: 12.5px;
   font-weight: 600;
@@ -834,7 +955,12 @@
 }
 .btnPrimary:disabled,
 .btnGhost:disabled,
-.btnDonna:disabled {
+.btnDonna:disabled,
+.btnRec:disabled,
+.btnAdopted:disabled,
+.btnChosenAccept:disabled,
+.btnChosenReject:disabled,
+.btnChosenEdit:disabled {
   opacity: 0.5;
   cursor: default;
 }
@@ -1168,6 +1294,37 @@
   outline: none;
   box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
 }
+/* Prev/Next clause nav — steps the cursor between clauses that still have an open change */
+.docNav {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.docNavBtn {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: #6b7280;
+  background: none;
+  border: 1px solid #d4d9e0;
+  border-radius: 6px;
+  padding: 5px 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.12s ease, color 0.12s ease;
+}
+.docNavBtn:hover:not(:disabled) {
+  border-color: #2563eb;
+  color: #2563eb;
+}
+.docNavBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.docNavBtn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
+}
 /* per-node chevron: fixed-width slot before the clause number/cat so text never shifts */
 .docChevron {
   flex-shrink: 0;
@@ -1446,9 +1603,14 @@
   outline: none;
   box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.55);
 }
+/* Focus = the current OPEN change: a thin, calm indigo outline ring around the focused
+   FRAGMENT (border channel) — coexists with the pending pill (background channel) so a
+   focused pending addition shows BOTH the green pill and the indigo ring without muddiness. */
 .fragSelected {
   cursor: pointer;
-  box-shadow: 0 0 0 2px #2563eb, 0 0 0 4px rgba(37, 99, 235, 0.14);
+  outline: 1.5px solid #6366f1;
+  outline-offset: 1px;
+  border-radius: 3px;
 }
 
 /* ---- whole-node clickable fragment wrapper (added/deleted clause cards) ---- */
@@ -1473,42 +1635,47 @@
 /* ---- inline hunk menu — shown below the tracked-changes clause on fragment selection ----
    No left padding — aligns with the clause text left edge (the row provides its own
    paddingLeft). Top padding provides a small breathing gap from the redline above. */
-/* ---- the stable decision dock (DD-83) — fixed right-pane column ---- */
-.dock {
-  width: 360px;
-  flex-shrink: 0;
+/* ---- the inline decision panel (DD-83, revised: dock relocated inline) ----
+   Rendered in the document flow directly under the focused clause's row — reads as a
+   card "attached" to the clause above it. The blue left edge ties it to the active
+   row's own blue border-left (.docRowActive). Children are spaced by the column gap. */
+.inlinePanel {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 20px 18px;
+  gap: 13px;
+  margin: 4px 0 12px;
+  padding: 14px 16px;
   background: #fff;
-  border-left: 1px solid #e3e6ea;
-  overflow-y: auto;
+  border: 1px solid #e3e6ea;
+  border-left: 3px solid #1d4ed8;
+  border-radius: 10px;
+  box-shadow: 0 1px 3px rgba(31, 35, 40, 0.06);
 }
-.dockEmpty {
-  color: #6b7280;
-  font-size: 13px;
-  line-height: 1.5;
-  padding: 8px 2px;
-}
-.dockHead {
+.inlinePanelHead {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding-bottom: 12px;
+  align-items: baseline;
+  gap: 10px;
+  padding-bottom: 11px;
   border-bottom: 1px solid #eef1f5;
 }
-.dockAnchor {
+.inlinePanelAnchor {
   font-size: 14px;
   font-weight: 650;
   color: #111827;
 }
-.dockKind {
+.inlinePanelKind {
   font-size: 11.5px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: #6b7280;
+}
+/* the column gap already spaces the brainstorm row; drop the legacy margin and keep a
+   faint divider so the escalation reads as separate from the decision buttons. */
+.inlinePanel .escalate {
+  margin-top: 1px;
+  padding-top: 12px;
+  border-top: 1px solid #eef1f5;
 }
 
 .hunkMenu {
@@ -1534,39 +1701,243 @@
   margin-top: 11px;
 }
 
-/* ---- recommended button — Donna's preferred action, filled Donna-purple ----
-   Visually distinct from ghost (border-only) and from the primary blue (action-blue),
-   communicating "Donna recommends this one" without being the generic primary colour. */
-.btnRecommended {
-  font: inherit;
-  font-size: 12.5px;
-  font-weight: 650;
-  border-radius: 7px;
-  padding: 7px 13px;
-  cursor: pointer;
-  color: #fff;
-  background: #6d5bd0;
-  border: 1px solid #6d5bd0;
-  transition: background 0.12s ease, border-color 0.12s ease;
+/* ---- per-button decision-state encoding (DD-83) ----------------------------
+   Two signals on the SAME action row: what Donna RECOMMENDS and what the operator CHOSE.
+   All purples derive from the Donna token #6d5bd0 (the .donna* blocks above).
+   REC     = faded purple (Donna suggests, not chosen — PERSISTS after an overriding choice).
+   ADOPTED = solid purple (agreed with / adopted Donna).
+   Green / red / slate solids = an operator override (accept / reject / own counter). */
+
+/* REC — Donna recommends this button; persists even after a different button is chosen. */
+.btnRec {
+  color: #4a3fa6;
+  background: #f0ecfb;
+  border: 1px solid #b8a9e8;
 }
-.btnRecommended:hover:not(:disabled) {
-  background: #5a4ab0;
-  border-color: #5a4ab0;
+.btnRec:hover:not(:disabled) {
+  background: #e6def8;
+  border-color: #6d5bd0;
 }
-.btnRecommended:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-.btnRecommended:focus-visible {
+.btnRec:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px rgba(109, 91, 208, 0.45);
 }
+
+/* ADOPTED — solid Donna purple: agreed with / adopted Donna. */
+.btnAdopted {
+  color: #fff;
+  background: #6d5bd0;
+  border: 1px solid #6d5bd0;
+}
+.btnAdopted:hover:not(:disabled) {
+  background: #5a4ab0;
+  border-color: #5a4ab0;
+}
+.btnAdopted:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(109, 91, 208, 0.45);
+}
+
+/* CHOSEN_ACCEPT — override to accepted (solid green). */
+.btnChosenAccept {
+  color: #fff;
+  background: #15803d;
+  border: 1px solid #15803d;
+}
+.btnChosenAccept:hover:not(:disabled) {
+  background: #166534;
+  border-color: #166534;
+}
+.btnChosenAccept:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(21, 128, 61, 0.4);
+}
+
+/* CHOSEN_REJECT — override to rejected (solid red). */
+.btnChosenReject {
+  color: #fff;
+  background: #b91c1c;
+  border: 1px solid #b91c1c;
+}
+.btnChosenReject:hover:not(:disabled) {
+  background: #991b1b;
+  border-color: #991b1b;
+}
+.btnChosenReject:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(185, 28, 28, 0.4);
+}
+
+/* CHOSEN_EDIT — operator's own counter (solid slate). */
+.btnChosenEdit {
+  color: #fff;
+  background: #475569;
+  border: 1px solid #475569;
+}
+.btnChosenEdit:hover:not(:disabled) {
+  background: #334155;
+  border-color: #334155;
+}
+.btnChosenEdit:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(71, 85, 105, 0.4);
+}
+
+/* ---- grouped stop: cross-document cluster (DD-89 / F34) ---------------------
+   Extends the inline panel for a change that recurs across N clauses. The signature is the
+   "appears in N clauses" badge — a stacked-card pill (layered box-shadow) reading as a small
+   pile of identical clauses — over Donna's token purple. Everything else stays quiet so the
+   stack badge + the colored mixed tally are the only new marks. */
+.clusterHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 11px;
+  border-bottom: 1px solid #eef1f5;
+}
+.clusterBadge {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 11px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  color: #4a3fa6;
+  background: #f0ecfb;
+  border: 1px solid #c4b6ee;
+  border-radius: 7px;
+  /* the stack: two faint offset cards behind the pill, so it reads as several identical clauses */
+  box-shadow:
+    2px 2px 0 0 #ece6fa,
+    4px 4px 0 0 #f4f1fc;
+}
+.clusterToggle {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #4a3fa6;
+  background: transparent;
+  border: 1px solid #d9d2f2;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.clusterToggle:hover {
+  background: #f6f4fd;
+  border-color: #6d5bd0;
+}
+.clusterToggle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(109, 91, 208, 0.45);
+}
+
+/* Mixed summary — a peeled-off member now differs (decided-with-exception, DD-89). A tally of
+   colored counts, then the overridden clause(s) named. Colors reuse the DD-91 decision palette. */
+.clusterMixed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #5b6370;
+}
+.clusterCount {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-weight: 650;
+}
+.clusterCount[data-verdict="accepted"] {
+  color: #15803d;
+}
+.clusterCount[data-verdict="rejected"] {
+  color: #b91c1c;
+}
+.clusterCount[data-verdict="modified"] {
+  color: #475569;
+}
+.clusterCount[data-verdict="pending"] {
+  color: #6b7280;
+}
+.clusterCountSep {
+  margin-right: 2px;
+  color: #c2c8d0;
+  font-weight: 400;
+}
+.clusterMixedNote {
+  font-weight: 400;
+  color: #6b7280;
+}
+
+/* Peel-off list — each member clause as its own row with the full four-action controls. */
+.clusterMembers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 11px 0 2px;
+  list-style: none;
+  border-top: 1px solid #eef1f5;
+}
+.clusterMember {
+  padding: 10px 12px;
+  background: #faf9fe;
+  border: 1px solid #ece6fa;
+  border-radius: 9px;
+}
+.clusterMemberHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 9px;
+}
+.clusterMemberLabel {
+  padding: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: #4a3fa6;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.clusterMemberLabel:hover {
+  text-decoration: underline;
+}
+.clusterMemberLabel:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(109, 91, 208, 0.45);
+  border-radius: 4px;
+}
+.clusterMemberState {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6b7280;
+}
+.clusterMemberState[data-verdict="accepted"] {
+  color: #15803d;
+}
+.clusterMemberState[data-verdict="rejected"] {
+  color: #b91c1c;
+}
+.clusterMemberState[data-verdict="modified"] {
+  color: #475569;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .btnRecommended {
-    transition: none;
-  }
   .fragChange,
   .wholeNodeFrag {
+    transition: none;
+  }
+  .clusterToggle {
     transition: none;
   }
 }

@@ -3414,8 +3414,15 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
                         <p className={styles.deleteVersionWarnStrong}>
                           This erases the record of what was sent to{" "}
                           {deleteVersion.preview.sent_record.party} on{" "}
-                          {deleteVersion.preview.sent_record.date} and rolls the redline
-                          baseline back.
+                          {deleteVersion.preview.sent_record.date}; that tag is removed
+                          and no earlier version inherits it.
+                        </p>
+                      )}
+                      {deleteVersion.preview.review_discard && (
+                        <p className={styles.deleteVersionWarnStrong}>
+                          This also discards the in-progress revision review —{" "}
+                          {deleteVersion.preview.review_discard.changes_count} changes,{" "}
+                          {deleteVersion.preview.review_discard.reviewed} already decided.
                         </p>
                       )}
                       {deleteError && (
@@ -3465,7 +3472,10 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
                       No versions yet — Mark as sent to record the first.
                     </p>
                   ) : (
-                    lineage.timeline.map((t) => (
+                    // Latest on top: copy + sort desc by version (never mutate state).
+                    [...lineage.timeline]
+                      .sort((a, b) => b.version - a.version)
+                      .map((t) => (
                       // Row-button and Delete are SIBLINGS in a wrapper div — never
                       // nested <button>s (invalid HTML). The trash opens the
                       // DD-85/DD-87 delete preview, not the read-only snapshot view.
