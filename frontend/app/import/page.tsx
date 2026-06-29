@@ -32,6 +32,18 @@ interface Row {
   node: ApiCandidateNode;
 }
 
+// A point-in-time snapshot of the editable tree state for undo. rows are held by
+// reference (every mutation rebuilds the array immutably, so the reference is
+// frozen); selected is copied since it is a mutable Set.
+interface HistorySnapshot {
+  rows: Row[];
+  selected: Set<number>;
+  anchor: number | null;
+}
+
+// Undo history depth — at most this many prior states are retained.
+const HISTORY_LIMIT = 5;
+
 // Content type is heading / body / table — a node's *structural kind*, distinct
 // from its role (appendix is a role, set via the role selector, never a type).
 const TYPE_CYCLE = ["Heading", "Body", "Table", "List"];
@@ -356,6 +368,10 @@ export default function ImportReview() {
   // Index of the clause currently open in the split editor, or null. Single-select
   // only; cleared on any selection change / Escape / commit of the split.
   const [splitting, setSplitting] = useState<number | null>(null);
+  // Undo stack: a snapshot of {rows, selected, anchor} captured BEFORE each
+  // tree-mutating action (pushHistory). Bounded to 5 — the oldest is dropped when
+  // full — and cleared on every fresh parse so it never carries across documents.
+  const [history, setHistory] = useState<HistorySnapshot[]>([]);
 
   const router = useRouter();
 
@@ -480,6 +496,25 @@ export default function ImportReview() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected, rows]);
 
+  // Cmd+Z (mac) / Ctrl+Z (win) undoes the last tree mutation — but never when a
+  // text input/textarea is focused, so native text-editing undo is left alone
+  // (same focused-element guard as the Delete handler above). Shift+Cmd+Z is left
+  // free (no redo in v1).
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.key === "z" || e.key === "Z") && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey) {
+        const tag = (document.activeElement as HTMLElement | null)?.tagName ?? "";
+        if (tag === "INPUT" || tag === "TEXTAREA") return;
+        if (history.length === 0) return;
+        e.preventDefault();
+        undo();
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [history, rows, selected, anchor]);
+
   // Advance the parse-phase label while loading; reset when the parse returns.
   // Clamps at the final stage rather than looping, so a slow parse rests on
   // "Building tree" instead of cycling back to the start.
@@ -503,6 +538,7 @@ export default function ImportReview() {
       const res = await previewDocx(file, ctx?.contractId);
       const mapped = applyAppendixLeveling(applyCaptionSubheadings(res.nodes.map(toRow)));
       setRows(mapped);
+      setHistory([]);
       setTotal(mapped.filter((r) => r.uncertain).length);
       setTracked(res.tracked_changes);
       setSelected(new Set());
@@ -589,8 +625,33 @@ export default function ImportReview() {
       return n;
     });
 
-  const patch = (index: number, fn: (r: Row) => Row) =>
+  // Snapshot the current tree state BEFORE a mutation. Every tree-mutating action
+  // calls this at its top, so undo() reverts whichever action ran last. Bounded to
+  // HISTORY_LIMIT — the oldest snapshot is dropped once full.
+  function pushHistory() {
+    setHistory((h) => {
+      const snap: HistorySnapshot = { rows, selected: new Set(selected), anchor };
+      const next = [...h, snap];
+      return next.length > HISTORY_LIMIT ? next.slice(next.length - HISTORY_LIMIT) : next;
+    });
+  }
+
+  // Pop the most recent snapshot and restore rows/selected/anchor from it. No-op
+  // when the stack is empty. Undo-only — there is no redo in v1.
+  function undo() {
+    if (history.length === 0) return;
+    const snap = history[history.length - 1];
+    setRows(snap.rows);
+    setSelected(new Set(snap.selected));
+    setAnchor(snap.anchor);
+    setSplitting(null);
+    setHistory((h) => h.slice(0, -1));
+  }
+
+  const patch = (index: number, fn: (r: Row) => Row) => {
+    pushHistory();
     setRows((rs) => renumber(rs.map((r) => (r.index === index ? { ...fn(r), uncertain: false } : r))));
+  };
 
   const changeLevel = (index: number, delta: number) =>
     patch(index, (r) => ({ ...r, depth: Math.max(0, r.depth + delta) }));
@@ -605,7 +666,8 @@ export default function ImportReview() {
   // REPARENT is the composition of move + the level tools, not its own button: to
   // move e.g. "3.2(a)" out from under 3.1 and under 3.2, the operator outdents it
   // to 3.1/3.2's depth (‹), Moves ↓ past 3.2, then indents it back under (›).
-  const moveSubtree = (index: number, dir: -1 | 1) =>
+  const moveSubtree = (index: number, dir: -1 | 1) => {
+    pushHistory();
     setRows((rs) => {
       const p = rs.findIndex((r) => r.index === index);
       if (p === -1 || rs[p].role !== "clause") return rs;
@@ -627,6 +689,7 @@ export default function ImportReview() {
       if (q === -1 || rs[q].role !== "clause") return rs;
       return renumber([...rs.slice(0, q), ...rs.slice(p, e), ...rs.slice(q, p), ...rs.slice(e)]);
     });
+  };
   // Merge up: fold the selected clause into its previous sibling. The kept
   // sibling's committed body is r.text (buildCommitNodes prose branch), so the
   // selected node's text is appended there — that is where no-data-loss lives.
@@ -646,6 +709,7 @@ export default function ImportReview() {
       }
     }
     if (q === -1) return;
+    pushHistory();
     const keptIndex = rows[q].index;
     const mergedText = [rows[q].text.trimEnd(), rows[p].text.trim()]
       .filter((t) => t.length > 0)
@@ -670,6 +734,7 @@ export default function ImportReview() {
     if (p === -1) return;
     const orig = rows[p];
     if (orig.typeLabel === "Table" || pos <= 0 || pos >= orig.text.length) return;
+    pushHistory();
     const before = orig.text.slice(0, pos);
     const after = orig.text.slice(pos);
     const newIndex = rows.reduce((m, r) => Math.max(m, r.index), -1) + 1;
@@ -725,6 +790,7 @@ export default function ImportReview() {
   // row deeper than a selected node that immediately follows it is also removed.
   function deleteSelected() {
     if (selected.size === 0) return;
+    pushHistory();
     const toRemove = new Set<number>();
     for (const idx of selected) {
       const p = rows.findIndex((r) => r.index === idx);
@@ -753,10 +819,12 @@ export default function ImportReview() {
   const setRole = (index: number, role: Role) => patch(index, (r) => ({ ...r, role }));
 
   // Bulk variant of patch — one setRows so renumber runs once for the whole batch.
-  const patchMany = (indices: ReadonlySet<number>, fn: (r: Row) => Row) =>
+  const patchMany = (indices: ReadonlySet<number>, fn: (r: Row) => Row) => {
+    pushHistory();
     setRows((rs) =>
       renumber(rs.map((r) => (indices.has(r.index) ? { ...fn(r), uncertain: false } : r))),
     );
+  };
   const bulkLevel = (delta: number) =>
     patchMany(selected, (r) => ({ ...r, depth: Math.max(0, r.depth + delta) }));
   const bulkType = (typeLabel: string) => patchMany(selected, (r) => ({ ...r, typeLabel }));
@@ -976,6 +1044,20 @@ export default function ImportReview() {
                 <span className={styles.panelHint}>
                   Press shift to select a range
                 </span>
+                <button
+                  type="button"
+                  className={styles.reviewNavBtn}
+                  style={{ marginLeft: "auto" }}
+                  onClick={undo}
+                  disabled={history.length === 0}
+                  title={
+                    history.length === 0
+                      ? "Nothing to undo"
+                      : `Undo last change (${history.length} step${history.length === 1 ? "" : "s"}) — Cmd/Ctrl+Z`
+                  }
+                >
+                  ↶ Undo
+                </button>
                 {presentRegions.size > 0 && (
                   <button className={styles.collapseAll} onClick={toggleAll}>
                     {everythingExpanded ? "⊟ Collapse all" : "⊞ Expand all"}
