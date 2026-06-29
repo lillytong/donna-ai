@@ -5,15 +5,24 @@ No LLM, no live DB."""
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
-from backend.models.revision_recommend import RevisionRecommendation
+import pytest
+import structlog
+from backend.models.revision_recommend import (
+    RevisionRecommendation,
+    RevisionRecommendSummary,
+    VerdictTally,
+)
+from backend.services.donna import revision_recommend as rr
 from backend.services.donna.revision_recommend import (
     _cluster_key,
     build_change_focus,
     derive_kind,
     finalize_recommendation,
     parse_recommendation,
+    recommend_on_import,
     reconstruct_proposed_clause,
     reduce_counter_span,
 )
@@ -304,6 +313,65 @@ def test_finalize_degenerate_counter_falls_back_unreduced() -> None:
     )
     assert out.verdict == "counter"
     assert out.counter_language == misaligned
+
+
+# --- recommend_on_import auto-run cost guard (F03c, DD-35) ------------------
+
+
+def _patch_ceiling(monkeypatch: pytest.MonkeyPatch, ceiling: int) -> None:
+    """Override only the auto-run ceiling knob in settings (read from settings per DD-35 —
+    never a hardcoded 50). Mirrors test_revision_review's `setattr(svc, "get_settings", ...)`."""
+    fake = SimpleNamespace(llm=SimpleNamespace(revision_recommend_auto_max_changes=ceiling))
+    monkeypatch.setattr(rr, "get_settings", lambda: fake)
+
+
+async def test_recommend_on_import_skips_oversized_diff(monkeypatch: pytest.MonkeyPatch) -> None:
+    # changes_count above the configured ceiling -> the cost guard SKIPS the recommender (no Opus
+    # spend) and logs the skip; the recommend engine is never awaited.
+    ceiling = 7
+    _patch_ceiling(monkeypatch, ceiling)
+
+    called = False
+
+    async def _never(_session_id: str) -> RevisionRecommendSummary:
+        nonlocal called
+        called = True
+        raise AssertionError("recommend_session must not run for an oversized diff")
+
+    monkeypatch.setattr(rr, "recommend_session", _never)
+
+    with structlog.testing.capture_logs() as logs:
+        await recommend_on_import("s-oversized", ceiling + 1)
+
+    assert called is False
+    skips = [e for e in logs if e["event"] == "revision_recommend.auto_skip_oversized"]
+    assert len(skips) == 1
+    assert skips[0]["changes_count"] == ceiling + 1
+    assert skips[0]["ceiling"] == ceiling
+    assert skips[0]["session_id"] == "s-oversized"
+
+
+async def test_recommend_on_import_runs_within_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Contrast: at/under the ceiling the recommender IS awaited (auto-run proceeds).
+    ceiling = 7
+    _patch_ceiling(monkeypatch, ceiling)
+
+    seen: list[str] = []
+
+    async def _run(session_id: str) -> RevisionRecommendSummary:
+        seen.append(session_id)
+        return RevisionRecommendSummary(
+            session_id=session_id,
+            changes_analyzed=1,
+            hunks_analyzed=1,
+            by_verdict=VerdictTally(accept=1, counter=0, keep=0),
+        )
+
+    monkeypatch.setattr(rr, "recommend_session", _run)
+
+    await recommend_on_import("s-ok", ceiling)
+
+    assert seen == ["s-ok"]
 
 
 def test_finalize_scrubs_leaked_id_from_prose() -> None:
