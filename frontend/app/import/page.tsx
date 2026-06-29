@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import styles from "./review.module.css";
 import ContextStep, { type ContractContext } from "./ContextStep";
 import ImportTopBar, { type ImportStep } from "./ImportTopBar";
@@ -356,6 +357,8 @@ export default function ImportReview() {
   // only; cleared on any selection change / Escape / commit of the split.
   const [splitting, setSplitting] = useState<number | null>(null);
 
+  const router = useRouter();
+
   const sourceRefs = useRef(new Map<number, HTMLParagraphElement>());
   // Per-index refs for the LEFT structure-tree rows (mirrors sourceRefs). Prev/Next
   // scrolls the selected node's tree row into view in the left panel, so the next
@@ -460,6 +463,22 @@ export default function ImportReview() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  // Delete/Backspace removes the selected rows (and their subtrees) when no
+  // text input is focused — mirrors spreadsheet-style row deletion.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      const tag = (document.activeElement as HTMLElement | null)?.tagName ?? "";
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (selected.size === 0) return;
+      e.preventDefault();
+      deleteSelected();
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, rows]);
 
   // Advance the parse-phase label while loading; reset when the parse returns.
   // Clamps at the final stage rather than looping, so a slow parse rests on
@@ -700,6 +719,25 @@ export default function ImportReview() {
     setAnchor(index);
   }
 
+  // Delete all selected rows and their entire subtrees. Works on the in-memory
+  // `rows` state — nodes only reach the DB when commitTree fires, so this is
+  // purely a pre-commit edit gesture. Subtree removal mirrors subtreeEnd: every
+  // row deeper than a selected node that immediately follows it is also removed.
+  function deleteSelected() {
+    if (selected.size === 0) return;
+    const toRemove = new Set<number>();
+    for (const idx of selected) {
+      const p = rows.findIndex((r) => r.index === idx);
+      if (p === -1) continue;
+      const e = subtreeEnd(rows, p);
+      for (let i = p; i < e; i++) toRemove.add(rows[i].index);
+    }
+    setRows(renumber(rows.filter((r) => !toRemove.has(r.index))));
+    setSelected(new Set());
+    setAnchor(null);
+    setSplitting(null);
+  }
+
   // "Looks right ✓" clears the row's uncertain flag (via patch) AND dismisses the
   // inline tools by deselecting — single-select drives the tools, so clearing the
   // selection hides the menu bar.
@@ -731,6 +769,7 @@ export default function ImportReview() {
     try {
       const result = await commitTree(ctx.contractId, buildCommitNodes(rows));
       setCommitted(result);
+      router.push(`/contracts/${result.contract_id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Commit failed");
     } finally {
@@ -911,6 +950,13 @@ export default function ImportReview() {
                 title="Mark all selected as reviewed"
               >
                 Looks right ✓
+              </button>
+              <button
+                className={styles.bulkClear}
+                onClick={deleteSelected}
+                title="Delete selected rows and their sub-clauses"
+              >
+                {selected.size === 1 ? "Delete" : `Delete ${selected.size}`}
               </button>
               <button
                 className={styles.bulkClear}
