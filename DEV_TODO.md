@@ -4,7 +4,7 @@ Private engineering working list (gitignored). Open ADRs, de-risk items, build-s
 
 ## Build Tracker
 
-Builds since last reconciliation: 1. **Reconciled 2026-06-29 (Mac, post-consolidation) through §5 F30–F38: flipped F36 (was drift) + F04 origin-capture (was drift) to built; F30/F32/F34/F37 match.** Since: **F35 OPERATOR-ACCEPTED 2026-06-29** (E2E QA on the Meridian-Ardent fixture, screenshot verified, §5 flipped to built) — 2 follow-ups filed to `## Open` (malformed-anchor render guard; mark-sent drift-prompt UX). NOTE for any future test: baseline/revised clause-number sets are ≈ (real adds/deletes diverge them) — assert "classified-correctly", NEVER set-equality.
+Builds since last reconciliation: 1. **Reconciled 2026-06-29 (Mac, post-consolidation) through §5 F30–F38: flipped F36 (was drift) + F04 origin-capture (was drift) to built; F30/F32/F34/F37 match.** Since: **F35 + import-node-delete OPERATOR-ACCEPTED 2026-06-29** (F35: E2E QA on the Meridian-Ardent fixture, screenshot verified, §5 flipped to built + 2 follow-ups filed; import-node-delete: noted on F04 §5 row). **NOW BUILDING: import-screen undo (depth 5)** — Lilly request 2026-06-29. NOTE for any future test: baseline/revised clause-number sets are ≈ (real adds/deletes diverge them) — assert "classified-correctly", NEVER set-equality.
 
 (Prior trackers — version-delete F33/DD-87, F03c rework DD-83, SPEC restructure, sweeps 1–6 — are superseded; durable record is git + §5 + DESIGN_DECISIONS. Deferred-from-them carry still open: Path-A tracked-changes + Donna hunk-significance in §5 F03b; a real external Mode-B before/after pair in NEEDS LILLY.)
 
@@ -30,7 +30,6 @@ Builds since last reconciliation: 1. **Reconciled 2026-06-29 (Mac, post-consolid
 
 ## Awaiting Acceptance (operator-perceivable, past the engineering gate — flip §5 + delete on Lilly's PASS; reclassify to ## Open as a bug on FAIL)
 
-- [ ] **import-node-delete** (enhances F04 — note the op on F04's row, no separate §5 flip needed, on pass). **Test:** at the import-review step (before commit), select one or more rows and press Delete (or Backspace) → the rows AND their child subtrees disappear, numbering re-flows; nothing is deleted if a text input is focused; on commit you land on the cockpit (`/contracts/[id]`).
 - [ ] **Version-history reverse order** (built, tsc 0 — carried from prior session). **Test:** open a contract's Version history (badge ▾) → versions list newest-on-top; the Working copy stays pinned at the top regardless.
 
 ## Dev notes (operational gotchas — keep)
