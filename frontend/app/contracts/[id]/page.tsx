@@ -2544,7 +2544,13 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
           selectedId === r.id ? styles.selected : "",
           flashId === r.id ? styles.flash : "",
         ].join(" ")}
-        style={{ paddingLeft: 18 + r.depth * 22 }}
+        style={{ paddingLeft: 18 + (
+          r.role !== "clause" && (r.isHeading || r.contentType === "prose")
+            ? 0
+            : r.contentType === "list"
+              ? Math.max(0, r.depth - 1) * 22
+              : r.depth * 22
+        ) }}
         onClick={() => {
           setSelectedId(r.id);
           setRailTab("clause");
@@ -2713,7 +2719,13 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
     <div
       key={r.id}
       className={[styles.row, styles.rowReadonly].join(" ")}
-      style={{ paddingLeft: 18 + r.depth * 22 }}
+      style={{ paddingLeft: 18 + (
+        r.role !== "clause" && (r.isHeading || r.contentType === "prose")
+          ? 0
+          : r.contentType === "list"
+            ? Math.max(0, r.depth - 1) * 22
+            : r.depth * 22
+      ) }}
     >
       <span className={styles.twirlSpace} aria-hidden />
       {r.role === "clause" ? (

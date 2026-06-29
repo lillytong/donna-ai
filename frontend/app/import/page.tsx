@@ -1121,7 +1121,13 @@ export default function ImportReview() {
                       <span className={styles.sNum}>{label}</span>
                       <span
                         className={isHeading ? styles.sHeadingText : undefined}
-                        style={{ marginLeft: r.depth * 18 }}
+                        style={{ marginLeft: (
+                          r.role !== "clause" && (r.typeLabel === "Heading" || r.typeLabel === "Body")
+                            ? 0
+                            : r.role !== "clause" && r.typeLabel === "List"
+                              ? Math.max(0, r.depth - 1) * 18
+                              : r.depth * 18
+                        ) }}
                       >
                         {renderRich(r.text, capsBold, styles.sBold)}
                       </span>
