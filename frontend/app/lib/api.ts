@@ -1,7 +1,7 @@
 // Typed client for the import-preview / commit endpoints. Mirrors the backend
 // contract (backend/models/imports.py: PreviewResponse / CandidateNode / CommitRequest).
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
 // Structural-role taxonomy (DD-54). Only `clause` is numbered; non-clause roles
 // render as labeled regions (front-matter above, back-matter below) and carry an
@@ -60,7 +60,7 @@ export interface NodeRow {
   index: number;
   parent_index: number | null;
   order_index: number;
-  content_type: "prose" | "table";
+  content_type: "prose" | "table" | "list" | "attachment";
   heading: string | null;
   body: string | null;
   table_data: string[][] | null;
@@ -373,6 +373,7 @@ export interface NodeTreeItem {
   role: Role;
   has_placeholder: boolean;
   children: NodeTreeItem[];
+  images?: Array<{ id: string; mime_type: string }>;
 }
 
 export interface ContractTreeResponse {

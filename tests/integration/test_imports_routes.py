@@ -34,6 +34,9 @@ class _FakeConn:
     async def transaction(self) -> AsyncIterator[None]:
         yield
 
+    async def fetch(self, sql: str, *_args: Any) -> list[Any]:
+        return []
+
 
 @asynccontextmanager
 async def _fake_acquire() -> AsyncIterator[_FakeConn]:

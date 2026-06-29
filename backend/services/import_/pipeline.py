@@ -35,7 +35,7 @@ from backend.models.imports import (
     PreviewResponse,
     TrackedChangeReport,
 )
-from backend.services.contract_repo import insert_nodes
+from backend.services.contract_repo import insert_node_images, insert_nodes
 from backend.services.import_.classify import (
     classify,
     classify_backmatter_region,
@@ -234,7 +234,8 @@ async def import_docx(
 ) -> ImportResult:
     tree = await _classify_tree(path, ai=ai)
     rows = await asyncio.to_thread(tree_to_node_rows, tree)
-    await insert_nodes(conn, contract_id, rows)
+    id_map = await insert_nodes(conn, contract_id, rows)
+    await insert_node_images(conn, tree, id_map)
     entity_candidates = await _detect_candidates(rows) if detect else None
     return ImportResult(
         contract_id=contract_id,

@@ -337,6 +337,29 @@ def _emit_body(paragraph: Any, text: str, font: str, size_pt: int) -> None:
         _run(paragraph, text[cursor:], font, size_pt, bold=False, caps=False)
 
 
+def _add_image(
+    doc: Any,
+    data: bytes,
+    mime_type: str,
+    cx_emu: int | None,
+    cy_emu: int | None,
+) -> None:
+    """Embed image bytes into the document at original EMU dimensions."""
+    import io as _io
+
+    from docx.shared import Emu
+
+    stream = _io.BytesIO(data)
+    paragraph = doc.add_paragraph()
+    run = paragraph.add_run()
+    if cx_emu and cy_emu:
+        run.add_picture(stream, width=Emu(cx_emu), height=Emu(cy_emu))
+    elif cx_emu:
+        run.add_picture(stream, width=Emu(cx_emu))
+    else:
+        run.add_picture(stream)
+
+
 def _add_table(doc: Any, rows: list[list[str]]) -> None:
     if not rows:
         return
@@ -366,7 +389,11 @@ def _carries_enumerator(text: str, number: str | None) -> bool:
     return False
 
 
-def render_contract_docx(nodes: list[StoredNode], style_config: dict[str, Any]) -> bytes:
+def render_contract_docx(
+    nodes: list[StoredNode],
+    style_config: dict[str, Any],
+    node_images: dict[str, tuple[bytes, str, int | None, int | None]] | None = None,
+) -> bytes:
     """Render the live node tree to a clean .docx (current state, no tracked
     changes). Pure CPU — the caller owns the async DB read and offloads this."""
     style = StyleConfig.from_config(style_config)
@@ -392,6 +419,11 @@ def render_contract_docx(nodes: list[StoredNode], style_config: dict[str, Any]) 
 
     for node, number in plan:
         depth = depth_of[node.id]
+        if node.content_type == "attachment":
+            if node_images and node.id in node_images:
+                data, mime, cx, cy = node_images[node.id]
+                _add_image(doc, data, mime, cx, cy)
+            continue
         if node.content_type == "table":
             _add_table(doc, node.table_data or [])
             continue

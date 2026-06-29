@@ -22,5 +22,6 @@ from backend.services.export.render_docx import render_contract_docx
 async def export_clean_copy(
     nodes: list[StoredNode],
     style_config: dict[str, Any],
+    node_images: dict[str, tuple[bytes, str, int | None, int | None]] | None = None,
 ) -> bytes:
-    return await asyncio.to_thread(render_contract_docx, nodes, style_config)
+    return await asyncio.to_thread(render_contract_docx, nodes, style_config, node_images)

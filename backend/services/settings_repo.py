@@ -432,6 +432,8 @@ async def delete_contract(conn: Any, contract_id: str) -> ContractDeletion | Non
             conn, "DELETE FROM donna_conversations WHERE contract_id = $1", contract_id
         )
         # 4. Node-scoped children (FK node_id) — clear before the nodes.
+        #    node_images (0018) has ON DELETE CASCADE from nodes, so no explicit
+        #    delete is needed here — images are wiped automatically when nodes go.
         await _exec_count(
             conn, f"DELETE FROM node_embeddings WHERE node_id IN {nodes_subq}", contract_id
         )
@@ -468,6 +470,11 @@ async def delete_contract(conn: Any, contract_id: str) -> ContractDeletion | Non
         await _exec_count(conn, "DELETE FROM snapshot_pointers WHERE contract_id = $1", contract_id)
         await _exec_count(
             conn, "DELETE FROM contract_snapshots WHERE contract_id = $1", contract_id
+        )
+        # 8. contract_deal_brief (F37/DD-95) — FK contract_id REFERENCES contracts(id),
+        #    no cascade; must be removed before the contract row itself (DD-63).
+        await _exec_count(
+            conn, "DELETE FROM contract_deal_brief WHERE contract_id = $1", contract_id
         )
         contracts = await _exec_count(conn, "DELETE FROM contracts WHERE id = $1", contract_id)
     if contracts == 0:

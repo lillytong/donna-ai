@@ -19,6 +19,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from backend.config.settings import get_settings
 from backend.db import acquire
 from backend.models.audit import EVENT_COMMITTED, AuditEvent
+from backend.models.contract_tree import NodeImage
 from backend.models.imports import (
     CommitRequest,
     ContractTreeResponse,
@@ -131,8 +132,51 @@ async def commit_contract(
     )
 
 
+@router.get("/contracts/{contract_id}/media/{image_id}")
+async def get_contract_image(contract_id: str, image_id: str) -> Any:
+    """Serve raw image bytes for a node_image that belongs to this contract.
+    Scoped by contract_id so a caller cannot fetch images from other contracts
+    by guessing an image UUID."""
+    from fastapi.responses import Response
+
+    async with acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT ni.mime_type, ni.data
+               FROM node_images ni
+               JOIN nodes n ON n.id = ni.node_id
+               WHERE ni.id = $1 AND n.contract_id = $2""",
+            image_id,
+            contract_id,
+        )
+    if row is None:
+        raise HTTPException(status_code=404)
+    return Response(content=bytes(row["data"]), media_type=row["mime_type"])
+
+
 @router.get("/contracts/{contract_id}/tree", response_model=ContractTreeResponse)
 async def get_contract_tree(contract_id: str) -> ContractTreeResponse:
     async with acquire() as conn:
         rows = await fetch_nodes(conn, contract_id)
-    return ContractTreeResponse.from_rows(contract_id, rows)
+        img_rows = await conn.fetch(
+            """SELECT ni.id::text, ni.node_id::text, ni.order_index, ni.mime_type
+               FROM node_images ni
+               JOIN nodes n ON n.id = ni.node_id
+               WHERE n.contract_id = $1
+               ORDER BY ni.node_id, ni.order_index""",
+            contract_id,
+        )
+    images_by_node: dict[str, list] = {}
+    for r in img_rows:
+        images_by_node.setdefault(r["node_id"], []).append(
+            NodeImage(id=r["id"], node_id=r["node_id"], order_index=r["order_index"], mime_type=r["mime_type"])
+        )
+    tree = ContractTreeResponse.from_rows(contract_id, rows)
+    for node in tree.nodes:
+        _attach_images(node, images_by_node)
+    return tree
+
+
+def _attach_images(node: Any, images_by_node: dict) -> None:
+    node.images = images_by_node.get(node.id, [])
+    for child in node.children:
+        _attach_images(child, images_by_node)
