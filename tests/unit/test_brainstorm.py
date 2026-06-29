@@ -94,11 +94,14 @@ _PROFILE = "We are a licensing firm. Standing red-line: never accept uncapped li
 _REPLY = '{"reply": "One angle: cap at fees paid.", "kind": "answer", "citations": []}'
 
 
-def _run_brainstorm_turn(monkeypatch: Any, model_text: str, firm_profile: str = "") -> str:
+def _run_brainstorm_turn(
+    monkeypatch: Any, model_text: str, firm_profile: str = "", deal_brief: Any = None
+) -> str:
     """Patch brainstorm_turn's I/O seams, capture the prompt sent to `complete`, return it."""
     import asyncio
 
     from backend.models.brainstorm import BrainstormTurnRequest
+    from backend.services import deal_brief_repo
     from backend.services.donna import brainstorm as svc
 
     prompts: list[str] = []
@@ -119,6 +122,9 @@ def _run_brainstorm_turn(monkeypatch: Any, model_text: str, firm_profile: str = 
     async def fake_firm_profile(_conn: Any) -> str:
         return firm_profile
 
+    async def fake_get_brief(_conn: Any, _cid: str) -> Any:
+        return deal_brief
+
     class _Result:
         text = model_text
 
@@ -131,6 +137,7 @@ def _run_brainstorm_turn(monkeypatch: Any, model_text: str, firm_profile: str = 
     monkeypatch.setattr(svc, "list_issues", fake_issues)
     monkeypatch.setattr(svc, "get_issue", fake_get_issue)
     monkeypatch.setattr(svc, "get_firm_profile", fake_firm_profile)
+    monkeypatch.setattr(deal_brief_repo, "get_brief", fake_get_brief)
     monkeypatch.setattr(svc, "render", lambda *_a, **_k: "prompt")
     monkeypatch.setattr(svc, "complete", fake_complete)
 
@@ -148,3 +155,24 @@ def test_brainstorm_turn_injects_firm_profile_mandate(monkeypatch: Any) -> None:
 def test_brainstorm_turn_empty_firm_profile_not_injected(monkeypatch: Any) -> None:
     prompt = _run_brainstorm_turn(monkeypatch, _REPLY, firm_profile="")
     assert _MANDATE_MARK not in prompt  # unset profile -> no-op
+
+
+# --- brainstorm_turn per-deal deal-brief grounding (F37 / DD-95) -------------
+# Donna's whole-deal brief is appended to the brainstorm prompt as the per-deal GLOBAL context
+# alongside the firm mandate. Synthetic brief — NOT real firm/contract data (public repo).
+
+_DEAL_BRIEF_MARK = "DEAL BRIEF"
+
+
+def test_brainstorm_turn_injects_deal_brief(monkeypatch: Any) -> None:
+    from backend.models.deal_brief import DealBrief
+
+    brief = DealBrief(contract_id="c1", content="Parties: a licensor and a licensee.")
+    prompt = _run_brainstorm_turn(monkeypatch, _REPLY, deal_brief=brief)
+    assert _DEAL_BRIEF_MARK in prompt  # the labelled deal-brief block is present
+    assert "a licensor and a licensee" in prompt  # the brief content reaches the model
+
+
+def test_brainstorm_turn_no_deal_brief_not_injected(monkeypatch: Any) -> None:
+    prompt = _run_brainstorm_turn(monkeypatch, _REPLY, deal_brief=None)
+    assert _DEAL_BRIEF_MARK not in prompt  # no brief -> no-op

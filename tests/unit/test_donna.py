@@ -322,13 +322,18 @@ class _AppendCapturingConn:
 
 
 def _run_ask(  # type: ignore[no-untyped-def]
-    monkeypatch: object, model_text: str, firm_profile: str = "", **ask_kwargs: object
+    monkeypatch: object,
+    model_text: str,
+    firm_profile: str = "",
+    deal_brief: object = None,
+    **ask_kwargs: object,
 ):
     import asyncio
     import contextlib
 
     from backend.models.clause_search import ClauseSearchResult
     from backend.models.donna import StoredConversation
+    from backend.services import deal_brief_repo
     from backend.services.donna import qa
 
     captured: list[dict[str, object]] = []
@@ -367,6 +372,9 @@ def _run_ask(  # type: ignore[no-untyped-def]
     async def fake_get_firm_profile(_conn: object) -> str:
         return firm_profile
 
+    async def fake_get_brief(_conn: object, _cid: str) -> object:
+        return deal_brief
+
     class _Result:
         text = model_text
 
@@ -381,6 +389,7 @@ def _run_ask(  # type: ignore[no-untyped-def]
     monkeypatch.setattr(qa, "list_issues", fake_list_issues)  # type: ignore[attr-defined]
     monkeypatch.setattr(qa, "fetch_nodes", fake_fetch_nodes)  # type: ignore[attr-defined]
     monkeypatch.setattr(qa, "get_firm_profile", fake_get_firm_profile)  # type: ignore[attr-defined]
+    monkeypatch.setattr(deal_brief_repo, "get_brief", fake_get_brief)  # type: ignore[attr-defined]
     monkeypatch.setattr(qa, "append_message", fake_append)  # type: ignore[attr-defined]
     monkeypatch.setattr(qa, "_update_rolling_summary", fake_update_summary)  # type: ignore[attr-defined]
     monkeypatch.setattr(qa, "render", lambda *_a, **_k: "prompt")  # type: ignore[attr-defined]
@@ -430,3 +439,26 @@ def test_ask_empty_firm_profile_not_injected(monkeypatch) -> None:  # type: igno
     answer = '{"answer": "The cap is in 11.2.", "kind": "answer", "citations": []}'
     _result, _assistant, prompt = _run_ask(monkeypatch, answer, firm_profile="")
     assert _MANDATE_MARK not in prompt  # unset profile -> no-op
+
+
+# --- qa.ask per-deal deal-brief grounding (F37 / DD-95) ---------------------
+# Donna's whole-deal brief is appended to the Q&A answer prompt as the per-deal GLOBAL context
+# alongside the firm mandate. Synthetic brief — NOT real firm/contract data (public repo).
+
+_DEAL_BRIEF_MARK = "DEAL BRIEF"
+
+
+def test_ask_injects_deal_brief_into_prompt(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from backend.models.deal_brief import DealBrief
+
+    answer = '{"answer": "The cap is in 11.2.", "kind": "answer", "citations": []}'
+    brief = DealBrief(contract_id="c1", content="Parties: a licensor and a licensee.")
+    _result, _assistant, prompt = _run_ask(monkeypatch, answer, deal_brief=brief)
+    assert _DEAL_BRIEF_MARK in prompt  # the labelled deal-brief block is present
+    assert "a licensor and a licensee" in prompt  # the brief content reaches the model
+
+
+def test_ask_no_deal_brief_not_injected(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    answer = '{"answer": "The cap is in 11.2.", "kind": "answer", "citations": []}'
+    _result, _assistant, prompt = _run_ask(monkeypatch, answer, deal_brief=None)
+    assert _DEAL_BRIEF_MARK not in prompt  # no brief -> no-op

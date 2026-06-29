@@ -49,12 +49,14 @@ from backend.models.revision_recommend import (
     VerdictTally,
 )
 from backend.prompts.utils import render
+from backend.services import deal_brief_repo
 from backend.services.contract_repo import fetch_nodes
 from backend.services.cross_references import list_cross_references
 from backend.services.defined_terms import list_terms_for_deal
 from backend.services.donna.distillation import fetch_patterns_for_issue
 from backend.services.donna.grounding import (
     build_clause_grounding,
+    build_deal_brief_grounding,
     build_label_map,
     build_mandate_grounding,
     build_pattern_grounding,
@@ -413,6 +415,10 @@ async def recommend_session(session_id: str) -> RevisionRecommendSummary:
         # (who we are, our interests, our red-lines). One read per session; injected as a session-
         # level constant grounding block, identical for every change. Empty profile -> no-op.
         firm_profile = await get_firm_profile(conn)
+        # F37 / DD-95: the per-deal deal brief — Donna's whole-deal model (parties, economic
+        # spine, purpose), distilled once at import. One read per session; composed into the
+        # {deal_context} slot as a session-level constant, identical for every change. Empty=no-op.
+        deal_brief = await deal_brief_repo.get_brief(conn, contract_id)
 
         change_rows = await conn.fetch(_SELECT_CHANGES, session_id)
         targets: list[tuple[Any, ChangeKind]] = []
@@ -424,6 +430,12 @@ async def recommend_session(session_id: str) -> RevisionRecommendSummary:
 
     deal_type = ctype.name if ctype is not None else "contract"
     deal_context = f"Contract type: {deal_type}\nRevision source: {session['source']}"
+    # F37 / DD-95: compose the per-deal deal brief INTO the {deal_context} slot, alongside the
+    # contract-type / source line — the per-deal global context tier (beside the F32 mandate, which
+    # is appended below). Built once per session; a missing/blank brief leaves the slot unchanged.
+    deal_brief_block = build_deal_brief_grounding(deal_brief)
+    if deal_brief_block:
+        deal_context = f"{deal_context}\n\n{deal_brief_block}"
     labels = build_label_map(nodes)
     nodes_by_id = {n.id: n for n in nodes}
     pattern_block = build_pattern_grounding(patterns)

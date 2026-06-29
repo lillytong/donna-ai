@@ -463,6 +463,27 @@ CREATE TABLE operator_organization (
 INSERT INTO operator_organization (id) VALUES (true);
 
 -- ============================================================================
+-- Deal brief (F37, DD-95 — a per-deal global-context tier Donna distills + the
+-- operator edits). A per-CONTRACT free-text brief Donna distils from ONE whole-
+-- contract read at import (parties+roles, each party's business/interests, the
+-- economic spine, key terms + interrelations, purpose). Fills the {deal_context}
+-- grounding slot for Donna's recommendations / chat / brainstorm. Sourcing mirrors
+-- F32: Donna-seeded-at-import, operator-editable, EDITS WIN — `operator_edited`
+-- guards an automatic re-import re-distil (never clobbers an edited brief); a manual
+-- Refresh forces a fresh distil. `model` / `generated_at` record the last distil
+-- (NULL until the first, or for an operator-only edit). One brief per contract.
+-- ============================================================================
+
+CREATE TABLE contract_deal_brief (
+    contract_id     UUID PRIMARY KEY REFERENCES contracts(id),
+    content         TEXT NOT NULL DEFAULT '',
+    operator_edited BOOLEAN NOT NULL DEFAULT false,  -- edits win: true => auto re-distil skips
+    model           TEXT,                            -- model that authored the Donna-seeded brief
+    generated_at    TIMESTAMPTZ,                     -- when Donna last distilled (NULL until first)
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ============================================================================
 -- Embeddings (pgvector) — built in Phase 2 (nodes) / Phase 2+ (comments).
 -- VECTOR DIMENSION IS PROVISIONAL: tied to the Phase-2 embedding-model choice
 -- (e.g. Voyage 1024, OpenAI 1536). Confirm/alter before first embed. [FLAGGED]
@@ -517,4 +538,5 @@ INSERT INTO schema_migrations (version) VALUES
     ('0012_snapshot_version_number'),
     ('0013_firm_profile'),
     ('0014_operator_organization'),
-    ('0015_revision_session_as_received_snapshot');
+    ('0015_revision_session_as_received_snapshot'),
+    ('0016_contract_deal_brief');

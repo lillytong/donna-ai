@@ -72,6 +72,15 @@ class LlmSettings(BaseSettings):
     # surfaces truncate at the 1024 default → JSON parse failure.
     revision_recommend_max_tokens: int = 4096
     revision_recommend_temperature: float = 1.0
+    # F37 deal brief (DD-95): Donna distils a per-deal global-context brief from ONE whole-
+    # contract read at import, at the capable tier (high/Opus — a wrong brief grounds every
+    # later recommendation, so it is high-consequence; Opus 4.8 rejects temperature 0.0, so
+    # this tier is pinned to 1.0). A whole-contract read needs a large output budget
+    # (~6-8k tokens) AND a longer per-call timeout than the 30s default — the validating spike
+    # took ~51s, so the wrapper's default would time out. Knobs from config, not code (DD-35).
+    deal_brief_max_tokens: int = 8000
+    deal_brief_temperature: float = 1.0
+    deal_brief_timeout_s: float = 90.0
     # F03c auto-run-at-import cost guard (~1 Opus call per hunk): the import route fires
     # Donna's per-change recommendation in the background, but only for reasonably-sized
     # diffs. Above this staged-change ceiling the auto-run is skipped (logged — no silent

@@ -38,10 +38,12 @@ from backend.models.brainstorm import (
 )
 from backend.models.donna import DonnaTurn
 from backend.prompts.utils import render
+from backend.services import deal_brief_repo
 from backend.services.contract_repo import fetch_nodes
 from backend.services.donna.advise import finalize_reply, parse_reply
 from backend.services.donna.grounding import (
     build_clause_grounding,
+    build_deal_brief_grounding,
     build_issue_focus,
     build_issue_ledger,
     build_label_map,
@@ -106,6 +108,9 @@ async def brainstorm_turn(
         # F32 v1 / DD-90: the global operator-authored firm profile — the firm's standing MANDATE
         # (who we are, our interests, our red-lines). One read per request, grounds every turn.
         firm_profile = await get_firm_profile(conn)
+        # F37 / DD-95: the per-deal deal brief — Donna's whole-deal model (parties, economic spine,
+        # purpose). One read per request, grounds every turn alongside the firm mandate.
+        deal_brief = await deal_brief_repo.get_brief(conn, contract_id)
 
     labels = build_label_map(nodes)
     clauses = build_clause_grounding(nodes, issue.node_id, labels) if issue is not None else ""
@@ -124,6 +129,12 @@ async def brainstorm_turn(
     mandate_block = build_mandate_grounding(firm_profile)
     if mandate_block:
         prompt = f"{prompt}\n\n{mandate_block}"
+    # The deal brief (F37/DD-95) is appended the same way — DATA/context, not a template slot, so
+    # the prompt template/eval stay untouched. It fills the {deal_context} global tier beside the
+    # mandate. Missing/blank brief -> '' -> no-op.
+    deal_brief_block = build_deal_brief_grounding(deal_brief)
+    if deal_brief_block:
+        prompt = f"{prompt}\n\n{deal_brief_block}"
     result = await complete(
         tier="high",
         messages=[{"role": "user", "content": prompt}],

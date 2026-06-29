@@ -11,10 +11,12 @@ from types import SimpleNamespace
 from typing import Any
 
 from backend.api import revision_recommend as recommend_api
+from backend.models.deal_brief import DealBrief
 from backend.models.defined_terms import StoredDefinedTerm
 from backend.models.imports import StoredNode
 from backend.models.llm import CompletionResult, TokenUsage
 from backend.models.revision_recommend import RevisionRecommendSummary, VerdictTally
+from backend.services import deal_brief_repo
 from backend.services.donna import revision_recommend as svc
 from backend.services.llm import LLMRateLimitError
 from fastapi import FastAPI
@@ -94,11 +96,15 @@ class _FakeConn:
 
 
 def _wire(
-    monkeypatch: Any, conn: _FakeConn, responses: list[str], firm_profile: str = ""
+    monkeypatch: Any,
+    conn: _FakeConn,
+    responses: list[str],
+    firm_profile: str = "",
+    deal_brief: DealBrief | None = None,
 ) -> list[str]:
     """Patch the engine's I/O seams: acquire yields `conn`, the contract/nodes/patterns/firm-
-    profile lookups are stubbed, and `complete` pops canned JSON (capturing each prompt onto
-    `conn.captured_prompts`). Returns the caller log for assertions."""
+    profile/deal-brief lookups are stubbed, and `complete` pops canned JSON (capturing each prompt
+    onto `conn.captured_prompts`). Returns the caller log for assertions."""
 
     @asynccontextmanager
     async def fake_acquire() -> AsyncIterator[_FakeConn]:
@@ -125,12 +131,16 @@ def _wire(
     async def fake_firm_profile(_conn: Any) -> str:
         return firm_profile
 
+    async def fake_get_brief(_conn: Any, _cid: str) -> DealBrief | None:
+        return deal_brief
+
     monkeypatch.setattr(svc, "acquire", fake_acquire)
     monkeypatch.setattr(svc, "complete", fake_complete)
     monkeypatch.setattr(svc, "fetch_nodes", fake_nodes)
     monkeypatch.setattr(svc, "fetch_patterns_for_issue", fake_patterns)
     monkeypatch.setattr(svc, "get_contract", fake_contract)
     monkeypatch.setattr(svc, "get_firm_profile", fake_firm_profile)
+    monkeypatch.setattr(deal_brief_repo, "get_brief", fake_get_brief)
     return callers
 
 
@@ -369,6 +379,7 @@ async def test_reference_bundle_injected_and_resolved_once_per_root(monkeypatch:
     monkeypatch.setattr(svc, "list_cross_references", fake_refs)
     monkeypatch.setattr(svc, "build_reference_grounding", spy_build)
     monkeypatch.setattr(svc, "get_firm_profile", lambda _conn: _empty_str())
+    monkeypatch.setattr(deal_brief_repo, "get_brief", lambda *_a: _empty_brief())
 
     await svc.recommend_session("s1")
 
@@ -385,6 +396,10 @@ async def _empty() -> list[Any]:
 
 async def _empty_str() -> str:
     return ""
+
+
+async def _empty_brief() -> DealBrief | None:
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -458,6 +473,45 @@ async def test_empty_firm_profile_not_injected(monkeypatch: Any) -> None:
     await svc.recommend_session("s1")
 
     assert _MANDATE_MARK not in conn.captured_prompts[0]  # no-op: nothing injected
+
+
+# --------------------------------------------------------------------------- #
+# F37 / DD-95: per-deal deal brief injected once per session into {deal_context} #
+# --------------------------------------------------------------------------- #
+
+_DEAL_BRIEF_MARK = "DEAL BRIEF"
+# Synthetic brief — NOT real firm/contract data (public repo).
+_BRIEF = DealBrief(
+    contract_id="c1",
+    content="Parties + Roles: a licensor and a licensee. Economic Spine: a 10% annual fee.",
+)
+
+
+async def test_deal_brief_injected_into_judge_prompt(monkeypatch: Any) -> None:
+    session = dict(id="s1", contract_id="c1", source="counterparty", status="reviewing")
+    changes = [_change("ch1", node_id="n1", match_confidence=0.9, status="pending")]
+    hunks = [_hunk("h1", "ch1", original_text="capped", proposed_text="uncapped")]
+    conn = _FakeConn(session, changes, hunks)
+    _wire(monkeypatch, conn, [_COUNTER], deal_brief=_BRIEF)
+
+    await svc.recommend_session("s1")
+
+    prompt = conn.captured_prompts[0]
+    assert _DEAL_BRIEF_MARK in prompt  # the labelled deal-brief block reaches {deal_context}
+    assert "a licensor and a licensee" in prompt  # the brief content reaches the judge
+    assert "a 10% annual fee" in prompt
+
+
+async def test_empty_deal_brief_not_injected(monkeypatch: Any) -> None:
+    session = dict(id="s1", contract_id="c1", source="counterparty", status="reviewing")
+    changes = [_change("ch1", node_id="n1", match_confidence=0.9, status="pending")]
+    hunks = [_hunk("h1", "ch1", original_text="capped", proposed_text="uncapped")]
+    conn = _FakeConn(session, changes, hunks)
+    _wire(monkeypatch, conn, [_COUNTER], deal_brief=None)  # no brief distilled/edited
+
+    await svc.recommend_session("s1")
+
+    assert _DEAL_BRIEF_MARK not in conn.captured_prompts[0]  # no-op: nothing injected
 
 
 # --------------------------------------------------------------------------- #

@@ -74,22 +74,28 @@ async def complete(
     max_tokens: int = 1024,
     temperature: float = 0.0,
     json_response: bool = False,
+    timeout_s: float | None = None,
 ) -> CompletionResult:
     """Run a completion at the given consequence tier; return its text + usage.
 
     The model for each tier comes from config (DD-35); temperature/max_tokens are
     the caller's (also config-sourced) and the timeout is config's — none hardcoded.
-    `json_response=True` asks the model for a strict JSON object. `messages` content
-    may be a plain string or a list of content blocks (e.g. a cache_control prefix)."""
+    `timeout_s` overrides the default per-call timeout for a long surface (e.g. the
+    F37 whole-contract deal-brief distil, ~51s — over the 30s default); when None the
+    config default (`settings.llm.timeout_s`) applies. `json_response=True` asks the
+    model for a strict JSON object. `messages` content may be a plain string or a list
+    of content blocks (e.g. a cache_control prefix)."""
     settings = get_settings()
     model = f"anthropic/{getattr(settings.models, tier)}"
+    if timeout_s is None:
+        timeout_s = settings.llm.timeout_s
 
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
-        "timeout": settings.llm.timeout_s,
+        "timeout": timeout_s,
         "api_key": settings.anthropic_api_key or None,
     }
     if json_response:
@@ -104,7 +110,6 @@ async def complete(
     # exhausted, become LLMRateLimitError so the routes' 429 mapping stays correct.
     max_retries = settings.llm.llm_max_retries
     backoff_base_s = settings.llm.llm_backoff_base_s
-    timeout_s = settings.llm.timeout_s
 
     start = time.perf_counter()
     attempt = 0

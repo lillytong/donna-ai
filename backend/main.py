@@ -12,6 +12,7 @@ from backend.api import (
     clause_draft,
     clause_search,
     cross_references,
+    deal_brief,
     defined_terms,
     donna,
     donna_recommendations,
@@ -81,6 +82,7 @@ app.include_router(health.router)
 app.include_router(imports.router)
 app.include_router(settings.router)
 app.include_router(firm_profile.router)
+app.include_router(deal_brief.router)
 app.include_router(issues.router)
 app.include_router(nodes.router)
 app.include_router(audit.router)

@@ -14,7 +14,7 @@ import tempfile
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
 from backend.config.settings import get_settings
 from backend.db import acquire
@@ -29,6 +29,7 @@ from backend.services.audit_repo import record_event
 from backend.services.contract_repo import fetch_nodes, insert_nodes
 from backend.services.cross_references import extract_and_store as extract_cross_references
 from backend.services.defined_terms import extract_and_store
+from backend.services.donna.deal_brief import distill_on_import
 from backend.services.import_.pipeline import import_docx, preview_docx
 
 log = structlog.get_logger()
@@ -67,16 +68,24 @@ def _write_temp(data: bytes) -> str:
 
 
 @router.post("/contracts/{contract_id}/import", response_model=ImportResult)
-async def import_contract(contract_id: str, request: Request) -> ImportResult:
+async def import_contract(
+    contract_id: str, request: Request, background: BackgroundTasks
+) -> ImportResult:
     data = await request.body()
     if not data.startswith(_DOCX_MAGIC):
         raise HTTPException(status_code=400, detail="expected .docx (ZIP) bytes")
     path = await asyncio.to_thread(_write_temp, data)
     try:
         async with acquire() as conn, conn.transaction():
-            return await import_docx(conn, contract_id, path)
+            result = await import_docx(conn, contract_id, path)
     finally:
         await asyncio.to_thread(os.unlink, path)
+    # F37 auto-seed (DD-95): now that the import has committed, distil the deal brief in the
+    # background so the {deal_context} grounding slot is populated before review opens. Post-
+    # commit, non-blocking, failure-isolated; force=False, so a re-import respects an operator
+    # edit (edits win). Mirrors F03c's recommend_on_import wiring.
+    background.add_task(distill_on_import, contract_id)
+    return result
 
 
 @router.post("/import/preview", response_model=PreviewResponse)
@@ -92,7 +101,9 @@ async def preview_import(request: Request) -> PreviewResponse:
 
 
 @router.post("/contracts/{contract_id}/commit", response_model=ImportResult)
-async def commit_contract(contract_id: str, body: CommitRequest) -> ImportResult:
+async def commit_contract(
+    contract_id: str, body: CommitRequest, background: BackgroundTasks
+) -> ImportResult:
     async with acquire() as conn:
         async with conn.transaction():
             await insert_nodes(conn, contract_id, body.nodes)
@@ -108,6 +119,10 @@ async def commit_contract(contract_id: str, body: CommitRequest) -> ImportResult
             )
         await _extract_defined_terms_safely(conn, contract_id)
         await _extract_cross_references_safely(conn, contract_id)
+    # F37 auto-seed (DD-95): post-commit, distil the deal brief in the background so the
+    # {deal_context} grounding slot is populated before review opens. Failure-isolated;
+    # force=False so a re-import respects an operator edit (edits win).
+    background.add_task(distill_on_import, contract_id)
     return ImportResult(
         contract_id=contract_id,
         node_count=len(body.nodes),
