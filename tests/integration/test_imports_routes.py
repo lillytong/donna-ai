@@ -37,6 +37,9 @@ class _FakeConn:
     async def fetch(self, sql: str, *_args: Any) -> list[Any]:
         return []
 
+    async def execute(self, sql: str, *_args: Any) -> None:
+        pass
+
 
 @asynccontextmanager
 async def _fake_acquire() -> AsyncIterator[_FakeConn]:
@@ -85,7 +88,7 @@ def test_preview_rejects_non_docx_body() -> None:
 
 
 def test_preview_returns_candidate_tree(monkeypatch: Any) -> None:
-    async def fake_preview(_path: Any) -> PreviewResponse:
+    async def fake_preview(_path: Any, **_kw: Any) -> PreviewResponse:
         return PreviewResponse(
             nodes=[
                 CandidateNode(
@@ -184,6 +187,9 @@ class _ExtractingFakeConn:
         if "FROM nodes" in sql:
             return self._nodes
         return []
+
+    async def execute(self, sql: str, *_args: Any) -> None:
+        pass
 
     async def fetchrow(self, _sql: str, *args: Any) -> dict[str, Any]:
         self.upserts.append(args)

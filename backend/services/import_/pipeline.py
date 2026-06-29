@@ -214,13 +214,53 @@ async def _detect_candidates(rows: list[NodeRow]) -> dict[int, Extraction]:
     return out
 
 
-async def preview_docx(path: str | Path, *, ai: bool = True) -> PreviewResponse:
+async def _store_staging_images(conn: Any, contract_id: str, tree: ParsedTree) -> None:
+    """Write image bytes from attachment nodes into staging_node_images so the
+    commit endpoint can persist them to node_images after insert_nodes returns
+    the real node UUIDs. Keyed by TreeNode.index (sequential flat position),
+    which matches the id_map key returned by insert_nodes. ON CONFLICT replaces
+    so a re-preview (same contract_id) refreshes stale staging rows."""
+    for n in tree.nodes:
+        if n.image_data is None:
+            continue
+        await conn.execute(
+            """INSERT INTO staging_node_images
+               (contract_id, node_index, mime_type, cx_emu, cy_emu, data)
+               VALUES ($1, $2, $3, $4, $5, $6)
+               ON CONFLICT (contract_id, node_index) DO UPDATE
+               SET mime_type = EXCLUDED.mime_type,
+                   cx_emu    = EXCLUDED.cx_emu,
+                   cy_emu    = EXCLUDED.cy_emu,
+                   data      = EXCLUDED.data""",
+            contract_id,
+            n.index,
+            n.image_mime or "image/png",
+            n.image_cx_emu,
+            n.image_cy_emu,
+            n.image_data,
+        )
+
+
+async def preview_docx(
+    path: str | Path,
+    *,
+    ai: bool = True,
+    conn: Any = None,
+    contract_id: str | None = None,
+) -> PreviewResponse:
     """Parse a .docx into the F04 candidate tree (numbers + uncertain flags +
     tracked-change report) without persisting. The sync parse runs in a thread
-    executor (async standard); no DB is touched. The Haiku residue pass (DD-54)
-    runs by default (`ai=True`) over the uncertain front-matter; pass `ai=False`
-    to skip the LLM entirely (offline/tests)."""
+    executor (async standard).
+
+    When `conn` and `contract_id` are both provided the parsed image bytes are
+    staged in `staging_node_images` so the two-step commit endpoint can later
+    persist them to `node_images` (they are absent from the NodeRow payload).
+
+    The Haiku residue pass (DD-54) runs by default (`ai=True`) over the
+    uncertain front-matter; pass `ai=False` to skip the LLM (offline/tests)."""
     tree = await _classify_tree(path, ai=ai)
+    if conn is not None and contract_id is not None:
+        await _store_staging_images(conn, contract_id, tree)
     return await asyncio.to_thread(_preview_from_tree, tree, path)
 
 

@@ -71,8 +71,11 @@ export interface NodeRow {
 }
 
 // Parse a .docx without persisting — returns the candidate tree for review (F04).
-export async function previewDocx(file: File): Promise<PreviewResponse> {
-  const res = await fetch(`${API_BASE}/import/preview`, {
+export async function previewDocx(file: File, contractId?: string): Promise<PreviewResponse> {
+  const url = contractId
+    ? `${API_BASE}/import/preview?contract_id=${encodeURIComponent(contractId)}`
+    : `${API_BASE}/import/preview`;
+  const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/octet-stream" },
     body: await file.arrayBuffer(),

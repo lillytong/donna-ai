@@ -481,7 +481,7 @@ export default function ImportReview() {
     setLoading(true);
     setError(null);
     try {
-      const res = await previewDocx(file);
+      const res = await previewDocx(file, ctx?.contractId);
       const mapped = applyAppendixLeveling(applyCaptionSubheadings(res.nodes.map(toRow)));
       setRows(mapped);
       setTotal(mapped.filter((r) => r.uncertain).length);
@@ -1256,7 +1256,13 @@ function TreeRow({
         selected ? styles.selected : "",
         flash ? styles.treeFlash : "",
       ].join(" ")}
-      style={{ paddingLeft: 8 + row.depth * 22 }}
+      style={{ paddingLeft: 8 + (
+        row.role !== "clause" && (row.typeLabel === "Heading" || row.typeLabel === "Body")
+          ? 0
+          : row.role !== "clause" && row.typeLabel === "List"
+            ? Math.max(0, row.depth - 1) * 22
+            : row.depth * 22
+      ) }}
       onClick={(e) => onClick(row.index, e)}
     >
       <Twirl hasChildren={hasChildren} collapsed={collapsed} onToggle={onToggleCollapse} />

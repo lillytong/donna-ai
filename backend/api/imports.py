@@ -14,7 +14,7 @@ import tempfile
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 
 from backend.config.settings import get_settings
 from backend.db import acquire
@@ -90,12 +90,24 @@ async def import_contract(
 
 
 @router.post("/import/preview", response_model=PreviewResponse)
-async def preview_import(request: Request) -> PreviewResponse:
+async def preview_import(
+    request: Request,
+    contract_id: str | None = Query(
+        default=None,
+        description=(
+            "Contract UUID — when provided, extracted image bytes are staged in "
+            "staging_node_images so the two-step commit can persist them to node_images."
+        ),
+    ),
+) -> PreviewResponse:
     data = await request.body()
     if not data.startswith(_DOCX_MAGIC):
         raise HTTPException(status_code=400, detail="expected .docx (ZIP) bytes")
     path = await asyncio.to_thread(_write_temp, data)
     try:
+        if contract_id is not None:
+            async with acquire() as conn:
+                return await preview_docx(path, conn=conn, contract_id=contract_id)
         return await preview_docx(path)
     finally:
         await asyncio.to_thread(os.unlink, path)
@@ -107,7 +119,32 @@ async def commit_contract(
 ) -> ImportResult:
     async with acquire() as conn:
         async with conn.transaction():
-            await insert_nodes(conn, contract_id, body.nodes)
+            id_map = await insert_nodes(conn, contract_id, body.nodes)
+            # Move any images staged at preview time into node_images now that we
+            # have real node UUIDs from id_map (keyed by TreeNode.index).
+            staging = await conn.fetch(
+                "SELECT node_index, mime_type, cx_emu, cy_emu, data"
+                " FROM staging_node_images WHERE contract_id = $1",
+                contract_id,
+            )
+            for s in staging:
+                node_id = id_map.get(s["node_index"])
+                if node_id:
+                    await conn.execute(
+                        """INSERT INTO node_images
+                               (node_id, order_index, mime_type, cx_emu, cy_emu, data)
+                           VALUES ($1, 0, $2, $3, $4, $5)
+                           ON CONFLICT DO NOTHING""",
+                        node_id,
+                        s["mime_type"],
+                        s["cx_emu"],
+                        s["cy_emu"],
+                        bytes(s["data"]),
+                    )
+            await conn.execute(
+                "DELETE FROM staging_node_images WHERE contract_id = $1",
+                contract_id,
+            )
             await record_event(
                 conn,
                 AuditEvent(

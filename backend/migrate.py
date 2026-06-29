@@ -62,7 +62,10 @@ async def run_migrations(conn: asyncpg.Connection) -> list[str]:
     for version, sql in pending:
         async with conn.transaction():
             await conn.execute(sql)
-            await conn.execute("INSERT INTO schema_migrations (version) VALUES ($1)", version)
+            await conn.execute(
+                "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
+                version,
+            )
         done.append(version)
     return done
 
