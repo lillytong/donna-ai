@@ -20,6 +20,10 @@ to a clause. Clean redlines export back to Word on demand.
 
 <sub>The negotiation cockpit on a sample joint-venture agreement. Donna answers only from the contract and the issue ledger, with clickable clause citations — she reads and explains, never gives legal advice.</sub>
 
+![donna.ai reviewing a counterparty revision: clause 9.3 as an inline tracked-change diff, with two of Donna's "Counter" recommendations below it — each citing the clauses behind its reasoning as clickable section-number chips.](docs/assets/f35-clause-refs.png)
+
+<sub>Reviewing a counterparty's clean revision. Donna grades each change and links the clauses behind each call as live references — as accept/reject decisions renumber the document, the chip number updates instead of going stale.</sub>
+
 > Status: working local build. Architecture and data model are locked (`SPEC.md`,
 > `DESIGN_DECISIONS.md`). What runs today: the **import spine** (parse → classify
 > roles → review-and-correct → commit) with its review UI; a **home** screen of
@@ -57,7 +61,9 @@ always shows where it stands.
   and opens a two-pane review: a navigable list of tracked changes on one side, the
   document with those changes highlighted on the other. Work through them one at a
   time — accept theirs, take Donna's counter, edit it, or keep your original — then
-  apply the decisions to your working copy.
+  apply the decisions to your working copy. Her recommendation on each change links
+  the clauses it depends on as clickable references, and the numbers stay correct as
+  your accept/reject decisions renumber the document.
 - **Export to Word.** From the cockpit's Export menu: a clean `.docx`, a
   counterparty-ready **redline** (tracked changes vs the last version you sent), or
   an **issue-list** briefing — all regenerated from the database through the
