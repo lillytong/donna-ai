@@ -47,6 +47,10 @@ W_ABSTRACTNUM = qn("w:abstractNum")
 W_ABSTRACTNUMID = qn("w:abstractNumId")
 W_STYLELINK = qn("w:styleLink")
 W_NUMSTYLELINK = qn("w:numStyleLink")
+W_R = qn("w:r")
+W_RPR = qn("w:rPr")
+W_B = qn("w:b")
+W_BR = qn("w:br")
 
 # Word's outlineLvl=9 is the "body text" sentinel, not a heading level (0-8).
 _BODY_OUTLINE_LEVEL = 9
@@ -181,6 +185,66 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+def _run_is_bold(r: Any) -> bool:
+    """True when the run carries <w:b/> not explicitly cleared (w:val=0/false)."""
+    rPr = r.find(W_RPR)
+    if rPr is None:
+        return False
+    b = rPr.find(W_B)
+    if b is None:
+        return False
+    val = b.get(W_VAL)
+    return val not in ("0", "false")
+
+
+def _split_at_line_break(p: Any) -> tuple[str, str] | None:
+    """Detect paragraphs where a <w:br/> separates a bold label from plain body text.
+
+    Word's Appendix/Annexure inline headings use a soft line break to visually separate
+    a bold label ("Licensing Fee") from body text within the same <w:p>.
+    _accept_all_text ignores <w:br/> and concatenates them -> "Licensing Fee10% of...".
+
+    The <w:br/> is the discriminator: paragraphs with mixed bold/non-bold runs but NO
+    <w:br/> are inline defined-term references and must NOT be split.
+
+    Returns (heading_text, body_text) or None if pattern not present.
+    Guards: heading <= 80 chars, no sentence-terminal punctuation; body >= 10 chars;
+    pre-br content must be (at least partly) bold; post-br must not be all-bold."""
+    run_entries: list[tuple[str, bool, bool]] = []  # (text, is_bold, has_br)
+    for child in p:
+        tag = child.tag
+        if tag == W_DEL or tag == W_PPR:
+            continue
+        if tag == W_R:
+            t = _norm(_accept_all_text(child))
+            run_entries.append((t, _run_is_bold(child), child.find(W_BR) is not None))
+        elif tag == W_INS:
+            for r in child.findall(W_R):
+                t = _norm(_accept_all_text(r))
+                run_entries.append((t, _run_is_bold(r), r.find(W_BR) is not None))
+
+    br_idx = next((i for i, (_, _, has_br) in enumerate(run_entries) if has_br), None)
+    if br_idx is None or br_idx == 0:
+        return None
+
+    before = run_entries[:br_idx]
+    after = run_entries[br_idx:]
+
+    heading_text = "".join(t for t, _, _ in before).strip()
+    body_text = "".join(t for t, _, _ in after).strip()
+
+    if not heading_text or len(body_text) < 10:
+        return None
+    if len(heading_text) > 80 or heading_text[-1] in (".", ";", ","):
+        return None
+    if not any(bold for _, bold, _ in before):
+        return None
+    if all(bold for _, bold, _ in after):
+        return None
+
+    return heading_text, body_text
+
+
 def _accept_all_text(element: Any) -> str:
     """Concatenated <w:t> text under `element`, excluding any inside a <w:del>
     subtree. Captures inline content-control (<w:sdt>) runs automatically, since
@@ -260,20 +324,53 @@ def _walk(container: Any, blocks: list[ExtractedBlock], in_cc: bool, numbering: 
                 continue
             has_auto, level, num_id, abstract, outline = _paragraph_numbering(child, numbering)
             m = _LITERAL_NUM.match(text)
-            blocks.append(
-                ExtractedBlock(
-                    order=len(blocks),
-                    kind="paragraph",
-                    text=text,
-                    has_autonumber=has_auto,
-                    list_level=level,
-                    num_id=num_id,
-                    abstract_num_id=abstract,
-                    outline_level=outline,
-                    literal_prefix=m.group(1) if m else None,
-                    in_content_control=in_cc,
+            inline = _split_at_line_break(child)
+            if inline is not None:
+                heading_text, body_text = inline
+                mh = _LITERAL_NUM.match(heading_text)
+                blocks.append(
+                    ExtractedBlock(
+                        order=len(blocks),
+                        kind="paragraph",
+                        text=heading_text,
+                        has_autonumber=has_auto,
+                        list_level=level,
+                        num_id=num_id,
+                        abstract_num_id=abstract,
+                        outline_level=outline,
+                        literal_prefix=mh.group(1) if mh else None,
+                        in_content_control=in_cc,
+                    )
                 )
-            )
+                blocks.append(
+                    ExtractedBlock(
+                        order=len(blocks),
+                        kind="paragraph",
+                        text=body_text,
+                        has_autonumber=False,
+                        list_level=None,
+                        num_id=None,
+                        abstract_num_id=None,
+                        outline_level=None,
+                        literal_prefix=None,
+                        in_content_control=in_cc,
+                    )
+                )
+            else:
+                blocks.append(
+                    ExtractedBlock(
+                        order=len(blocks),
+                        kind="paragraph",
+                        text=text,
+                        has_autonumber=has_auto,
+                        list_level=level,
+                        num_id=num_id,
+                        abstract_num_id=abstract,
+                        outline_level=outline,
+                        literal_prefix=m.group(1) if m else None,
+                        in_content_control=in_cc,
+                    )
+                )
         elif tag == W_TBL:
             rows = _table_rows(child)
             if any(any(c for c in row) for row in rows):

@@ -608,6 +608,20 @@
   letter-spacing: 0.05em;
   color: #6b7280;
 }
+.bulkOk {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  background: #1f2328;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.bulkOk:hover {
+  background: #2563eb;
+}
 .bulkClear {
   margin-left: auto;
   font: inherit;
