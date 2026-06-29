@@ -53,3 +53,4 @@ frontend/.env*.local
 # Local sample/example contracts — never commit contract content to the public repo (privacy)
 examples/
 *.bak*
+.claude/worktrees/
