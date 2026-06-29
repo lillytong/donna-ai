@@ -4,33 +4,23 @@ Private engineering working list (gitignored). Open ADRs, de-risk items, build-s
 
 ## Build Tracker
 
-Builds since last reconciliation: 1. **Reconciled 2026-06-29 (Mac, post-consolidation) through §5 F30–F38: flipped F36 (was drift) + F04 origin-capture (was drift) to built; F30/F32/F34/F37 match.** Since: **F35 + import-node-delete OPERATOR-ACCEPTED 2026-06-29** (F35: E2E QA on the Meridian-Ardent fixture, screenshot verified, §5 flipped to built + 2 follow-ups filed; import-node-delete: noted on F04 §5 row). **NOW BUILDING: import-screen undo (depth 5)** — Lilly request 2026-06-29. NOTE for any future test: baseline/revised clause-number sets are ≈ (real adds/deletes diverge them) — assert "classified-correctly", NEVER set-equality.
+Builds since last reconciliation: 0 (reset 2026-06-29, phase-gate sweep). **Reconciled 2026-06-29 through §5 F04/F27/F35/F36/F37 + import-node-delete — all match code + acceptance; `## Awaiting Acceptance` cleared (all 3 acceptance tests PASSED). FLAGGED for Lilly: F33 (version-delete) §5 still reads "pending Lilly UX acceptance" — confirm whether that was ever accepted so I can flip it.** NOTE for any future test: baseline/revised clause-number sets are ≈ (real adds/deletes diverge them) — assert "classified-correctly", NEVER set-equality.
 
 (Prior trackers — version-delete F33/DD-87, F03c rework DD-83, SPEC restructure, sweeps 1–6 — are superseded; durable record is git + §5 + DESIGN_DECISIONS. Deferred-from-them carry still open: Path-A tracked-changes + Donna hunk-significance in §5 F03b; a real external Mode-B before/after pair in NEEDS LILLY.)
 
-## ⏭ RESUME HERE — 2026-06-29 (personal Mac; work-laptop branches CONSOLIDATED into main + pushed; F35 + import-node-delete await Lilly's acceptance)
+## ⏭ RESUME HERE — 2026-06-29 (personal Mac; all 3 acceptance tests PASSED; undo build verifying)
 
-**Machine = personal Mac** (switched from work laptop). On entry git was at origin/main (`f8d4e84`); the work laptop had committed + pushed its session as **four UNMERGED feature branches**, none in main. **Consolidated all four into main, gate-green at each step, pushed → origin/main `b164eed`.** DB was behind (applied through 0015) → migrated to **0019**. Merged local branches deleted.
+**This session:** consolidated 4 stranded work-laptop branches into main + pushed (mypy-fix, F35, import-node-delete, F38 spec-stub → origin/main, gate-green); DB migrated 0015→0019; reconciled drift (F36 + F04 origin-capture both flipped `planned`→`built`). Then **operator-accepted all 3 carried builds**: **F35** clickable clause refs (§5 built, DD-92, README showcase), **import-node-delete** (F04 §5 note), **version-history newest-first** (F27 §5 note). Full detail in git.
 
-**Landed in main this session (in merge order):**
-- `8b7e618` **mypy-fix** — type-annotate `_attach_images` dicts; restores green `mypy backend` (was RED on `backend/api/imports.py`).
-- **F35** (DD-92) clickable, renumber-safe clause refs — backend emits `[[clause:NODE_ID]]` anchors (`revision_recommend_v2.txt` + grounding threads projected numbers); frontend `renderWithAnchors` renders inline chips labeled with the LIVE projected number, click → `scrollToNode` (focus if changed, else scroll). **Operator-perceivable → ## Awaiting Acceptance.**
-- **import-node-delete** — Delete/Backspace at import-review removes selected rows + their subtrees (in-memory, pre-commit), redirect to cockpit on commit (`frontend/app/import/page.tsx`). Enhances F04. **Operator-perceivable → ## Awaiting Acceptance.**
-- **F38 'Generate redlines' spec stub** (DD-96, docs only) — option B: a cockpit button, full-draft redline on **every** clause of a Mode-A import, operator-triggered, stance parameterized by `contracts.origin`. **PREREQ MET — F04 `contracts.origin` capture is built** (import Context-step required control → `contracts.origin`, persisting; verified live 2026-06-29). Docs reconciled (SPEC F04/F38, DD-84/DD-96).
+**Building now — import-screen undo (depth 5, Lilly request):** dev team landed it in `frontend/app/import/page.tsx` (snapshot-stack of `{rows,selected,anchor}`, cap 5, pushed before all six tree mutations; Undo button + Cmd/Ctrl+Z guarded against text-input focus; no redo v1; history clears on new parse). tsc-clean per agent; **awaiting my screenshot-verify** → then `## Awaiting Acceptance` + Lilly's test. Records as an F04 correction-op note (like delete), no separate §5 row.
 
-**Consolidated-main gate:** `mypy` clean (119 files), **743 pass / 1 skip**, `tsc` 0, no new CSS modules. Privacy name-pass clean.
+**NEXT thrust = F38 'Generate redlines'** — PRODUCT-shaped (Katrina scopes the DD-96 open Qs: stance-per-origin, output surface, coexist-with-F11). F04 `contracts.origin` prereq MET. **SPEC health check is DUE** (PM_TODO N=6 ≥ 5) — Katrina runs it before F38; flagged there: a "Donna recommendation engine" overview pointer in §5/§7 + reconcile PM_TODO drift (F11 proposal + F33 likely stale).
 
-**§5 reconciliation (sweep done):** F36 flipped `planned`→`built` (was drift — code shipped 2026-06-29, §5 never flipped). F30/F32/F34/F37 built & match. F35 left §5 `planned` until Lilly passes its acceptance test.
-
-**NEXT thrust = F38 'Generate redlines'** — PRODUCT-shaped (Katrina scopes the DD-96 open questions: stance-per-origin, output surface, coexist-with-F11). Its F04 `contracts.origin` capture prereq is already MET (built) — F38 is gated only on Katrina scoping + its own stance-parameterization logic. **SPEC health check is DUE** (PM_TODO N≥5) — run before F38 scoping; flagged: a short "Donna recommendation engine" overview pointer in §5/§7 so a reader sees the assembled DD-93 pipeline, not scattered F-rows.
-
-**GOTCHAS (still in force — full list in "Dev notes" below):** dev backend MUST run `--reload --reload-dir backend`; migrations must be APPLIED not just present (query the DB — bit us again this session, Mac was at 0015); `tsc` does NOT catch CSS-module path errors; build agents can corrupt ASCII quotes → smart quotes; **presume a stalled agent's work broken until you `git diff` + compile-check it.** Local-only (gitignored, carry manually): `.env`, `sample-contract.docx`, `spikes/`, `examples/`.
-
-**NEEDS LILLY (not blocking):** a real external Mode-B before/after pair + gold map to retire the matcher's self-graded caveat.
+**NEEDS LILLY (not blocking):** a real external Mode-B before/after pair + gold map to retire the matcher's self-graded caveat. (Operational gotchas live in "Dev notes" below — unchanged.)
 
 ## Awaiting Acceptance (operator-perceivable, past the engineering gate — flip §5 + delete on Lilly's PASS; reclassify to ## Open as a bug on FAIL)
 
-- [ ] **Version-history reverse order** (built, tsc 0 — carried from prior session). **Test:** open a contract's Version history (badge ▾) → versions list newest-on-top; the Working copy stays pinned at the top regardless.
+_(empty — all 3 carried builds accepted 2026-06-29. The import-screen undo build lands here once it clears my screenshot-verify.)_
 
 ## Dev notes (operational gotchas — keep)
 
