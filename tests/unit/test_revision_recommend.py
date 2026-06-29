@@ -10,21 +10,26 @@ from typing import Any
 
 import pytest
 import structlog
+from backend.models.imports import StoredNode
 from backend.models.revision_recommend import (
     RevisionRecommendation,
     RevisionRecommendSummary,
     VerdictTally,
 )
+from backend.prompts.utils import render
 from backend.services.donna import revision_recommend as rr
+from backend.services.donna.grounding import build_clause_grounding, build_projected_label_map
 from backend.services.donna.revision_recommend import (
     _cluster_key,
     build_change_focus,
     derive_kind,
+    extract_clause_anchors,
     finalize_recommendation,
     parse_recommendation,
     recommend_on_import,
     reconstruct_proposed_clause,
     reduce_counter_span,
+    referenceable_ids,
 )
 
 
@@ -215,6 +220,118 @@ def test_finalize_genuine_counter_differing_from_original_is_preserved() -> None
     out = finalize_recommendation(rec, {}, "capped at fees paid")
     assert out.verdict == "counter"
     assert out.counter_language == "capped at two times the fees paid"
+
+
+# --- F35 / DD-92: inline clause-citation anchors ---------------------------
+
+
+def test_extract_clause_anchors_dedupes_in_order() -> None:
+    text = "Tension with [[clause:n-2]]; also [[clause:n-1]] then [[clause:n-2]] again."
+    assert extract_clause_anchors(text) == ["n-2", "n-1"]
+
+
+def test_extract_clause_anchors_none_when_absent() -> None:
+    assert extract_clause_anchors("A plain rationale with no anchors.") == []
+
+
+def test_referenceable_ids_are_grounding_brackets_gated_to_real_nodes() -> None:
+    # The bracketed ids in a grounding block, intersected with the real node-id set — a stray
+    # bracket in clause body text ([NOTE]) can never widen the referenceable set.
+    grounding = "[n-1] clause 3 — pays [NOTE] quarterly\n[n-2] clause 4 — see schedule"
+    assert referenceable_ids(grounding, {"n-1", "n-2", "n-9"}) == {"n-1", "n-2"}
+
+
+def test_finalize_keeps_valid_anchor_verbatim_and_collects_citation() -> None:
+    rec = RevisionRecommendation(
+        verdict="keep",
+        significance="substantive",
+        reasoning="This widens the indemnity beyond [[clause:n-1]].",
+        counter_language=None,
+    )
+    out = finalize_recommendation(rec, {"n-1": "clause 3 (Indemnity)"}, None, referenceable={"n-1"})
+    # The valid anchor survives verbatim so the frontend can render it as a live-numbered link,
+    # and its id is collected into the structured citations contract.
+    assert "[[clause:n-1]]" in out.reasoning
+    assert out.citations == ["n-1"]
+
+
+def test_finalize_degrades_unreferenceable_anchor_to_label() -> None:
+    rec = RevisionRecommendation(
+        verdict="keep",
+        significance="substantive",
+        reasoning="Conflicts with [[clause:n-9]].",
+        counter_language=None,
+    )
+    # n-9 is a known node but NOT in this change's referenceable set -> degrade to its label,
+    # never a broken link, never a raw id, and not cited.
+    out = finalize_recommendation(rec, {"n-9": "clause 7 (Term)"}, None, referenceable={"n-1"})
+    assert "[[clause:" not in out.reasoning
+    assert "clause 7 (Term)" in out.reasoning
+    assert out.citations == []
+
+
+def test_finalize_degrades_hallucinated_anchor_to_neutral_phrase() -> None:
+    rec = RevisionRecommendation(
+        verdict="keep",
+        significance="substantive",
+        reasoning="See [[clause:made-up-id]] for the carve-out.",
+        counter_language=None,
+    )
+    out = finalize_recommendation(rec, {}, None, referenceable={"n-1"})
+    assert "made-up-id" not in out.reasoning
+    assert "the referenced clause" in out.reasoning
+    assert out.citations == []
+
+
+def test_finalize_scrubs_bare_leaked_id_but_preserves_valid_anchor() -> None:
+    # A bare leaked id in the prose is still scrubbed to its label (defense in depth), while the
+    # id INSIDE a kept anchor is masked from the scrub so the anchor is not broken.
+    rec = RevisionRecommendation(
+        verdict="keep",
+        significance="substantive",
+        reasoning="n-1 raises the cap; compare [[clause:n-1]].",
+        counter_language=None,
+    )
+    out = finalize_recommendation(rec, {"n-1": "clause 3 (Cap)"}, None, referenceable={"n-1"})
+    assert "[[clause:n-1]]" in out.reasoning  # anchor intact
+    assert "clause 3 (Cap) raises the cap" in out.reasoning  # bare leak scrubbed to label
+    assert out.citations == ["n-1"]
+
+
+def test_finalize_without_referenceable_degrades_all_anchors() -> None:
+    # The back-compat path: no referenceable set supplied -> every anchor degrades, none cited.
+    rec = RevisionRecommendation(
+        verdict="accept",
+        significance="trivial",
+        reasoning="Tidy in [[clause:n-1]].",
+        counter_language=None,
+    )
+    out = finalize_recommendation(rec, {"n-1": "clause 3"}, None)
+    assert "[[clause:" not in out.reasoning
+    assert out.citations == []
+
+
+def test_recommend_prompt_renders_referenceable_clause_with_projected_number() -> None:
+    # End-to-end of the grounding contract: a referenceable clause is presented to Donna labelled
+    # with its DD-88 PROJECTED number (here "4", not the baseline "1"), so when she anchors it via
+    # [[clause:id]] the rendered live number matches the pane. The prompt also instructs anchor-only
+    # references.
+    nodes = [
+        StoredNode(
+            id="n-1", order_index=0, content_type="prose", heading="Indemnity", role="clause"
+        )
+    ]
+    labels = build_projected_label_map(nodes, {"n-1": "4"})
+    clause = build_clause_grounding(nodes, "n-1", labels)
+    assert "[n-1] clause 4 (Indemnity)" in clause
+    prompt = render(
+        "revision_recommend_v2.txt",
+        deal_context="Contract type: licence",
+        clause=clause,
+        change="Change type: an edit.\nOur original text:\nx\nTheir proposed text:\ny",
+    )
+    assert "[n-1] clause 4 (Indemnity)" in prompt  # referenceable clause carries the live number
+    assert "[[clause:id]]" in prompt  # the anchor-only reference instruction is in the prompt
 
 
 # --- deterministic counter-span reduction ----------------------------------

@@ -1208,6 +1208,30 @@ def _build_projected(
     return projected
 
 
+async def projected_clause_numbers(
+    conn: Any, contract_id: str, session_id: str
+) -> dict[str, str]:
+    """The DD-88 PROJECTED clause number per node_id for this session's live review state — the
+    SAME numbers the review pane shows, reusing the canonical `_build_projected` projection (not a
+    second numbering path). F35/DD-92: the recommend grounding labels referenceable clauses with
+    these live projected numbers, not the baseline ones, so a clause anchor's resolved number
+    matches the pane. Keys are baseline node_ids (== live node ids); unnumbered projected nodes (a
+    non-clause, or a pending/accepted deletion) are omitted. Read-only."""
+    session_row = await conn.fetchrow(_SELECT_SESSION, session_id)
+    if session_row is None:
+        raise SessionNotFound(session_id)
+    session = _to_session(session_row)
+    if session.contract_id != contract_id:
+        raise SessionNotFound(session_id)
+    resolved = await _resolve_document(conn, session)
+    change_rows = await conn.fetch(_SELECT_CHANGES, session_id)
+    hunks_by_change = await _hunks_for(conn, [str(r["id"]) for r in change_rows])
+    changes = [_to_change(r, hunks_by_change.get(str(r["id"]), [])) for r in change_rows]
+    _stamp_clusters(changes)
+    projected = _build_projected(resolved, changes)
+    return {n.node_id: n.clause_number for n in projected if n.clause_number is not None}
+
+
 async def get_document_view(conn: Any, contract_id: str, session_id: str) -> RevisionDocumentView:
     """The two-pane document payload (F03c rework): the baseline + revised document trees
     as ordered nodes, the settled-change overlay keyed to the revised side, the abstain

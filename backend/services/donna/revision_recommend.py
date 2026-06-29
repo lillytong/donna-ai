@@ -33,6 +33,7 @@ Every LLM call goes through `services/llm.complete`, which logs model/tokens/lat
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any, Literal
@@ -57,14 +58,15 @@ from backend.services.donna.distillation import fetch_patterns_for_issue
 from backend.services.donna.grounding import (
     build_clause_grounding,
     build_deal_brief_grounding,
-    build_label_map,
     build_mandate_grounding,
     build_pattern_grounding,
+    build_projected_label_map,
     build_reference_grounding,
 )
 from backend.services.donna.qa import scrub_leaked_ids
 from backend.services.firm_profile_repo import get_firm_profile
 from backend.services.import_.revision_cluster import cluster_key, normalize_segment
+from backend.services.import_.revision_review import projected_clause_numbers
 from backend.services.llm import complete
 from backend.services.settings_repo import get_contract, get_contract_type
 
@@ -167,6 +169,70 @@ def parse_recommendation(text: str) -> RevisionRecommendation:
         return _FALLBACK
 
 
+# --- F35 / DD-92: inline clause-citation anchors ------------------------------
+#
+# THE ANCHOR CONVENTION (frontend consumes this verbatim): Donna emits an inline
+# `[[clause:NODE_ID]]` token in her `reasoning` to reference a clause. The frontend renders each
+# token as a clickable inline link labeled with the clause's LIVE projected number (DD-88) that
+# scrolls to the clause (reusing the F10/F11 node-id citation + jumpTo pattern). The token is a
+# DOUBLE-bracket sentinel chosen so it cannot collide with the single-bracket `[id]` grounding
+# convention, with markdown links `[text](url)`, or with ordinary rationale prose, and is
+# trivially regex-parseable. NODE_ID is copied verbatim from a bracketed `[id]` in the grounding.
+_CLAUSE_ANCHOR_RE = re.compile(r"\[\[clause:([^\]]+?)\]\]")
+
+# Bracketed-id token in a grounding block (`[id] <label> — <text>` / definition / cross-ref
+# lines). Single-bracket only — `[^\[\]]` never spans into the `[[clause:...]]` double-bracket.
+_GROUNDING_ID_RE = re.compile(r"\[([^\[\]]+)\]")
+
+
+def extract_clause_anchors(text: str) -> list[str]:
+    """Every node_id referenced by an inline `[[clause:NODE_ID]]` anchor, in first-seen order,
+    deduped. Pure; the structured read of the anchor convention (never a re-parse downstream)."""
+    out: list[str] = []
+    for match in _CLAUSE_ANCHOR_RE.finditer(text):
+        nid = match.group(1).strip()
+        if nid and nid not in out:
+            out.append(nid)
+    return out
+
+
+def referenceable_ids(grounding: str, valid: set[str]) -> set[str]:
+    """The node_ids a recommendation may anchor to: the bracketed `[id]`s present in this change's
+    assembled grounding (focal clause subtree + DD-31 reference bundle), intersected with the real
+    node-id set so stray brackets in clause body text can never widen the referenceable set."""
+    return {nid for nid in _GROUNDING_ID_RE.findall(grounding)} & valid
+
+
+def _resolve_anchors(
+    text: str, referenceable: set[str], id_labels: dict[str, str]
+) -> tuple[str, list[str]]:
+    """Validate inline `[[clause:NODE_ID]]` anchors in `text`, returning (text, citations). A VALID
+    anchor (id in `referenceable`) is kept VERBATIM so the frontend renders it as a live-numbered
+    clickable link, and its id is collected into `citations` (deduped, order-preserved). An anchor
+    whose id is unknown/hallucinated or not referenceable degrades to the node's legible label (no
+    link) when the id is known, else to a neutral phrase — never a raw id, never a broken link.
+    Valid anchors are masked while `scrub_leaked_ids` runs so the bare-id scrub can never rewrite
+    the id INSIDE a kept anchor; bare leaked ids elsewhere in the prose are still scrubbed."""
+    citations: list[str] = []
+    masked: dict[str, str] = {}
+
+    def _repl(match: re.Match[str]) -> str:
+        nid = match.group(1).strip()
+        if nid in referenceable:
+            if nid not in citations:
+                citations.append(nid)
+            token = f"\x00ANCHOR{len(masked)}\x00"
+            masked[token] = f"[[clause:{nid}]]"
+            return token
+        return id_labels.get(nid, "the referenced clause")
+
+    out = _CLAUSE_ANCHOR_RE.sub(_repl, text)
+    out = scrub_leaked_ids(out, id_labels)
+    for token, anchor in masked.items():
+        out = out.replace(token, anchor)
+    return out, citations
+
+
 def _cluster_key(hunk: Any) -> tuple[str, str] | None:
     """Cross-document clustering key for an asyncpg hunk row (DD-89) — a thin wrapper over the
     SHARED `revision_cluster.cluster_key` so recommend-time and read-time clustering can never
@@ -237,17 +303,23 @@ def finalize_recommendation(
     id_labels: dict[str, str],
     original_text: str | None,
     *,
+    referenceable: set[str] | None = None,
     proposed_text: str | None = None,
     proposed_clause: str | None = None,
     model: str | None = None,
     hunk_id: str | None = None,
 ) -> RevisionRecommendation:
-    """Pure post-LLM cleanup + invariant enforcement: scrub any leaked id out of the prose, and
-    guarantee counter-language exists IFF verdict == counter — a trivial hunk never carries it
-    (schema: donna_counter_text is null for trivial hunks), and a `counter` with no usable
-    language collapses to the safe `keep` (the operator's later "counter" action would otherwise
-    have no staged text to send)."""
-    reasoning = scrub_leaked_ids(rec.reasoning, id_labels)
+    """Pure post-LLM cleanup + invariant enforcement: resolve the F35/DD-92 inline clause anchors
+    (keep valid `[[clause:id]]` anchors verbatim, degrade invalid ones, collect the validated ids
+    into `citations`), scrub any leaked bare id out of the prose, and guarantee counter-language
+    exists IFF verdict == counter — a trivial hunk never carries it (schema: donna_counter_text is
+    null for trivial hunks), and a `counter` with no usable language collapses to the safe `keep`
+    (the operator's later "counter" action would otherwise have no staged text to send).
+
+    `referenceable` is the node-id set this change may anchor to (focal clause + DD-31 cross-refs);
+    an anchor outside it is treated as not-referenceable. Defaults to none → every anchor degrades
+    (the back-compat path for callers without grounding-id context)."""
+    reasoning, citations = _resolve_anchors(rec.reasoning, referenceable or set(), id_labels)
     counter = rec.counter_language
     if counter is not None:
         counter = scrub_leaked_ids(counter, id_labels).strip() or None
@@ -299,6 +371,7 @@ def finalize_recommendation(
         significance=rec.significance,
         reasoning=reasoning,
         counter_language=counter,
+        citations=citations,
     )
 
 
@@ -315,6 +388,7 @@ class _Member:
     kind: ChangeKind
     clause: str
     proposed_clause: str
+    referenceable: frozenset[str]
 
 
 async def _judge(
@@ -419,6 +493,12 @@ async def recommend_session(session_id: str) -> RevisionRecommendSummary:
         # spine, purpose), distilled once at import. One read per session; composed into the
         # {deal_context} slot as a session-level constant, identical for every change. Empty=no-op.
         deal_brief = await deal_brief_repo.get_brief(conn, contract_id)
+        # F35 / DD-92: the DD-88 PROJECTED clause numbers (node_id -> live number) — the same
+        # numbers the review pane shows after pending decisions renumber the document. Reuses the
+        # canonical projection (not a second numbering path). Donna's clause grounding is labelled
+        # with these (not the baseline `_plan` numbers), so a clause anchor resolves to the number
+        # the operator currently sees. One read per session; recomputed on each (re-)run.
+        projected_numbers = await projected_clause_numbers(conn, contract_id, session_id)
 
         change_rows = await conn.fetch(_SELECT_CHANGES, session_id)
         targets: list[tuple[Any, ChangeKind]] = []
@@ -436,7 +516,10 @@ async def recommend_session(session_id: str) -> RevisionRecommendSummary:
     deal_brief_block = build_deal_brief_grounding(deal_brief)
     if deal_brief_block:
         deal_context = f"{deal_context}\n\n{deal_brief_block}"
-    labels = build_label_map(nodes)
+    # F35/DD-92: project the label map onto the LIVE (DD-88) numbers, not baseline. Referenceable
+    # clauses Donna anchors to are labelled with the number the pane shows.
+    labels = build_projected_label_map(nodes, projected_numbers)
+    valid_node_ids = set(labels)
     nodes_by_id = {n.id: n for n in nodes}
     pattern_block = build_pattern_grounding(patterns)
     mandate_block = build_mandate_grounding(firm_profile)
@@ -457,8 +540,10 @@ async def recommend_session(session_id: str) -> RevisionRecommendSummary:
         if root_id is None or root_id not in nodes_by_id:
             return ""
         if root_id not in ref_bundle_cache:
+            # Pass the PROJECTED label map (F35/DD-92) so cross-ref target lines carry the live
+            # number, matching the focal clause's lines.
             ref_bundle_cache[root_id] = build_reference_grounding(
-                nodes_by_id[root_id], nodes_by_id, defined_terms, cross_refs
+                nodes_by_id[root_id], nodes_by_id, defined_terms, cross_refs, labels
             )
         return ref_bundle_cache[root_id]
 
@@ -469,11 +554,20 @@ async def recommend_session(session_id: str) -> RevisionRecommendSummary:
         bundle = _reference_bundle(root_id)
         if bundle:
             clause = f"{clause}\n\n{bundle}" if clause else bundle
+        # F35/DD-92: the node_ids this change may anchor to = the bracketed ids in its assembled
+        # grounding (focal subtree + reference bundle), gated to real node ids.
+        referenceable = frozenset(referenceable_ids(clause, valid_node_ids))
         change_hunks = hunks_by_change.get(str(change["id"]), [])
         proposed_clause = _proposed_clause_for(kind, change, change_hunks, nodes_by_id)
         for hunk in change_hunks:
             members.append(
-                _Member(hunk=hunk, kind=kind, clause=clause, proposed_clause=proposed_clause)
+                _Member(
+                    hunk=hunk,
+                    kind=kind,
+                    clause=clause,
+                    proposed_clause=proposed_clause,
+                    referenceable=referenceable,
+                )
             )
 
     clusters: dict[tuple[str, str], list[_Member]] = {}
@@ -502,6 +596,7 @@ async def recommend_session(session_id: str) -> RevisionRecommendSummary:
                 raw,
                 labels,
                 member.hunk["original_text"],
+                referenceable=set(member.referenceable),
                 proposed_text=member.hunk["proposed_text"],
                 proposed_clause=member.proposed_clause,
                 model=model,

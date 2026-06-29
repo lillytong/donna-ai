@@ -155,3 +155,16 @@ def test_cross_ref_resolves_target_body_only_for_focal_source() -> None:
 def test_empty_when_nothing_resolves() -> None:
     focal = _node("n-focal", "Plain text with no defined terms or references.")
     assert build_reference_grounding(focal, _nodes_by_id(focal), [], []) == ""
+
+
+def test_supplied_labels_override_baseline_numbers_f35() -> None:
+    # F35/DD-92: when the caller supplies a PROJECTED label map, the cross-ref target line carries
+    # that live label, not the baseline `_plan` number derived from node order.
+    focal = _node("n-focal", "As set out in clause 9.", order=0)
+    target = _node("n-target", "Indemnity body.", order=1)
+    refs = [_ref("n-focal", "n-target")]
+    by_id = _nodes_by_id(focal, target)
+    out = build_reference_grounding(
+        focal, by_id, [], refs, {"n-target": "clause 9 (Indemnity)", "n-focal": "clause 2"}
+    )
+    assert "[n-target] clause 9 (Indemnity) —" in out

@@ -134,6 +134,12 @@ def _wire(
     async def fake_get_brief(_conn: Any, _cid: str) -> DealBrief | None:
         return deal_brief
 
+    async def fake_projected(_conn: Any, _cid: str, _sid: str) -> dict[str, str]:
+        # F35/DD-92 seam: the DD-88 projected number map. Stubbed empty here (these engine tests
+        # run with empty nodes); a dedicated test asserts the live-number label threading.
+        return {}
+
+    monkeypatch.setattr(svc, "projected_clause_numbers", fake_projected)
     monkeypatch.setattr(svc, "acquire", fake_acquire)
     monkeypatch.setattr(svc, "complete", fake_complete)
     monkeypatch.setattr(svc, "fetch_nodes", fake_nodes)
@@ -380,6 +386,7 @@ async def test_reference_bundle_injected_and_resolved_once_per_root(monkeypatch:
     monkeypatch.setattr(svc, "build_reference_grounding", spy_build)
     monkeypatch.setattr(svc, "get_firm_profile", lambda _conn: _empty_str())
     monkeypatch.setattr(deal_brief_repo, "get_brief", lambda *_a: _empty_brief())
+    monkeypatch.setattr(svc, "projected_clause_numbers", lambda *_a: _empty_numbers())
 
     await svc.recommend_session("s1")
 
@@ -400,6 +407,10 @@ async def _empty_str() -> str:
 
 async def _empty_brief() -> DealBrief | None:
     return None
+
+
+async def _empty_numbers() -> dict[str, str]:
+    return {}
 
 
 # --------------------------------------------------------------------------- #

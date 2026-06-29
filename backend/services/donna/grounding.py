@@ -68,11 +68,32 @@ def _node_label(node: StoredNode, number: str | None) -> str:
     return _content_label(node)
 
 
+def _labels_from_numbers(nodes: list[StoredNode], numbers: dict[str, str]) -> dict[str, str]:
+    """node_id -> legible label for every node, given a node_id -> clause-number map. Shared by
+    the baseline (`_plan`) and projected (DD-88) label maps so both render labels identically;
+    only the number SOURCE differs."""
+    return {node.id: _node_label(node, numbers.get(node.id)) for node in nodes}
+
+
 def build_label_map(nodes: list[StoredNode]) -> dict[str, str]:
     """node_id -> legible label for every node, reusing the export renderer's `_plan`
     numbering so clause numbers are consistent app-wide (one numbering source)."""
     numbers = {node.id: number for node, number in _plan(nodes) if number is not None}
-    return {node.id: _node_label(node, numbers.get(node.id)) for node in nodes}
+    return _labels_from_numbers(nodes, numbers)
+
+
+def build_projected_label_map(
+    nodes: list[StoredNode], projected_numbers: dict[str, str]
+) -> dict[str, str]:
+    """node_id -> legible label using the DD-88 PROJECTED clause numbers (the live numbers the
+    Mode-B review pane currently shows after pending decisions renumber the document), NOT the
+    baseline `_plan` numbers. F35/DD-92: Donna's revision-recommend grounding labels referenceable
+    clauses with the number the operator currently sees, so a clause anchor's resolved number
+    matches the pane even before/after a decision renumbers it. `projected_numbers` is the
+    node_id -> clause_number map from `revision_review.projected_clause_numbers`; a node absent
+    from it (unnumbered: a non-clause, or a pending/accepted deletion) falls back to its content
+    label exactly as the baseline map does. Pure (no I/O)."""
+    return _labels_from_numbers(nodes, projected_numbers)
 
 
 def _subtree_ids(nodes: list[StoredNode], root_id: str) -> list[str]:
@@ -171,13 +192,19 @@ def build_reference_grounding(
     nodes_by_id: dict[str, StoredNode],
     defined_terms: list[StoredDefinedTerm],
     cross_refs: list[StoredCrossReference],
+    labels: dict[str, str] | None = None,
 ) -> str:
     """The focal clause's reference bundle as `[id] <label> — <text>` lines: the resolved
     DEFINITIONS of every defined term the clause uses, then the bodies of the clauses it
     cross-references. Depth-1 ONLY (a definition's own terms are NOT recursively pulled — the scan
     reads the focal body, never definition text). Caps: ≤8 definitions (longest-term-match first)
-    + ≤6 cross-ref bodies (document order). Empty when nothing resolves. Pure (no I/O)."""
-    labels = build_label_map(list(nodes_by_id.values()))
+    + ≤6 cross-ref bodies (document order). Empty when nothing resolves. Pure (no I/O).
+
+    `labels` lets the caller supply a precomputed label map (F35/DD-92: the PROJECTED label map so
+    cross-ref target lines carry the live number, not the baseline one); when None the baseline
+    `build_label_map` is used (the original behaviour)."""
+    if labels is None:
+        labels = build_label_map(list(nodes_by_id.values()))
     body = focal_node.body or ""
     blocks: list[str] = []
 
