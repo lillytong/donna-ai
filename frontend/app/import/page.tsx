@@ -886,6 +886,17 @@ export default function ImportReview() {
                 </select>
               </div>
               <button
+                className={styles.bulkOk}
+                onClick={() => {
+                  patchMany(selected, (r) => r);
+                  setSelected(new Set());
+                  setAnchor(null);
+                }}
+                title="Mark all selected as reviewed"
+              >
+                Looks right ✓
+              </button>
+              <button
                 className={styles.bulkClear}
                 onClick={() => {
                   setSelected(new Set());
