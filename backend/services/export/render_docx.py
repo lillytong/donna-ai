@@ -54,6 +54,8 @@ from backend.services.import_.numbering import derive_numbers
 # High ids to avoid colliding with any abstractNum/num the default template ships.
 _ABSTRACT_ID = 7777
 _NUM_ID = 7777
+_BULLET_ABSTRACT_ID = 7778
+_BULLET_NUM_ID = 7778
 
 # Numbering format per outline level for each scheme (DD-37). read_docx reads only
 # ilvl + numId off w:numPr, so these affect Word's display, not the round-trip.
@@ -202,6 +204,61 @@ def _apply_numbering(paragraph: Any, ilvl: int) -> None:
     pPr.append(numPr)
 
 
+def _inject_bullet_numbering(doc: Any, max_ilvl: int) -> None:
+    """Inject a multilevel bullet abstractNum so list nodes export as native Word
+    round bullets with correct indent at every nesting depth.  Each level carries
+    explicit w:pPr/w:ind so Word doesn't collapse all levels to ilvl=0."""
+    numbering = doc.part.numbering_part.element
+    abstract = OxmlElement("w:abstractNum")
+    abstract.set(_w("abstractNumId"), str(_BULLET_ABSTRACT_ID))
+    multi = OxmlElement("w:multiLevelType")
+    multi.set(_w("val"), "hybridMultilevel")
+    abstract.append(multi)
+    for ilvl in range(max_ilvl + 1):
+        lvl = OxmlElement("w:lvl")
+        lvl.set(_w("ilvl"), str(ilvl))
+        start = OxmlElement("w:start")
+        start.set(_w("val"), "1")
+        lvl.append(start)
+        fmt = OxmlElement("w:numFmt")
+        fmt.set(_w("val"), "bullet")
+        lvl.append(fmt)
+        lvl_text = OxmlElement("w:lvlText")
+        lvl_text.set(_w("val"), "•")
+        lvl.append(lvl_text)
+        jc = OxmlElement("w:lvlJc")
+        jc.set(_w("val"), "left")
+        lvl.append(jc)
+        # w:ind in twips (1440 twips = 1 inch): each level steps in by 720 twips
+        # (0.5 inch); w:hanging keeps the bullet hanging 360 twips left of the text.
+        pPr_lvl = OxmlElement("w:pPr")
+        ind = OxmlElement("w:ind")
+        ind.set(_w("left"), str(720 * (ilvl + 1)))
+        ind.set(_w("hanging"), "360")
+        pPr_lvl.append(ind)
+        lvl.append(pPr_lvl)
+        abstract.append(lvl)
+    numbering.insert(0, abstract)
+    num = OxmlElement("w:num")
+    num.set(_w("numId"), str(_BULLET_NUM_ID))
+    ref = OxmlElement("w:abstractNumId")
+    ref.set(_w("val"), str(_BULLET_ABSTRACT_ID))
+    num.append(ref)
+    numbering.append(num)
+
+
+def _apply_bullet_numbering(paragraph: Any, ilvl: int) -> None:
+    pPr = paragraph._p.get_or_add_pPr()
+    numPr = OxmlElement("w:numPr")
+    ilvl_el = OxmlElement("w:ilvl")
+    ilvl_el.set(_w("val"), str(ilvl))
+    numPr.append(ilvl_el)
+    num_id = OxmlElement("w:numId")
+    num_id.set(_w("val"), str(_BULLET_NUM_ID))
+    numPr.append(num_id)
+    pPr.append(numPr)
+
+
 def _apply_indent(paragraph: Any, step_pt: int, ilvl: int) -> None:
     """Indent so a clause and its first-level sub-clause share an indent and only
     deeper levels step in (14 / 14.1 flush, 14.1.1 in one — DD-37 house style)."""
@@ -318,6 +375,12 @@ def render_contract_docx(nodes: list[StoredNode], style_config: dict[str, Any]) 
     )
     _inject_numbering(doc, max_ilvl, style.numbering_scheme)
 
+    max_list_ilvl = max(
+        (max(0, depth_of[node.id] - 1) for node, _ in plan if node.content_type == "list"),
+        default=0,
+    )
+    _inject_bullet_numbering(doc, max_list_ilvl)
+
     for node, number in plan:
         depth = depth_of[node.id]
         if node.content_type == "table":
@@ -344,6 +407,12 @@ def render_contract_docx(nodes: list[StoredNode], style_config: dict[str, Any]) 
         if node.role == "title":
             paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
             _run(paragraph, text, style.font, style.title_font_size_pt, bold=True, caps=False)
+            continue
+
+        if node.content_type == "list":
+            list_level = max(0, depth - 1)
+            _apply_bullet_numbering(paragraph, list_level)
+            _emit_body(paragraph, text, style.font, style.body_font_size_pt)
             continue
 
         is_clause = node.role == "clause" and number is not None
