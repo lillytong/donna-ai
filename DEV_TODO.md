@@ -20,7 +20,7 @@ Builds since last reconciliation: 0 (reset 2026-06-29, phase-gate sweep). **Reco
 
 ## Awaiting Acceptance (operator-perceivable, past the engineering gate — flip §5 + delete on Lilly's PASS; reclassify to ## Open as a bug on FAIL)
 
-_(empty — all 3 carried builds accepted 2026-06-29. The import-screen undo build lands here once it clears my screenshot-verify.)_
+- [ ] **Import-screen undo (depth 5)** (built + functionally verified 2026-06-29, commit `29fc5ee`; records as an F04 correction-op note on pass, no separate §5 row). **Test:** at the import-review step (`/import`, after a parse), (1) confirm the **↶ Undo** button in the Structure header starts greyed/disabled; (2) select a row + press Delete → it (and its subtree) vanishes and Undo enables; (3) click **Undo** → the deleted clause comes back; (4) delete again, press **Cmd/Ctrl+Z** → also restores; (5) (optional) confirm doing 6 edits then undoing only walks back the last 5 (depth cap).
 
 ## Dev notes (operational gotchas — keep)
 
