@@ -56,6 +56,7 @@ import {
   type StoredRecommendation,
   type StoredRevisionSession,
 } from "../../lib/api";
+import { DealBriefPanel } from "./DealBriefPanel";
 
 // Rearrange mode is gated + lazy: @dnd-kit and the sortable tree only enter the
 // client bundle the first time the operator flips "Rearrange" (DESIGN: keep the
@@ -849,6 +850,10 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
   >({});
   const brainstormScrollRef = useRef<HTMLDivElement | null>(null);
   const brainstormInputRef = useRef<HTMLInputElement | null>(null);
+
+  // F37: deal-brief panel — open/close + attention-dot (cleared on first open)
+  const [briefOpen, setBriefOpen] = useState(false);
+  const [briefSeen, setBriefSeen] = useState(false);
 
   // Refresh an issue's stored brainstorm history (DD-77). Non-critical — a failure leaves the
   // prior list untouched rather than surfacing an error.
@@ -3566,6 +3571,27 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
             </div>
           )}
 
+          {/* F37: Deal-brief button — opens the slide-over panel. Attention dot
+              shows until the operator opens the panel for the first time. */}
+          <div className={styles.briefWrap}>
+            <button
+              type="button"
+              className={styles.exportBtn}
+              onClick={() => {
+                setBriefOpen(true);
+                if (!briefSeen) setBriefSeen(true);
+              }}
+              aria-haspopup="dialog"
+              aria-expanded={briefOpen}
+              title="Deal brief"
+            >
+              Deal brief
+              {!briefSeen && (
+                <span className={styles.briefDot} aria-label="Deal brief available" />
+              )}
+            </button>
+          </div>
+
           <a className={styles.navLink} href="/contracts">
             ← All contracts
           </a>
@@ -4637,6 +4663,14 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
             </div>
           </section>
         </div>
+      )}
+
+      {/* F37: deal-brief slide-over panel (fixed overlay — position in DOM is irrelevant) */}
+      {briefOpen && (
+        <DealBriefPanel
+          contractId={id}
+          onClose={() => setBriefOpen(false)}
+        />
       )}
     </div>
   );

@@ -1750,7 +1750,41 @@
   color: #2563eb;
 }
 
-/* ---- top-bar Export ▾ menu (SPEC §9) ----
+/* ---- F37: Deal-brief button (top-bar .right cluster entry point) ----------
+   Reuses .exportBtn for the button face; .briefWrap follows the same
+   position: relative / flex-shrink: 0 pattern as .exportWrap / .markWrap. */
+.briefWrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+/* Attention dot — pulsing indicator shown until the operator first opens the
+   panel. Absolute-positioned top-right of the button text. */
+.briefDot {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  border: 1.5px solid #fff;
+  display: inline-block;
+  animation: briefDotPulse 2s ease-in-out infinite;
+}
+
+@keyframes briefDotPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .briefDot {
+    animation: none;
+  }
+}
+
+/* ---- top-bar Export ▾ menu (SPEC §9) ----------------------------------------
    A primary per-contract action in the top-right cluster. The button reuses the
    ink-fill vocabulary (quiet outline → filled when open, like .rearrangeBtn);
    the popover mirrors the clause ⋮ .menu surface (white card, 8/24 shadow). */

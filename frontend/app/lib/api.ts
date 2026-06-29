@@ -305,6 +305,30 @@ export const getFirmProfile = (): Promise<FirmProfile> => getJson("/firm-profile
 export const setFirmProfile = (content: string): Promise<FirmProfile> =>
   putJson("/firm-profile", { content });
 
+// --- Deal brief (F37 / DD-95) ------------------------------------------------
+// Donna distils a per-contract brief from one whole-contract read at import
+// (Opus/high tier, background job). Operator-reviewable and editable; injected
+// into the {deal_context} grounding slot for recommendations, chat, brainstorm.
+// GET returns an empty brief (no 404) when none exists yet so the panel and the
+// {deal_context} slot both treat "never distilled" as the no-op case.
+export interface DealBrief {
+  contract_id: string;
+  content: string;
+  operator_edited: boolean;
+  model: string | null;
+  generated_at: string | null; // ISO 8601 — last Donna distillation
+  updated_at: string | null;   // ISO 8601 — last operator edit (or distillation)
+}
+
+export const getDealBrief = (contractId: string): Promise<DealBrief> =>
+  getJson(`/contracts/${contractId}/deal-brief`);
+
+export const saveDealBrief = (contractId: string, content: string): Promise<DealBrief> =>
+  putJson(`/contracts/${contractId}/deal-brief`, { content });
+
+export const refreshDealBrief = (contractId: string): Promise<DealBrief> =>
+  postJson(`/contracts/${contractId}/deal-brief/refresh`, {});
+
 export const listContractTypes = (): Promise<StoredContractType[]> => getJson("/contract-types");
 export const createContractType = (payload: ContractTypeCreate): Promise<StoredContractType> =>
   postJson("/contract-types", payload);
