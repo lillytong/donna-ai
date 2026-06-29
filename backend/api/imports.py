@@ -202,10 +202,15 @@ async def get_contract_tree(contract_id: str) -> ContractTreeResponse:
                ORDER BY ni.node_id, ni.order_index""",
             contract_id,
         )
-    images_by_node: dict[str, list] = {}
+    images_by_node: dict[str, list[NodeImage]] = {}
     for r in img_rows:
         images_by_node.setdefault(r["node_id"], []).append(
-            NodeImage(id=r["id"], node_id=r["node_id"], order_index=r["order_index"], mime_type=r["mime_type"])
+            NodeImage(
+                id=r["id"],
+                node_id=r["node_id"],
+                order_index=r["order_index"],
+                mime_type=r["mime_type"],
+            )
         )
     tree = ContractTreeResponse.from_rows(contract_id, rows)
     for node in tree.nodes:
@@ -213,7 +218,7 @@ async def get_contract_tree(contract_id: str) -> ContractTreeResponse:
     return tree
 
 
-def _attach_images(node: Any, images_by_node: dict) -> None:
+def _attach_images(node: Any, images_by_node: dict[str, list[NodeImage]]) -> None:
     node.images = images_by_node.get(node.id, [])
     for child in node.children:
         _attach_images(child, images_by_node)
