@@ -229,12 +229,13 @@ def _inject_bullet_numbering(doc: Any, max_ilvl: int) -> None:
         jc = OxmlElement("w:lvlJc")
         jc.set(_w("val"), "left")
         lvl.append(jc)
-        # w:ind in twips (1440 twips = 1 inch): each level steps in by 720 twips
-        # (0.5 inch); w:hanging keeps the bullet hanging 360 twips left of the text.
+        # w:ind in twips: ilvl=0 → 0 left indent (matches cockpit list_level=0),
+        # each subsequent level steps in by 360 twips (0.25 inch); w:hanging
+        # proportionally smaller at 180 twips.
         pPr_lvl = OxmlElement("w:pPr")
         ind = OxmlElement("w:ind")
-        ind.set(_w("left"), str(720 * (ilvl + 1)))
-        ind.set(_w("hanging"), "360")
+        ind.set(_w("left"), str(360 * ilvl))    # ilvl=0 → 0, ilvl=1 → 360, ilvl=2 → 720
+        ind.set(_w("hanging"), "180")
         pPr_lvl.append(ind)
         lvl.append(pPr_lvl)
         abstract.append(lvl)
@@ -469,7 +470,8 @@ def render_contract_docx(
             size = level.font_size_pt or style.body_font_size_pt
             if auto_number:
                 _apply_numbering(paragraph, ilvl)
-            _apply_indent(paragraph, style.indent_per_level_pt, ilvl)
+            if number is not None:  # only indent clause headings, not appendix headings
+                _apply_indent(paragraph, style.indent_per_level_pt, ilvl)
             _set_outline_level(paragraph, ilvl)
             _run(paragraph, text, style.font, size, bold=True, caps=level.caps)
             continue
@@ -487,10 +489,8 @@ def render_contract_docx(
             _emit_body(paragraph, text, style.font, size)
             continue
 
-        # Appendix body paragraph: apply the same depth-based indent as appendix
-        # headings so the hierarchy from import is preserved in the export.
+        # Appendix body paragraph: flat (no indent) to match the import/cockpit view.
         if node.role == "appendix":
-            _apply_indent(paragraph, style.indent_per_level_pt, depth)
             _emit_body(paragraph, text, style.font, style.body_font_size_pt)
             continue
 
