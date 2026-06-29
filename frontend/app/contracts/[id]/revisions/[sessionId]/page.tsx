@@ -217,6 +217,9 @@ interface RowProps {
   decided: boolean;
   onSelect: (changeId: string) => void;
   registerRef: (changeId: string, el: HTMLDivElement | null) => void;
+  // F35: registers every projected row by node_id (not just changed ones) so Donna's
+  // clause anchors can scroll-jump to any clause, changed or unchanged.
+  registerNodeRef: (nodeKey: string, el: HTMLDivElement | null) => void;
   // Collapse/expand — the node's flat-list key, whether it has children, current state,
   // and the toggle callback (isolated from the change-select onClick via stopPropagation).
   nodeKey: string;
@@ -238,6 +241,7 @@ const DocRow = memo(function DocRow({
   decided,
   onSelect,
   registerRef,
+  registerNodeRef,
   nodeKey,
   isParent,
   collapsed,
@@ -257,7 +261,10 @@ const DocRow = memo(function DocRow({
   ].join(" ");
   return (
     <div
-      ref={changeId ? (el) => registerRef(changeId, el) : undefined}
+      ref={(el) => {
+        registerNodeRef(nodeKey, el);
+        if (changeId) registerRef(changeId, el);
+      }}
       className={cls}
       style={{ paddingLeft: indent }}
       onClick={changed ? () => onSelect(changeId as string) : undefined}
@@ -614,6 +621,9 @@ export default function RevisionReview({
 
   // change-id → row element, for the rail-click scroll + the scroll spy.
   const rowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  // node_id → row element; covers ALL projected rows (not just changed ones) so that
+  // F35 clause-anchor clicks can jump to any clause Donna references in her rationale.
+  const nodeRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const docPaneRef = useRef<HTMLDivElement | null>(null);
   const applyBtnRef = useRef<HTMLButtonElement | null>(null);
   // Monotonic refetch token (DD-78 live renumber): a stale projected refetch is ignored
@@ -712,6 +722,15 @@ export default function RevisionReview({
   // recomputed server-side from the current verdicts, so they renumber on each decision.
   const projected = useMemo<ProjectedNode[]>(() => doc?.projected ?? [], [doc]);
 
+  // F35: fast node_id → ProjectedNode lookup for rendering [[clause:NODE_ID]] anchors.
+  // Updated whenever the projected spine changes (i.e. after each operator decision that
+  // renumbers the tree), so anchor labels always show the live projected clause number.
+  const projectedByNodeId = useMemo<Map<string, ProjectedNode>>(() => {
+    const m = new Map<string, ProjectedNode>();
+    for (const n of projected) m.set(n.node_id, n);
+    return m;
+  }, [projected]);
+
   // node_ids of projected nodes with at least one child in document order (the next
   // projected node is strictly deeper). A node must be here to receive a collapse chevron.
   const docNodeParents = useMemo<Set<string>>(() => {
@@ -772,6 +791,13 @@ export default function RevisionReview({
   const registerRef = useCallback((changeId: string, el: HTMLDivElement | null) => {
     if (el) rowRefs.current.set(changeId, el);
     else rowRefs.current.delete(changeId);
+  }, []);
+
+  // F35: node_id variant — registers every projected row so Donna clause anchors can jump
+  // to any referenced clause regardless of whether it carries a change.
+  const registerNodeRef = useCallback((nodeKey: string, el: HTMLDivElement | null) => {
+    if (el) nodeRefs.current.set(nodeKey, el);
+    else nodeRefs.current.delete(nodeKey);
   }, []);
 
   // ---- cross-document clusters (DD-89 / F34) --------------------------------
@@ -856,6 +882,18 @@ export default function RevisionReview({
   const scrollToChange = useCallback((changeId: string) => {
     rowRefs.current.get(changeId)?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, []);
+
+  // F35: jump to a clause by node_id. If the clause carries a change, focus it (expands
+  // the inline decision panel and scrolls into view). Otherwise fall back to a plain scroll
+  // so even unchanged anchored clauses are reachable.
+  function scrollToNode(nodeId: string) {
+    const node = projectedByNodeId.get(nodeId);
+    if (node?.change_id) {
+      focusChange(node.change_id);
+    } else {
+      nodeRefs.current.get(nodeId)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }
 
   const focusStop = useCallback(
     (stop: Stop, scroll = true) => {
@@ -1924,6 +1962,7 @@ export default function RevisionReview({
                   decided={c?.status === "complete"}
                   onSelect={focusChange}
                   registerRef={registerRef}
+                  registerNodeRef={registerNodeRef}
                   nodeKey={node.node_id}
                   isParent={docNodeParents.has(node.node_id)}
                   collapsed={collapsedDocNodes.has(node.node_id)}
@@ -1946,6 +1985,43 @@ export default function RevisionReview({
     );
   }
 
+  // F35: parse [[clause:NODE_ID]] sentinel tokens from Donna's rationale text and render
+  // them as inline clickable chips (mirroring the .cite / .citeArrow vocabulary from the
+  // cockpit page). The label is the live projected clause number (e.g. "§3.1") looked up
+  // from projectedByNodeId — so it tracks renumbering after each operator decision.
+  // If the node_id is not found in the projected spine (e.g. the clause was since deleted
+  // or rejected), the label degrades gracefully to "this clause" with no raw id shown.
+  // Prose surrounding the sentinels renders as plain text nodes.
+  function renderWithAnchors(text: string): React.ReactNode {
+    if (!text.includes("[[clause:")) return text;
+    const ANCHOR = /\[\[clause:([^\]]+?)\]\]/g;
+    const parts: React.ReactNode[] = [];
+    let last = 0;
+    let m: RegExpExecArray | null;
+    let key = 0;
+    while ((m = ANCHOR.exec(text)) !== null) {
+      if (m.index > last) parts.push(text.slice(last, m.index));
+      const nodeId = m[1];
+      const node = projectedByNodeId.get(nodeId);
+      const label = node?.clause_number ? `§${node.clause_number}` : "this clause";
+      parts.push(
+        <button
+          key={key++}
+          type="button"
+          className={bs.cite}
+          title="Jump to clause"
+          onClick={() => scrollToNode(nodeId)}
+        >
+          <span className={bs.citeArrow} aria-hidden>&#8627;</span>
+          {label}
+        </button>,
+      );
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) parts.push(text.slice(last));
+    return <>{parts}</>;
+  }
+
   // Unified Donna recommendation block — single shared renderer called by BOTH
   // renderHunkMenu (edited hunks) and renderWholeNode (added/deleted clauses).
   // Shows "Donna" label + bold verdict + one-line rationale, with counter-language below.
@@ -1962,7 +2038,7 @@ export default function RevisionReview({
           {verdictLabel && (
             <p className={styles.donnaVerdict}>
               <strong>{verdictLabel}</strong>
-              {h.donna_rationale && <> &mdash; {h.donna_rationale}</>}
+              {h.donna_rationale && <> &mdash; {renderWithAnchors(h.donna_rationale)}</>}
             </p>
           )}
           {h.donna_counter_text && (
@@ -1990,7 +2066,7 @@ export default function RevisionReview({
           Donna
         </span>
         {verdictLabel && <strong className={styles.donnaRecVerdict}>{verdictLabel}</strong>}
-        {h.donna_rationale && <span className={styles.donnaRecRationale}>{h.donna_rationale}</span>}
+        {h.donna_rationale && <span className={styles.donnaRecRationale}>{renderWithAnchors(h.donna_rationale)}</span>}
         {h.donna_counter_text && (
           <span className={styles.donnaRecCounter}>&ldquo;{h.donna_counter_text}&rdquo;</span>
         )}

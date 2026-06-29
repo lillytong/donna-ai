@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.models.revision_import import Significance
 
@@ -27,12 +27,20 @@ class RevisionRecommendation(BaseModel):
 
     Invariant enforced in the service's `finalize_recommendation`, not here: `counter_language`
     is non-null iff `verdict == "counter"`, and a `trivial` hunk never carries counter-language
-    (the `counterparty_revision_hunks.donna_counter_text` column is null for trivial hunks)."""
+    (the `counterparty_revision_hunks.donna_counter_text` column is null for trivial hunks).
+
+    F35/DD-92: `reasoning` may carry inline `[[clause:NODE_ID]]` clause anchors (the citation
+    convention the frontend renders as live-numbered clickable links). `citations` is the
+    EXPLICIT, validated list of referenced node_ids — mirrors `DonnaStructuredAnswer.citations`,
+    making the anchor contract structured rather than re-parsed downstream. The model itself emits
+    only the inline anchors; `finalize_recommendation` extracts + validates them against the
+    referenceable grounding ids and populates `citations` (default empty on the raw parse)."""
 
     verdict: RevisionVerdict
     significance: Significance
     reasoning: str
     counter_language: str | None = None
+    citations: list[str] = Field(default_factory=list)
 
 
 class VerdictTally(BaseModel):

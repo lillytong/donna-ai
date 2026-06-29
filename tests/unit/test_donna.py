@@ -115,6 +115,34 @@ def test_clause_grounding_empty_on_no_match() -> None:
     assert grounding.build_clause_grounding(nodes, "missing", labels) == ""
 
 
+# --- F35 / DD-92: projected (DD-88) label map ------------------------------
+
+
+def test_projected_label_map_uses_supplied_live_numbers_not_baseline() -> None:
+    # Baseline `_plan` would number this first clause "1"; the projected map must instead use the
+    # supplied DD-88 live number ("4") — the number the review pane currently shows after pending
+    # decisions renumbered the document.
+    nodes = [_node("h1", heading="Indemnity", role="clause", order_index=0)]
+    projected = grounding.build_projected_label_map(nodes, {"h1": "4"})
+    assert projected["h1"] == "clause 4 (Indemnity)"
+    assert grounding.build_label_map(nodes)["h1"] == "clause 1 (Indemnity)"
+
+
+def test_projected_clause_grounding_carries_live_number() -> None:
+    nodes = [_node("h1", heading="Indemnity", role="clause", order_index=0)]
+    labels = grounding.build_projected_label_map(nodes, {"h1": "4"})
+    block = grounding.build_clause_grounding(nodes, "h1", labels)
+    # The referenceable clause line carries the live projected number, not the baseline "1".
+    assert "[h1] clause 4 (Indemnity) —" in block
+
+
+def test_projected_label_map_falls_back_to_content_label_when_unnumbered() -> None:
+    # A node absent from the projected-number map (e.g. a pending deletion / non-clause) degrades
+    # to its content label exactly as the baseline map does.
+    nodes = [_node("r1", heading="Recitals", role="recital", order_index=0)]
+    assert grounding.build_projected_label_map(nodes, {})["r1"] == "Recital (Recitals)"
+
+
 def _issue(issue_id: str, **kw: object) -> StoredIssue:
     base: dict[str, object] = dict(
         id=issue_id,
