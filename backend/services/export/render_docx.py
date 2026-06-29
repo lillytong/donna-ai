@@ -54,6 +54,8 @@ from backend.services.import_.numbering import derive_numbers
 # High ids to avoid colliding with any abstractNum/num the default template ships.
 _ABSTRACT_ID = 7777
 _NUM_ID = 7777
+_BULLET_ABSTRACT_ID = 7778
+_BULLET_NUM_ID = 7778
 
 # Numbering format per outline level for each scheme (DD-37). read_docx reads only
 # ilvl + numId off w:numPr, so these affect Word's display, not the round-trip.
@@ -202,6 +204,52 @@ def _apply_numbering(paragraph: Any, ilvl: int) -> None:
     pPr.append(numPr)
 
 
+def _inject_bullet_numbering(doc: Any, max_ilvl: int) -> None:
+    """Add a multilevel bullet abstractNum (levels 0..max_ilvl) so list paragraphs
+    get native Word round bullets at every depth — no dependency on named styles."""
+    numbering = doc.part.numbering_part.element
+    abstract = OxmlElement("w:abstractNum")
+    abstract.set(_w("abstractNumId"), str(_BULLET_ABSTRACT_ID))
+    multi = OxmlElement("w:multiLevelType")
+    multi.set(_w("val"), "hybridMultilevel")
+    abstract.append(multi)
+    for ilvl in range(max_ilvl + 1):
+        lvl = OxmlElement("w:lvl")
+        lvl.set(_w("ilvl"), str(ilvl))
+        start = OxmlElement("w:start")
+        start.set(_w("val"), "1")
+        lvl.append(start)
+        fmt = OxmlElement("w:numFmt")
+        fmt.set(_w("val"), "bullet")
+        lvl.append(fmt)
+        text = OxmlElement("w:lvlText")
+        text.set(_w("val"), "•")
+        lvl.append(text)
+        jc = OxmlElement("w:lvlJc")
+        jc.set(_w("val"), "left")
+        lvl.append(jc)
+        abstract.append(lvl)
+    numbering.insert(0, abstract)
+    num = OxmlElement("w:num")
+    num.set(_w("numId"), str(_BULLET_NUM_ID))
+    ref = OxmlElement("w:abstractNumId")
+    ref.set(_w("val"), str(_BULLET_ABSTRACT_ID))
+    num.append(ref)
+    numbering.append(num)
+
+
+def _apply_bullet_numbering(paragraph: Any, ilvl: int) -> None:
+    pPr = paragraph._p.get_or_add_pPr()
+    numPr = OxmlElement("w:numPr")
+    ilvl_el = OxmlElement("w:ilvl")
+    ilvl_el.set(_w("val"), str(ilvl))
+    numPr.append(ilvl_el)
+    num_id = OxmlElement("w:numId")
+    num_id.set(_w("val"), str(_BULLET_NUM_ID))
+    numPr.append(num_id)
+    pPr.append(numPr)
+
+
 def _apply_indent(paragraph: Any, step_pt: int, ilvl: int) -> None:
     """Indent so a clause and its first-level sub-clause share an indent and only
     deeper levels step in (14 / 14.1 flush, 14.1.1 in one — DD-37 house style)."""
@@ -318,6 +366,12 @@ def render_contract_docx(nodes: list[StoredNode], style_config: dict[str, Any]) 
     )
     _inject_numbering(doc, max_ilvl, style.numbering_scheme)
 
+    max_list_ilvl = max(
+        (max(0, depth_of[node.id] - 1) for node, _ in plan if node.content_type == "list"),
+        default=0,
+    )
+    _inject_bullet_numbering(doc, max_list_ilvl)
+
     for node, number in plan:
         depth = depth_of[node.id]
         if node.content_type == "table":
@@ -348,6 +402,19 @@ def render_contract_docx(nodes: list[StoredNode], style_config: dict[str, Any]) 
 
         is_clause = node.role == "clause" and number is not None
         auto_number = is_clause and not _carries_enumerator(text, number or "")
+
+        # Bullet list: render with Word's built-in "List Bullet" style family.
+        # Must come before is_heading and clause-body so list nodes always render
+        # as bullets regardless of their role or whether the text looks like a
+        # heading (round-trip integrity: "List Bullet" style → re-import detects
+        # bullet numFmt → content_type="list" preserved exactly).
+        # depth 1 = top-level bullet ("List Bullet"), depth 2+ = sub-bullets
+        # ("List Bullet 2", "List Bullet 3"), depth 0 fallback to top-level.
+        if node.content_type == "list":
+            list_level = max(0, depth - 1)
+            _apply_bullet_numbering(paragraph, list_level)
+            _emit_body(paragraph, text, style.font, style.body_font_size_pt)
+            continue
 
         # Section / appendix heading: bold (house style) + an uppercase transform
         # ONLY when the source caps property says so (DD-37, issue #2) — never
