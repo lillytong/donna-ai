@@ -375,6 +375,13 @@ def render_contract_docx(nodes: list[StoredNode], style_config: dict[str, Any]) 
             _emit_body(paragraph, text, style.font, size)
             continue
 
+        # Appendix body paragraph: apply the same depth-based indent as appendix
+        # headings so the hierarchy from import is preserved in the export.
+        if node.role == "appendix":
+            _apply_indent(paragraph, style.indent_per_level_pt, depth)
+            _emit_body(paragraph, text, style.font, style.body_font_size_pt)
+            continue
+
         _emit_body(paragraph, text, style.font, style.body_font_size_pt)
 
     buffer = io.BytesIO()
