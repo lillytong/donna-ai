@@ -34,7 +34,19 @@ async def export_contract(contract_id: str) -> Response:
             raise HTTPException(status_code=404, detail="contract has no content to export")
         contract = await get_contract(conn, contract_id)
         style_config = contract.style_config if contract is not None else {}
-        data = await export_clean_copy(nodes, style_config)
+        img_rows = await conn.fetch(
+            """SELECT ni.node_id::text, ni.data, ni.mime_type, ni.cx_emu, ni.cy_emu
+               FROM node_images ni
+               JOIN nodes n ON n.id = ni.node_id
+               WHERE n.contract_id = $1
+               ORDER BY ni.node_id, ni.order_index""",
+            contract_id,
+        )
+        node_images_map = {
+            r["node_id"]: (bytes(r["data"]), r["mime_type"], r["cx_emu"], r["cy_emu"])
+            for r in img_rows
+        }
+        data = await export_clean_copy(nodes, style_config, node_images=node_images_map)
         filename = await resolve_export_filename(conn, contract)
         await touch_last_export(conn, contract_id)
 

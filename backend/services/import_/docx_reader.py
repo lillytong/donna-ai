@@ -51,6 +51,26 @@ W_R = qn("w:r")
 W_RPR = qn("w:rPr")
 W_B = qn("w:b")
 W_BR = qn("w:br")
+W_LVL = qn("w:lvl")
+W_NUMFMT = qn("w:numFmt")
+W_DRAWING = qn("w:drawing")
+WP_INLINE = qn("wp:inline")
+WP_ANCHOR = qn("wp:anchor")
+WP_EXTENT = qn("wp:extent")
+A_BLIP = qn("a:blip")
+# r:embed is an attribute in the Office relationships namespace.
+R_EMBED = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
+_MIME_BY_EXT: dict[str, str] = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".bmp": "image/bmp",
+    ".tiff": "image/tiff",
+    ".tif": "image/tiff",
+    ".emf": "image/emf",
+    ".wmf": "image/wmf",
+}
 
 # Word's outlineLvl=9 is the "body text" sentinel, not a heading level (0-8).
 _BODY_OUTLINE_LEVEL = 9
@@ -63,9 +83,10 @@ class _Numbering:
     once per import from styles.xml + numbering.xml; empty maps when those parts
     are absent (synthetic docs), in which case only direct numPr is read."""
 
-    def __init__(self, style_index: dict[str, _StyleNum], abstract_map: dict[int, int]) -> None:
+    def __init__(self, style_index: dict[str, _StyleNum], abstract_map: dict[int, int], bullet_abs: set[int] | None = None) -> None:
         self._style_index = style_index
         self._abstract_map = abstract_map
+        self._bullet_abs: set[int] = bullet_abs if bullet_abs is not None else set()
 
     def style(self, style_id: str | None) -> _StyleNum:
         if style_id is None:
@@ -76,6 +97,11 @@ class _Numbering:
         if num_id is None:
             return None
         return self._abstract_map.get(num_id)
+
+    def is_bullet(self, abstract_num_id: int | None) -> bool:
+        if abstract_num_id is None:
+            return False
+        return abstract_num_id in self._bullet_abs
 
 
 # (ilvl, numId, outlineLvl) carried (directly or by inheritance) by a paragraph style.
@@ -175,6 +201,22 @@ def _build_abstract_map(numbering_root: Any) -> dict[int, int]:
         return aid
 
     return {nid: canon(aid) for nid, aid in num_to_abs.items()}
+
+
+def _build_bullet_set(numbering_root: Any) -> set[int]:
+    """abstractNumIds whose primary level format is 'bullet'."""
+    bullet_abs: set[int] = set()
+    for an in numbering_root.findall(W_ABSTRACTNUM):
+        aid_raw = an.get(W_ABSTRACTNUMID)
+        if aid_raw is None:
+            continue
+        aid = int(aid_raw)
+        for lvl in an.findall(W_LVL):
+            nf = lvl.find(W_NUMFMT)
+            if nf is not None and nf.get(W_VAL) == "bullet":
+                bullet_abs.add(aid)
+                break
+    return bullet_abs
 
 
 # Typed clause-number prefixes the parser must recognise: "3.", "3.1", "(a)", "(iv)".
@@ -313,12 +355,66 @@ def _table_rows(tbl: Any) -> list[list[str]]:
     return rows
 
 
-def _walk(container: Any, blocks: list[ExtractedBlock], in_cc: bool, numbering: _Numbering) -> None:
+def _walk(
+    container: Any,
+    blocks: list[ExtractedBlock],
+    in_cc: bool,
+    numbering: _Numbering,
+    doc_part: Any = None,
+) -> None:
     """Append blocks for the direct w:p / w:tbl / w:sdt children of `container`,
     in document order, descending into block-level content controls (DD-45)."""
     for child in container:
         tag = child.tag
         if tag == W_P:
+            # --- Inline/anchored image detection (w:drawing) — before the text guard ---
+            # w:drawing is nested inside w:r inside w:p; search all descendants.
+            # A single paragraph may contain multiple drawings (emit one block each).
+            drawings_in_p = list(child.iter(W_DRAWING))
+            if drawings_in_p:
+                any_emitted = False
+                for drawing in drawings_in_p:
+                    try:
+                        inline_or_anchor = drawing.find(WP_INLINE)
+                        if inline_or_anchor is None:
+                            inline_or_anchor = drawing.find(WP_ANCHOR)
+                        cx: int | None = None
+                        cy: int | None = None
+                        if inline_or_anchor is not None:
+                            extent = inline_or_anchor.find(WP_EXTENT)
+                            if extent is not None:
+                                cx_raw = extent.get("cx")
+                                cy_raw = extent.get("cy")
+                                cx = int(cx_raw) if cx_raw is not None else None
+                                cy = int(cy_raw) if cy_raw is not None else None
+                        blip_el = next(drawing.iter(A_BLIP), None)
+                        if blip_el is not None and doc_part is not None:
+                            r_id = blip_el.get(R_EMBED)
+                            if r_id is not None and r_id in doc_part.rels:
+                                img_part = doc_part.rels[r_id].target_part
+                                img_bytes: bytes = img_part._blob
+                                target_ref: str = doc_part.rels[r_id].target_ref
+                                ext = Path(target_ref).suffix.lower()
+                                mime = _MIME_BY_EXT.get(ext, "image/png")
+                                blocks.append(
+                                    ExtractedBlock(
+                                        order=len(blocks),
+                                        kind="attachment",
+                                        text="",
+                                        image_data=img_bytes,
+                                        image_mime=mime,
+                                        image_cx_emu=cx,
+                                        image_cy_emu=cy,
+                                        in_content_control=in_cc,
+                                    )
+                                )
+                                any_emitted = True
+                    except Exception:
+                        pass
+                if any_emitted:
+                    continue
+                # All image extractions failed — fall through to text processing.
+
             text = _norm(_accept_all_text(child))
             if not text:
                 continue
@@ -340,6 +436,7 @@ def _walk(container: Any, blocks: list[ExtractedBlock], in_cc: bool, numbering: 
                         outline_level=outline,
                         literal_prefix=mh.group(1) if mh else None,
                         in_content_control=in_cc,
+                        is_bullet_list=numbering.is_bullet(abstract),
                     )
                 )
                 blocks.append(
@@ -369,6 +466,7 @@ def _walk(container: Any, blocks: list[ExtractedBlock], in_cc: bool, numbering: 
                         outline_level=outline,
                         literal_prefix=m.group(1) if m else None,
                         in_content_control=in_cc,
+                        is_bullet_list=numbering.is_bullet(abstract),
                     )
                 )
         elif tag == W_TBL:
@@ -382,7 +480,7 @@ def _walk(container: Any, blocks: list[ExtractedBlock], in_cc: bool, numbering: 
         elif tag == W_SDT:
             content = child.find(W_SDTCONTENT)
             if content is not None:
-                _walk(content, blocks, in_cc=True, numbering=numbering)
+                _walk(content, blocks, in_cc=True, numbering=numbering, doc_part=doc_part)
 
 
 def _ceiling_chars(path: Path) -> int:
@@ -427,21 +525,25 @@ def _load_numbering(path: Path) -> _Numbering:
 
     style_index: dict[str, _StyleNum] = {}
     abstract_map: dict[int, int] = {}
+    bullet_abs: set[int] = set()
     with zipfile.ZipFile(path) as z:
         names = set(z.namelist())
         if "word/styles.xml" in names:
             style_index = _build_style_index(etree.fromstring(z.read("word/styles.xml")))
         if "word/numbering.xml" in names:
-            abstract_map = _build_abstract_map(etree.fromstring(z.read("word/numbering.xml")))
-    return _Numbering(style_index, abstract_map)
+            numbering_root = etree.fromstring(z.read("word/numbering.xml"))
+            abstract_map = _build_abstract_map(numbering_root)
+            bullet_abs = _build_bullet_set(numbering_root)
+    return _Numbering(style_index, abstract_map, bullet_abs)
 
 
 def read_docx(path: str | Path) -> ParsedDocument:
     path = Path(path)
-    body = Document(str(path)).element.body
+    doc = Document(str(path))
+    body = doc.element.body
     numbering = _load_numbering(path)
     blocks: list[ExtractedBlock] = []
-    _walk(body, blocks, in_cc=False, numbering=numbering)
+    _walk(body, blocks, in_cc=False, numbering=numbering, doc_part=doc.part)
     return ParsedDocument(
         blocks=blocks,
         extracted_chars=_extracted_chars(blocks),

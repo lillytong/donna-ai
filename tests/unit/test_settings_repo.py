@@ -69,6 +69,8 @@ _EXPECTED_OPS = [
     ("DELETE", "nodes"),
     ("DELETE", "snapshot_pointers"),
     ("DELETE", "contract_snapshots"),
+    # F37/DD-95: contract_deal_brief FK references contracts(id); cleared before the contract row.
+    ("DELETE", "contract_deal_brief"),
     ("DELETE", "contracts"),
 ]
 
@@ -76,8 +78,8 @@ _EXPECTED_OPS = [
 async def test_delete_contract_cascades_in_fk_order() -> None:
     # Distinct counts so each ContractDeletion field is traced to its statement.
     # recs bsum issues | revH revC revOvr revS | msg conv emb pref foot nver xdel
-    # xnull dtnull nodes snp snap ctr
-    conn = _FakeConn([0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 7, 5, 4, 2, 6, 12, 0, 0, 1])
+    # xnull dtnull nodes snp snap brief ctr
+    conn = _FakeConn([0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 7, 5, 4, 2, 6, 12, 0, 0, 0, 1])
 
     result = await settings_repo.delete_contract(conn, "contract-1")
 
@@ -97,7 +99,7 @@ async def test_delete_contract_preserves_deal_shared_rows() -> None:
     # DD-63: defined_terms is NEVER the target of a DELETE (deal-scoped, shared);
     # it is only ever SET NULL. cross_references whose SOURCE is this contract are
     # DELETEd, while sibling refs pointing IN are SET NULL (target nulled, row kept).
-    conn = _FakeConn([0] * 20)
+    conn = _FakeConn([0] * 21)
 
     await settings_repo.delete_contract(conn, "contract-1")
 
@@ -122,7 +124,7 @@ async def test_delete_contract_preserves_deal_shared_rows() -> None:
 
 
 async def test_delete_contract_missing_returns_none() -> None:
-    conn = _FakeConn([0] * 20)  # no rows anywhere -> contract did not exist
+    conn = _FakeConn([0] * 21)  # no rows anywhere -> contract did not exist
 
     result = await settings_repo.delete_contract(conn, "missing")
 

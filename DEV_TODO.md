@@ -8,7 +8,11 @@ Builds since last reconciliation: this session (2026-06-28) shipped a large batc
 
 (Prior trackers — version-delete F33/DD-87, F03c rework DD-83, SPEC restructure, sweeps 1–6 — are superseded; durable record is git + §5 + DESIGN_DECISIONS. Deferred-from-them carry still open: Path-A tracked-changes + Donna hunk-significance in §5 F03b; a real external Mode-B before/after pair in NEEDS LILLY.)
 
-## ⏭ RESUME HERE — 2026-06-28 (Mac → work-laptop handoff; Donna recommendation-engine arc SHIPPED + accepted; F37 deal-brief spec-complete, build PAUSED)
+## ⏭ RESUME HERE — 2026-06-29 (work laptop; F37 deal brief BUILT + OPERATOR-ACCEPTED; F35 clickable refs IN PROGRESS)
+
+**Latest (2026-06-29):** Env steps done (mig 0013/0014/0015 applied — DB was behind; gate green). **F37 deal brief SHIPPED + accepted** (Lilly tested on real contract): Part A distill-at-import + repo + routes (mig `0016`) + Part B grounding injection → commit `74b2e0f`; Part C operator drawer → `b55d87a`; cost-guard test `a40a77d`; F37 §5 flipped to **built** + DD-95 addendum → `928a070`. Confirmed UX: Refresh=confirm-then-overwrite, read-view+toggle, v1 single blob. F37 follow-up (deferred): a backend job-`status` field to replace the client poll. **NOW BUILDING: F35** clickable, renumber-safe clause refs (DD-92) — backend (node-id anchors + projected-number grounding) first, then frontend render. Reconciliation sweep DUE. Mac spike files for F37 were session-local + GONE (prompt reconstructed from DD-95, no loss).
+
+**(superseded — 2026-06-28 handoff below retained for env-setup steps + gotchas)** Mac → work-laptop handoff; Donna recommendation-engine arc SHIPPED + accepted; F37 deal-brief spec-complete, build PAUSED
 
 **Machine switch (do FIRST on the work laptop):** `git pull` → `.venv/bin/python -m backend.migrate` (**THREE new migrations this session**: `0013_firm_profile`, `0014_operator_organization`, `0015_revision_session_as_received_snapshot` — idempotent/safe) → `cd frontend && npm install`. Run backend `uvicorn backend.main:app --reload --reload-dir backend --port 8000`; frontend `npm run dev` (:3000). **Gate is GREEN at handoff: 701 backend pass / 1 skip, frontend tsc 0.** Local-only (carry manually, NOT in git): `.env`, `sample-contract.docx`, `spikes/`, `examples/`.
 

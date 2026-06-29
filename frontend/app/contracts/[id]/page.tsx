@@ -55,6 +55,7 @@ import {
   type SnapshotDeleteResponse,
   type StoredRecommendation,
   type StoredRevisionSession,
+  API_BASE,
 } from "../../lib/api";
 import { DealBriefPanel } from "./DealBriefPanel";
 
@@ -78,6 +79,7 @@ interface FlatNode {
   isHeading: boolean;
   contentType: string; // structural kind source — "table" / "prose" (DD-56 labels)
   number: string; // "" for non-clause roles
+  images: Array<{ id: string; mime_type: string }>;
 }
 
 // Depth-first walk = document order; children arrive pre-sorted by order_index.
@@ -92,6 +94,7 @@ function flatten(nodes: NodeTreeItem[]): Omit<FlatNode, "number">[] {
       text,
       isHeading: !!n.heading && !n.body,
       contentType: n.content_type,
+      images: n.images ?? [],
     });
     for (const c of n.children) walk(c, depth + 1);
   };
@@ -2284,6 +2287,7 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
         isHeading: false,
         contentType: stored.content_type,
         number: "",
+        images: [],
       };
       setState((st) => {
         if (st.kind !== "ready") return st;
@@ -2576,7 +2580,20 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
             r.isHeading ? styles.headingText : "",
           ].join(" ")}
         >
-          {r.text ? renderClauseText(r.text) : <em>(no text)</em>}
+          {r.contentType === "attachment" ? (
+            r.images && r.images.length > 0 ? (
+              r.images.map((img) => (
+                <img
+                  key={img.id}
+                  src={`${API_BASE}/contracts/${id}/media/${img.id}`}
+                  style={{ maxWidth: "100%", display: "block", margin: "8px 0" }}
+                  alt=""
+                />
+              ))
+            ) : (
+              <span style={{ color: "#888", fontStyle: "italic" }}>[Image]</span>
+            )
+          ) : r.text ? <>{r.contentType === "list" && "• "}{renderClauseText(r.text)}</> : <em>(no text)</em>}
         </span>
         {count > 0 && (
           <span className={styles.rowIssues} title={`${count} issue${count === 1 ? "" : "s"} raised here`}>
@@ -2705,7 +2722,7 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
         <span className={styles.roleLabel}>{nonClauseLabel(r)}</span>
       )}
       <span className={[styles.text, r.isHeading ? styles.headingText : ""].join(" ")}>
-        {r.text ? renderClauseText(r.text) : <em>(no text)</em>}
+        {r.text ? <>{r.contentType === "list" && "• "}{renderClauseText(r.text)}</> : <em>(no text)</em>}
       </span>
     </div>
   );

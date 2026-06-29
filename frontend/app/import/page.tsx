@@ -33,7 +33,7 @@ interface Row {
 
 // Content type is heading / body / table — a node's *structural kind*, distinct
 // from its role (appendix is a role, set via the role selector, never a type).
-const TYPE_CYCLE = ["Heading", "Body", "Table"];
+const TYPE_CYCLE = ["Heading", "Body", "Table", "List"];
 
 const FRONT_MATTER: ReadonlySet<Role> = new Set<Role>([
   "title",
@@ -67,7 +67,7 @@ const ROLE_OPTIONS = Object.keys(ROLE_LABEL) as Role[];
 
 function toRow(n: ApiCandidateNode): Row {
   const text = n.heading ?? n.body ?? n.plain_text ?? "";
-  const typeLabel = n.content_type === "table" ? "Table" : n.heading && !n.body ? "Heading" : "Body";
+  const typeLabel = n.content_type === "attachment" ? "Attachment" : n.content_type === "table" ? "Table" : n.content_type === "list" ? "List" : n.heading && !n.body ? "Heading" : "Body";
   return {
     index: n.index,
     number: n.number,
@@ -108,6 +108,22 @@ function buildCommitNodes(rows: Row[]): NodeRow[] {
     // parse — so a heading↔body re-type round-trips to commit (the text moves
     // between the heading and body fields). A Table keeps its structured cells;
     // a table re-typed to prose falls back to its flattened plain_text.
+    // Attachment nodes are auto-detected only; their content_type is preserved as-is.
+    if (r.typeLabel === "Attachment") {
+      return {
+        index: r.index,
+        parent_index: parentIndex,
+        order_index: order * 100,
+        content_type: "attachment" as const,
+        heading: null,
+        body: null,
+        table_data: null,
+        plain_text: null,
+        uncertain: r.uncertain,
+        role: r.role,
+        has_placeholder: r.hasPlaceholder,
+      };
+    }
     if (r.typeLabel === "Table") {
       return {
         index: r.index,
@@ -129,7 +145,7 @@ function buildCommitNodes(rows: Row[]): NodeRow[] {
       index: r.index,
       parent_index: parentIndex,
       order_index: order * 100,
-      content_type: "prose" as const,
+      content_type: (r.typeLabel === "List" ? "list" : "prose") as "list" | "prose",
       heading: isHeading ? text : null,
       body: isHeading ? null : text,
       table_data: null,
@@ -465,7 +481,7 @@ export default function ImportReview() {
     setLoading(true);
     setError(null);
     try {
-      const res = await previewDocx(file);
+      const res = await previewDocx(file, ctx?.contractId);
       const mapped = applyAppendixLeveling(applyCaptionSubheadings(res.nodes.map(toRow)));
       setRows(mapped);
       setTotal(mapped.filter((r) => r.uncertain).length);
@@ -1240,13 +1256,25 @@ function TreeRow({
         selected ? styles.selected : "",
         flash ? styles.treeFlash : "",
       ].join(" ")}
-      style={{ paddingLeft: 8 + row.depth * 22 }}
+      style={{ paddingLeft: 8 + (
+        row.role !== "clause" && (row.typeLabel === "Heading" || row.typeLabel === "Body")
+          ? 0
+          : row.role !== "clause" && row.typeLabel === "List"
+            ? Math.max(0, row.depth - 1) * 22
+            : row.depth * 22
+      ) }}
       onClick={(e) => onClick(row.index, e)}
     >
       <Twirl hasChildren={hasChildren} collapsed={collapsed} onToggle={onToggleCollapse} />
       <span className={styles.flag}>{row.uncertain ? "⚠" : "✓"}</span>
       {numbered && <span className={styles.num}>{row.number}</span>}
-      <span className={[styles.text, textClass].join(" ")}>{row.text}</span>
+      <span className={[styles.text, textClass].join(" ")}>
+        {row.typeLabel === "Attachment" ? (
+          <span style={{ color: "#888", fontStyle: "italic" }}>[Image]</span>
+        ) : (
+          <>{row.typeLabel === "List" ? "• " : ""}{row.text}</>
+        )}
+      </span>
       {row.hasPlaceholder && <PlaceholderTag />}
       <span className={[styles.badge, isApxTitle ? styles.badgeTitle : ""].join(" ")}>
         {isApxTitle ? "Appendix title" : row.typeLabel}
@@ -1259,8 +1287,9 @@ function TreeRow({
           {/* An appendix title is a divider, not a Heading/Body/Table choice — its
               kind is fixed by the role. Showing the type control here reads as
               "this is a heading" and undercuts the Appendix-title identity, so it
-              is hidden until the operator re-roles the row away from the title. */}
-          {!isApxTitle && (
+              is hidden until the operator re-roles the row away from the title.
+              Attachment nodes are auto-detected only and are never manually assignable. */}
+          {!isApxTitle && row.typeLabel !== "Attachment" && (
             <select
               className={styles.roleSelect}
               value={row.typeLabel}

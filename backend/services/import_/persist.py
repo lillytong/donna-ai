@@ -34,6 +34,19 @@ def tree_to_node_rows(tree: ParsedTree) -> list[NodeRow]:
                     has_placeholder=n.has_placeholder,
                 )
             )
+        elif n.kind == "attachment":
+            rows.append(
+                NodeRow(
+                    index=n.index,
+                    parent_index=n.parent_index,
+                    order_index=n.order_index,
+                    content_type="attachment",
+                    plain_text=None,
+                    uncertain=n.uncertain,
+                    role=n.role,
+                    has_placeholder=n.has_placeholder,
+                )
+            )
         else:
             # force_kind (DD-56) overrides the shape heuristic — an AI-categorized
             # back-matter heading/body lands in the right field regardless of wording.
@@ -42,12 +55,13 @@ def tree_to_node_rows(tree: ParsedTree) -> list[NodeRow]:
                 if n.force_kind is not None
                 else _looks_like_heading(n.text)
             )
+            content_type = "list" if n.is_bullet_list else "prose"
             rows.append(
                 NodeRow(
                     index=n.index,
                     parent_index=n.parent_index,
                     order_index=n.order_index,
-                    content_type="prose",
+                    content_type=content_type,
                     heading=n.text if is_heading else None,
                     body=None if is_heading else n.text,
                     plain_text=n.text,

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from backend.models.contract_tree import NodeRow, Role
+from backend.models.contract_tree import NodeImage, NodeRow, Role
 from backend.models.extraction import Extraction
 
 
@@ -102,6 +102,7 @@ class NodeTreeItem(BaseModel):
     plain_text: str | None = None
     role: Role = "clause"
     has_placeholder: bool = False
+    images: list[NodeImage] = Field(default_factory=list)
     children: list[NodeTreeItem] = Field(default_factory=list)
 
 

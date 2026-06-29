@@ -1,7 +1,7 @@
 // Typed client for the import-preview / commit endpoints. Mirrors the backend
 // contract (backend/models/imports.py: PreviewResponse / CandidateNode / CommitRequest).
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
 // Structural-role taxonomy (DD-54). Only `clause` is numbered; non-clause roles
 // render as labeled regions (front-matter above, back-matter below) and carry an
@@ -60,7 +60,7 @@ export interface NodeRow {
   index: number;
   parent_index: number | null;
   order_index: number;
-  content_type: "prose" | "table";
+  content_type: "prose" | "table" | "list" | "attachment";
   heading: string | null;
   body: string | null;
   table_data: string[][] | null;
@@ -71,8 +71,11 @@ export interface NodeRow {
 }
 
 // Parse a .docx without persisting — returns the candidate tree for review (F04).
-export async function previewDocx(file: File): Promise<PreviewResponse> {
-  const res = await fetch(`${API_BASE}/import/preview`, {
+export async function previewDocx(file: File, contractId?: string): Promise<PreviewResponse> {
+  const url = contractId
+    ? `${API_BASE}/import/preview?contract_id=${encodeURIComponent(contractId)}`
+    : `${API_BASE}/import/preview`;
+  const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/octet-stream" },
     body: await file.arrayBuffer(),
@@ -373,6 +376,7 @@ export interface NodeTreeItem {
   role: Role;
   has_placeholder: boolean;
   children: NodeTreeItem[];
+  images?: Array<{ id: string; mime_type: string }>;
 }
 
 export interface ContractTreeResponse {

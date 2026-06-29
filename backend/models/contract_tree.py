@@ -102,7 +102,7 @@ class ExtractedBlock(BaseModel):
     """One content block in document order, as read from the .docx."""
 
     order: int
-    kind: Literal["paragraph", "table"]
+    kind: Literal["paragraph", "table", "attachment"]
     text: str = ""  # paragraph: accept-all-changes text
     rows: list[list[str]] | None = None  # table: structured cells, never flattened
     has_autonumber: bool = False  # carries Word list numbering (direct or style w:numPr)
@@ -118,6 +118,12 @@ class ExtractedBlock(BaseModel):
     outline_level: int | None = None
     literal_prefix: str | None = None  # typed "3.1"/"(a)" prefix, if any
     in_content_control: bool = False  # block came from inside a w:sdt (DD-45)
+    is_bullet_list: bool = False  # abstract numbering definition uses bullet format (numFmt=bullet)
+    # Image fields — populated only for kind="attachment" (w:drawing paragraphs).
+    image_data: bytes | None = None   # raw PNG/JPEG bytes from the docx zip
+    image_mime: str | None = None     # e.g. "image/png", "image/jpeg"
+    image_cx_emu: int | None = None   # Word EMU width (wp:extent cx)
+    image_cy_emu: int | None = None   # Word EMU height (wp:extent cy)
 
 
 class ParsedDocument(BaseModel):
@@ -147,7 +153,7 @@ class TreeNode(BaseModel):
     parent_index: int | None
     depth: int
     order_index: int  # gap-based sibling order (OQ-07)
-    kind: Literal["prose", "table"]
+    kind: Literal["prose", "table", "attachment"]
     text: str = ""
     rows: list[list[str]] | None = None
     numbered: bool = False
@@ -155,6 +161,12 @@ class TreeNode(BaseModel):
     role: Role = "clause"  # DD-54; set by the classifier, default is operative
     has_placeholder: bool = False
     force_kind: Literal["heading", "body"] | None = None  # DD-56 (back-matter AI split)
+    is_bullet_list: bool = False  # carries bullet-list formatting from import
+    # Image fields — carried from ExtractedBlock for attachment nodes.
+    image_data: bytes | None = None
+    image_mime: str | None = None
+    image_cx_emu: int | None = None
+    image_cy_emu: int | None = None
 
 
 class ParsedTree(BaseModel):
@@ -168,6 +180,19 @@ class ParsedTree(BaseModel):
         return sum(1 for n in self.nodes if n.uncertain)
 
 
+class NodeImage(BaseModel):
+    """An image stored against a node, extracted from an imported Word document.
+    `cx_emu` / `cy_emu` are the original EMU dimensions so export can re-embed
+    at the correct size. `data` is omitted here (served via the media endpoint)."""
+
+    id: str
+    node_id: str
+    order_index: int
+    mime_type: str
+    cx_emu: int | None = None
+    cy_emu: int | None = None
+
+
 class NodeRow(BaseModel):
     """A node ready to persist. `parent_index` references another row's `index`;
     the repository resolves indices to generated DB ids on insert (parents first,
@@ -176,7 +201,7 @@ class NodeRow(BaseModel):
     index: int
     parent_index: int | None
     order_index: int
-    content_type: Literal["prose", "table"]
+    content_type: Literal["prose", "table", "list", "attachment"]
     heading: str | None = None
     body: str | None = None
     table_data: list[list[str]] | None = None

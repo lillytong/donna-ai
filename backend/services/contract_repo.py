@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from backend.models.contract_tree import NodeRow
+from backend.models.contract_tree import NodeRow, ParsedTree
 from backend.models.imports import StoredNode
 
 _INSERT_NODE = """
@@ -49,6 +49,31 @@ async def insert_nodes(conn: Any, contract_id: str, rows: list[NodeRow]) -> dict
         )
         id_for_index[r.index] = str(new_id)
     return id_for_index
+
+
+_INSERT_NODE_IMAGE = """
+INSERT INTO node_images (node_id, order_index, mime_type, cx_emu, cy_emu, data)
+VALUES ($1, 0, $2, $3, $4, $5)
+"""
+
+
+async def insert_node_images(conn: Any, tree: ParsedTree, id_map: dict[int, str]) -> None:
+    """Insert image rows into node_images for every attachment node in `tree` that
+    has image bytes. `id_map` is the index->DB-id mapping returned by insert_nodes."""
+    for n in tree.nodes:
+        if n.image_data is None:
+            continue
+        node_id = id_map.get(n.index)
+        if node_id is None:
+            continue
+        await conn.execute(
+            _INSERT_NODE_IMAGE,
+            node_id,
+            n.image_mime or "image/png",
+            n.image_cx_emu,
+            n.image_cy_emu,
+            n.image_data,
+        )
 
 
 def _to_stored_node(record: Any) -> StoredNode:

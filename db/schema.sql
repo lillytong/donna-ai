@@ -86,7 +86,7 @@ CREATE TABLE nodes (
     parent_id      UUID REFERENCES nodes(id),            -- null = root
     order_index    INTEGER NOT NULL,                     -- gap-based (OQ-07)
     content_type   TEXT NOT NULL DEFAULT 'prose'
-                   CHECK (content_type IN ('prose','table','attachment')),
+                   CHECK (content_type IN ('prose','table','attachment','list')),
     -- Structural role (DD-54, DD-56). Only `clause` is numbered; front-matter
     -- (title/date/parties/recital/agreement_statement), back-matter
     -- (appendix_title/appendix/signature_block), and the cross-cutting
@@ -484,6 +484,42 @@ CREATE TABLE contract_deal_brief (
 );
 
 -- ============================================================================
+-- Node images (0018) — images extracted from imported Word documents.
+-- Stored as bytea alongside original EMU dimensions for faithful re-embed on
+-- export. ON DELETE CASCADE keeps images in sync with their parent node.
+-- ============================================================================
+
+CREATE TABLE node_images (
+    id          UUID    PRIMARY KEY DEFAULT gen_random_uuid(),
+    node_id     UUID    NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    order_index INT     NOT NULL DEFAULT 0,
+    mime_type   TEXT    NOT NULL DEFAULT 'image/png',
+    cx_emu      BIGINT,
+    cy_emu      BIGINT,
+    data        BYTEA   NOT NULL
+);
+
+CREATE INDEX node_images_node_id_idx ON node_images(node_id);
+
+-- ============================================================================
+-- Staging table for import images (0019) — holds image bytes between preview
+-- and commit in the two-step import flow. Keyed by (contract_id, node_index)
+-- where node_index is the sequential TreeNode.index from the parsed tree.
+-- Rows are deleted when the contract is committed; no FK to contracts so a
+-- preview can stage images before the contract row even exists (future-proof).
+-- ============================================================================
+
+CREATE TABLE staging_node_images (
+    contract_id  UUID NOT NULL,
+    node_index   INT  NOT NULL,
+    mime_type    TEXT NOT NULL DEFAULT 'image/png',
+    cx_emu       BIGINT,
+    cy_emu       BIGINT,
+    data         BYTEA NOT NULL,
+    PRIMARY KEY (contract_id, node_index)
+);
+
+-- ============================================================================
 -- Embeddings (pgvector) — built in Phase 2 (nodes) / Phase 2+ (comments).
 -- VECTOR DIMENSION IS PROVISIONAL: tied to the Phase-2 embedding-model choice
 -- (e.g. Voyage 1024, OpenAI 1536). Confirm/alter before first embed. [FLAGGED]
@@ -539,4 +575,7 @@ INSERT INTO schema_migrations (version) VALUES
     ('0013_firm_profile'),
     ('0014_operator_organization'),
     ('0015_revision_session_as_received_snapshot'),
-    ('0016_contract_deal_brief');
+    ('0016_contract_deal_brief'),
+    ('0017_list_content_type'),
+    ('0018_node_images'),
+    ('0019_staging_node_images');

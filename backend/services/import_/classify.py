@@ -284,6 +284,12 @@ def classify(blocks: list[ExtractedBlock]) -> dict[int, BlockClassification]:
         text = b.text
         placeholder = bool(_PLACEHOLDER.search(text))
 
+        # Attachment blocks (inline images) are back-matter content; skip all
+        # text-based classification and mark them appendix immediately.
+        if b.kind == "attachment":
+            result[idx] = BlockClassification(role="appendix", has_placeholder=False)
+            continue
+
         if idx in toc:
             result[idx] = BlockClassification(has_placeholder=placeholder, is_toc=True)
             continue

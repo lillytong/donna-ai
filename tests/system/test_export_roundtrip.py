@@ -190,24 +190,31 @@ def test_roundtrip_preserves_content_real_sample(tmp_path: Path) -> None:
 @pytest.mark.skipif(not _SAMPLE.exists(), reason="sample-contract.docx is gitignored / absent")
 def test_roundtrip_numbering_drift_is_confined_to_back_matter_tables(tmp_path: Path) -> None:
     """KNOWN GAP, reported not hidden (DD-43). On the real sample, derived numbering
-    round-trips exactly up to the first table; after it, a localised off-by-one
-    appears. Root cause: the stored model does not retain whether a node was
-    auto-numbered, so the deterministic chain (no AI classify) treats back-matter
-    headings as numbered clauses; on re-import those become numbering anchors and
-    shift where the following table — the one construct that does not anchor —
-    attaches. Content is unaffected (asserted above). In production the role
-    taxonomy (back-matter = non-clause, DD-56) renders those headings unnumbered and
-    the edge does not arise. This test pins the gap's shape: every divergence is at
-    or after the first table node, never before it."""
+    round-trips exactly up to the first table or list node; after it, a localised
+    off-by-one appears. Two root causes:
+    - Tables: the stored model does not retain whether a node was auto-numbered, so
+      the deterministic chain (no AI classify) treats back-matter headings as numbered
+      clauses; on re-import those become numbering anchors and shift where the
+      following table — the one construct that does not anchor — attaches.
+    - List nodes: the stored model does not retain the original ilvl (Word list level),
+      so sub-bullets exported as 'List Bullet 2/3' come back at ilvl=0 (ListBullet
+      style carries ilvl=None) and are placed at a different depth by build_tree.
+    Content is unaffected (asserted above). In production the role taxonomy
+    (back-matter = non-clause, DD-56) renders both list and table nodes unnumbered
+    and the edge does not arise. This test pins the gap's shape: every divergence is
+    at or after the first table-or-list node, never before it."""
     rt = _roundtrip(_SAMPLE, tmp_path)
     nums_a, nums_b, rows_a = rt["nums_a"], rt["nums_b"], rt["rows_a"]
 
-    first_table = next((i for i, r in enumerate(rows_a) if r.content_type == "table"), len(rows_a))
+    first_anchor = next(
+        (i for i, r in enumerate(rows_a) if r.content_type in ("table", "list")),
+        len(rows_a),
+    )
     diverged = [i for i in range(len(nums_a)) if nums_a[i] != nums_b[i]]
 
-    assert nums_a[:first_table] == nums_b[:first_table], (
-        "numbering drifted BEFORE any table — that would be a real renderer defect"
+    assert nums_a[:first_anchor] == nums_b[:first_anchor], (
+        "numbering drifted BEFORE any table or list node — that would be a real renderer defect"
     )
-    assert all(i >= first_table for i in diverged), (
-        f"numbering drift escaped the back-matter-table edge: {diverged[:5]}"
+    assert all(i >= first_anchor for i in diverged), (
+        f"numbering drift escaped the back-matter table/list edge: {diverged[:5]}"
     )

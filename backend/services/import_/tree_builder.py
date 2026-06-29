@@ -71,17 +71,28 @@ def build_tree(doc: ParsedDocument) -> ParsedTree:
         idx = len(nodes)
         slot = sib_count.get(parent, 0) + 1
         sib_count[parent] = slot
+        if b.kind == "table":
+            node_kind = "table"
+        elif b.kind == "attachment":
+            node_kind = "attachment"
+        else:
+            node_kind = "prose"
         nodes.append(
             TreeNode(
                 index=idx,
                 parent_index=parent,
                 depth=depth,
                 order_index=slot * _ORDER_GAP,
-                kind="table" if b.kind == "table" else "prose",
+                kind=node_kind,
                 text=b.text,
                 rows=b.rows,
                 numbered=numb,
                 uncertain=unsure,
+                is_bullet_list=b.is_bullet_list,
+                image_data=b.image_data,
+                image_mime=b.image_mime,
+                image_cx_emu=b.image_cx_emu,
+                image_cy_emu=b.image_cy_emu,
             )
         )
         return idx
@@ -95,6 +106,10 @@ def build_tree(doc: ParsedDocument) -> ParsedTree:
         leaf_depth = backbone_depth + 1 if backbone_index is not None else 0
 
         if b.kind == "table":
+            add(backbone_index, leaf_depth, b, numb=False, unsure=False)
+            continue
+
+        if b.kind == "attachment":
             add(backbone_index, leaf_depth, b, numb=False, unsure=False)
             continue
 
