@@ -259,6 +259,15 @@ def _apply_bullet_numbering(paragraph: Any, ilvl: int) -> None:
     pPr.append(numPr)
 
 
+def _set_outline_level(paragraph: Any, ilvl: int) -> None:
+    """Mark a heading paragraph with w:outlineLvl so Word renders the native
+    collapse/expand triangle in editing view (ilvl 0 = top-level section)."""
+    pPr = paragraph._p.get_or_add_pPr()
+    ol = OxmlElement("w:outlineLvl")
+    ol.set(_w("val"), str(min(ilvl, 8)))
+    pPr.append(ol)
+
+
 def _apply_indent(paragraph: Any, step_pt: int, ilvl: int) -> None:
     """Indent so a clause and its first-level sub-clause share an indent and only
     deeper levels step in (14 / 14.1 flush, 14.1.1 in one — DD-37 house style)."""
@@ -429,6 +438,7 @@ def render_contract_docx(nodes: list[StoredNode], style_config: dict[str, Any]) 
             if auto_number:
                 _apply_numbering(paragraph, ilvl)
             _apply_indent(paragraph, style.indent_per_level_pt, ilvl)
+            _set_outline_level(paragraph, ilvl)
             _run(paragraph, text, style.font, size, bold=True, caps=level.caps)
             continue
 
