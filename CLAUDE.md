@@ -42,7 +42,7 @@ db/schema.sql · frontend/ (Next.js) · evals/ · tests/{unit,integration,system
 - Model names/temps/limits come from `config/` only — never hardcoded (DD-35).
 - Structured outputs over free-text parsing. Sliding-window context, never full
   history (Donna conversations: last 10 turns + rolling summary, DD-40).
-- `PM_TODO.md`, `DEV_TODO.md`, `spikes/`, `.env`, `*.bak` are gitignored.
+- `spikes/`, `.env`, `*.bak` are gitignored. **`PM_TODO.md` + `DEV_TODO.md` are tracked in-repo here** (deliberate, post-scrub — commit `d214de8`), deviating from the persona-skill default that keeps them private. Treat them as **public docs**: run the privacy name-pass before committing any edit to them.
 
 ## Privacy (open-source repo, hard rule)
 
