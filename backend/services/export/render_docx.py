@@ -451,6 +451,7 @@ def render_contract_docx(nodes: list[StoredNode], style_config: dict[str, Any]) 
             if auto_number:
                 _apply_numbering(paragraph, ilvl)
             _apply_indent(paragraph, style.indent_per_level_pt, ilvl)
+            _set_outline_level(paragraph, ilvl)
             _emit_body(paragraph, text, style.font, size)
             continue
 
