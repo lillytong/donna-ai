@@ -18,7 +18,7 @@ to a clause. Clean redlines export back to Word on demand.
 
 ![The donna.ai negotiation cockpit: the structured clause tree on the left, and Donna answering grounded questions on the right — listing the open issues and summarising our recorded position on a clause, each cited to the source clause.](docs/assets/cockpit-donna.png)
 
-<sub>The negotiation cockpit on a sample joint-venture agreement. Donna answers only from the contract and the issue ledger, with clickable clause citations — she reads and explains, never gives legal advice.</sub>
+<sub>The negotiation cockpit on a sample joint-venture agreement. Donna answers and recommends only from the contract and the issue ledger, with clickable clause citations — but every recommendation is hers to propose and the operator's to approve. Nothing changes the contract until the operator accepts it.</sub>
 
 ![donna.ai reviewing a counterparty revision: clause 9.3 as an inline tracked-change diff, with two of Donna's "Counter" recommendations below it — each citing the clauses behind its reasoning as clickable section-number chips.](docs/assets/f35-clause-refs.png)
 
