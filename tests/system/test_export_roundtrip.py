@@ -115,6 +115,7 @@ def _rows_to_stored(rows: list[Any]) -> list[StoredNode]:
             plain_text=r.plain_text,
             role=r.role,
             has_placeholder=r.has_placeholder,
+            enumerator_format=r.enumerator_format,
         )
         for r in rows
     ]

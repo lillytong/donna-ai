@@ -47,6 +47,11 @@ class CandidateNode(BaseModel):
     # nodes carry an empty `number`.
     role: Role = "clause"
     has_placeholder: bool = False
+    # F03f/DD-99: auto-numbered enumerated-item list format. Transmitted so the
+    # review UI can re-derive the "(a)"/"(1)" marker live on edit (the frontend
+    # infers `enumerated` from a non-null value); NULL for ordinary clauses and
+    # literal-marker items (marker frozen in body).
+    enumerator_format: str | None = None
 
 
 class TrackedChangeReport(BaseModel):
@@ -88,6 +93,7 @@ class StoredNode(BaseModel):
     plain_text: str | None = None
     role: Role = "clause"
     has_placeholder: bool = False
+    enumerator_format: str | None = None  # F03f/DD-99: auto-numbered enumerated-item list format
 
 
 class NodeTreeItem(BaseModel):
@@ -102,6 +108,10 @@ class NodeTreeItem(BaseModel):
     plain_text: str | None = None
     role: Role = "clause"
     has_placeholder: bool = False
+    # F03f/DD-99: auto-numbered enumerated-item list format (marker derived on the
+    # client). The DB carries no `enumerated` column, so the frontend infers it from
+    # a non-null value here (plus a literal paren marker in the body).
+    enumerator_format: str | None = None
     images: list[NodeImage] = Field(default_factory=list)
     children: list[NodeTreeItem] = Field(default_factory=list)
 
@@ -125,6 +135,7 @@ class ContractTreeResponse(BaseModel):
                 plain_text=r.plain_text,
                 role=r.role,
                 has_placeholder=r.has_placeholder,
+                enumerator_format=r.enumerator_format,
             )
             for r in rows
         }

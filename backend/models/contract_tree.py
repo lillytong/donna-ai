@@ -119,11 +119,22 @@ class ExtractedBlock(BaseModel):
     literal_prefix: str | None = None  # typed "3.1"/"(a)" prefix, if any
     in_content_control: bool = False  # block came from inside a w:sdt (DD-45)
     is_bullet_list: bool = False  # abstract numbering definition uses bullet format (numFmt=bullet)
+    # Block enumerated item (DD-98 amended / F03f / DD-99): a "(a)"/"(A)"/"(i)" item
+    # under a clause. True from a Word alpha/roman numFmt (auto-numbered — marker
+    # derived & auto-renumbers; `enumerator_format` set) OR a literal paren marker in
+    # the text (legacy literal path — marker frozen in body, `enumerator_format` None).
+    # Either way the node is skipped by clause decimal numbering.
+    enumerated: bool = False
+    # Word list format for an auto-numbered enumerated item; None for a literal-marker
+    # item or an ordinary clause. The marker glyph is derived from position, never stored.
+    enumerator_format: (
+        Literal["lowerLetter", "upperLetter", "lowerRoman", "upperRoman", "decimal"] | None
+    ) = None
     # Image fields — populated only for kind="attachment" (w:drawing paragraphs).
-    image_data: bytes | None = None   # raw PNG/JPEG bytes from the docx zip
-    image_mime: str | None = None     # e.g. "image/png", "image/jpeg"
-    image_cx_emu: int | None = None   # Word EMU width (wp:extent cx)
-    image_cy_emu: int | None = None   # Word EMU height (wp:extent cy)
+    image_data: bytes | None = None  # raw PNG/JPEG bytes from the docx zip
+    image_mime: str | None = None  # e.g. "image/png", "image/jpeg"
+    image_cx_emu: int | None = None  # Word EMU width (wp:extent cx)
+    image_cy_emu: int | None = None  # Word EMU height (wp:extent cy)
 
 
 class ParsedDocument(BaseModel):
@@ -162,6 +173,11 @@ class TreeNode(BaseModel):
     has_placeholder: bool = False
     force_kind: Literal["heading", "body"] | None = None  # DD-56 (back-matter AI split)
     is_bullet_list: bool = False  # carries bullet-list formatting from import
+    enumerated: bool = False  # block enumerated item (DD-98/F03f): skip decimal numbering
+    # auto-numbered list format; marker derived from position (DD-99). str (not Literal)
+    # so the StoredNode→TreeNode export adapter widens cleanly; values are constrained
+    # at the ExtractedBlock/NodeRow/DB-CHECK boundaries.
+    enumerator_format: str | None = None
     # Image fields — carried from ExtractedBlock for attachment nodes.
     image_data: bytes | None = None
     image_mime: str | None = None
@@ -209,3 +225,6 @@ class NodeRow(BaseModel):
     uncertain: bool = False
     role: Role = "clause"  # DD-54
     has_placeholder: bool = False
+    enumerator_format: (
+        Literal["lowerLetter", "upperLetter", "lowerRoman", "upperRoman", "decimal"] | None
+    ) = None  # F03f/DD-99: auto-numbered enumerated-item format (marker derived, not stored)

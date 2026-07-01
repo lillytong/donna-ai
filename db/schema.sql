@@ -101,6 +101,12 @@ CREATE TABLE nodes (
                           'agreement_statement','clause','appendix',
                           'appendix_title','signature_block','drafting_note')),
     has_placeholder BOOLEAN NOT NULL DEFAULT false,      -- fill-in blank (F28 alert)
+    -- Block enumerated item list format (F03f / DD-98 amended / DD-99). Set when the
+    -- node is an `(a)(b)(c)` / `(i)(ii)(iii)` item imported from Word auto-numbering;
+    -- the marker glyph is DERIVED from list position (auto-renumber, DD-02 model) and
+    -- never stored in body. NULL = ordinary clause or a literal-marker item.
+    enumerator_format TEXT
+                   CHECK (enumerator_format IN ('lowerLetter','upperLetter','lowerRoman','upperRoman','decimal')),
     heading        TEXT,
     body           TEXT,                                 -- prose nodes: semantic markup
     table_data     JSONB,                                -- table nodes: [[cell,...],...] rows; never flattened
@@ -578,4 +584,6 @@ INSERT INTO schema_migrations (version) VALUES
     ('0016_contract_deal_brief'),
     ('0017_list_content_type'),
     ('0018_node_images'),
-    ('0019_staging_node_images');
+    ('0019_staging_node_images'),
+    ('0020_node_enumerator_format'),
+    ('0021_enumerator_format_decimal');

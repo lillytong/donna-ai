@@ -21,6 +21,7 @@ from docx import Document
 from docx.oxml.ns import qn
 
 from backend.models.contract_tree import ExtractedBlock, ParsedDocument
+from backend.services.import_.numbering import is_block_enumerator
 
 W_P = qn("w:p")
 W_TBL = qn("w:tbl")
@@ -53,6 +54,7 @@ W_B = qn("w:b")
 W_BR = qn("w:br")
 W_LVL = qn("w:lvl")
 W_NUMFMT = qn("w:numFmt")
+W_LVLTEXT = qn("w:lvlText")
 W_DRAWING = qn("w:drawing")
 WP_INLINE = qn("wp:inline")
 WP_ANCHOR = qn("wp:anchor")
@@ -83,10 +85,20 @@ class _Numbering:
     once per import from styles.xml + numbering.xml; empty maps when those parts
     are absent (synthetic docs), in which case only direct numPr is read."""
 
-    def __init__(self, style_index: dict[str, _StyleNum], abstract_map: dict[int, int], bullet_abs: set[int] | None = None) -> None:
+    def __init__(
+        self,
+        style_index: dict[str, _StyleNum],
+        abstract_map: dict[int, int],
+        bullet_abs: set[int] | None = None,
+        enum_levels: dict[int, dict[int, str]] | None = None,
+    ) -> None:
         self._style_index = style_index
         self._abstract_map = abstract_map
         self._bullet_abs: set[int] = bullet_abs if bullet_abs is not None else set()
+        # abstractNumId -> {ilvl: numFmt} for alpha/roman levels only (DD-99/F03f).
+        self._enum_levels: dict[int, dict[int, str]] = (
+            enum_levels if enum_levels is not None else {}
+        )
 
     def style(self, style_id: str | None) -> _StyleNum:
         if style_id is None:
@@ -102,6 +114,13 @@ class _Numbering:
         if abstract_num_id is None:
             return False
         return abstract_num_id in self._bullet_abs
+
+    def enum_format(self, abstract_num_id: int | None, ilvl: int | None) -> str | None:
+        """The Word list format (lowerLetter/upperLetter/lowerRoman/upperRoman) for an
+        auto-numbered enumerated item at (abstractNumId, ilvl), else None (DD-99/F03f)."""
+        if abstract_num_id is None:
+            return None
+        return self._enum_levels.get(abstract_num_id, {}).get(ilvl if ilvl is not None else 0)
 
 
 # (ilvl, numId, outlineLvl) carried (directly or by inheritance) by a paragraph style.
@@ -219,8 +238,46 @@ def _build_bullet_set(numbering_root: Any) -> set[int]:
     return bullet_abs
 
 
-# Typed clause-number prefixes the parser must recognise: "3.", "3.1", "(a)", "(iv)".
-_LITERAL_NUM = re.compile(r"^\s*(\d+(?:\.\d+)*\.?|\([a-z]+\)|\([ivx]+\))\s+\S")
+# Word list formats whose glyph we can render as a block enumerated marker — alpha,
+# roman, and (DD-99 amended / F03f) parenthesised decimal "(1)(2)(3)". numFmt only
+# SELECTS the glyph; whether a level is enumerated is keyed on its lvlText shape.
+_ENUM_FMTS = frozenset({"lowerLetter", "upperLetter", "lowerRoman", "upperRoman", "decimal"})
+
+# A level is a block enumerator when its lvlText is a single counter wrapped in
+# parens — "(%1)", "(%2)", … — REGARDLESS of numFmt. Backbone clause levels carry
+# unparenthesised lvlText ("%1", "%1.%2.") and must stay clauses, so keying on
+# numFmt=decimal alone would destroy the clause hierarchy; the parens are the
+# discriminator (DD-99 amended).
+_ENUM_LVLTEXT = re.compile(r"^\(%\d\)$")
+
+
+def _build_enum_levels(numbering_root: Any) -> dict[int, dict[int, str]]:
+    """abstractNumId -> {ilvl: numFmt} for levels that are block enumerators: those
+    whose lvlText is a single parenthesised counter ("(%1)") and whose numFmt is a
+    glyph we render (alpha / roman / decimal). The marker glyph itself is derived
+    from position on import (DD-99); only the format is captured here."""
+    out: dict[int, dict[int, str]] = {}
+    for an in numbering_root.findall(W_ABSTRACTNUM):
+        aid_raw = an.get(W_ABSTRACTNUMID)
+        if aid_raw is None:
+            continue
+        aid = int(aid_raw)
+        for lvl in an.findall(W_LVL):
+            lt = lvl.find(W_LVLTEXT)
+            if lt is None or lt.get(W_VAL) is None or not _ENUM_LVLTEXT.match(lt.get(W_VAL)):
+                continue
+            nf = lvl.find(W_NUMFMT)
+            if nf is None or nf.get(W_VAL) not in _ENUM_FMTS:
+                continue
+            il_raw = lvl.get(W_ILVL)
+            il = int(il_raw) if il_raw is not None else 0
+            out.setdefault(aid, {})[il] = nf.get(W_VAL)
+    return out
+
+
+# Typed clause-number prefixes the parser must recognise: "3.", "3.1", "(a)",
+# "(iv)", "(A)", "(I)" — alpha/roman covered in either case (DD-98/F03f).
+_LITERAL_NUM = re.compile(r"^\s*(\d+(?:\.\d+)*\.?|\([A-Za-z]+\))\s+\S")
 
 
 def _norm(s: str) -> str:
@@ -420,6 +477,7 @@ def _walk(
                 continue
             has_auto, level, num_id, abstract, outline = _paragraph_numbering(child, numbering)
             m = _LITERAL_NUM.match(text)
+            enum_fmt = numbering.enum_format(abstract, level)
             inline = _split_at_line_break(child)
             if inline is not None:
                 heading_text, body_text = inline
@@ -437,6 +495,8 @@ def _walk(
                         literal_prefix=mh.group(1) if mh else None,
                         in_content_control=in_cc,
                         is_bullet_list=numbering.is_bullet(abstract),
+                        enumerated=enum_fmt is not None or is_block_enumerator(heading_text),
+                        enumerator_format=enum_fmt,
                     )
                 )
                 blocks.append(
@@ -451,6 +511,7 @@ def _walk(
                         outline_level=None,
                         literal_prefix=None,
                         in_content_control=in_cc,
+                        enumerated=is_block_enumerator(body_text),
                     )
                 )
             else:
@@ -467,6 +528,8 @@ def _walk(
                         literal_prefix=m.group(1) if m else None,
                         in_content_control=in_cc,
                         is_bullet_list=numbering.is_bullet(abstract),
+                        enumerated=enum_fmt is not None or is_block_enumerator(text),
+                        enumerator_format=enum_fmt,
                     )
                 )
         elif tag == W_TBL:
@@ -526,6 +589,7 @@ def _load_numbering(path: Path) -> _Numbering:
     style_index: dict[str, _StyleNum] = {}
     abstract_map: dict[int, int] = {}
     bullet_abs: set[int] = set()
+    enum_levels: dict[int, dict[int, str]] = {}
     with zipfile.ZipFile(path) as z:
         names = set(z.namelist())
         if "word/styles.xml" in names:
@@ -534,7 +598,8 @@ def _load_numbering(path: Path) -> _Numbering:
             numbering_root = etree.fromstring(z.read("word/numbering.xml"))
             abstract_map = _build_abstract_map(numbering_root)
             bullet_abs = _build_bullet_set(numbering_root)
-    return _Numbering(style_index, abstract_map, bullet_abs)
+            enum_levels = _build_enum_levels(numbering_root)
+    return _Numbering(style_index, abstract_map, bullet_abs, enum_levels)
 
 
 def read_docx(path: str | Path) -> ParsedDocument:

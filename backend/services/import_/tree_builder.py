@@ -14,12 +14,28 @@ many small nested side-lists. Grouping is by **`abstractNumId`** (the list
 across many numIds sharing an abstractNumId, so numId-grouping shatters the real
 backbone into fragments and lets a deep side-list win dominance (DD-36). So:
   - the **dominant scheme** (the `abstractNumId` with the most nodes) is the
-    backbone; its depth is its `ilvl` normalised to the scheme's minimum level;
-  - **other numbered schemes** (side-lists) hang one level under the current
-    open backbone clause, their own `ilvl` adding relative depth;
-  - **unnumbered blocks** attach as leaves under the current backbone clause,
-    flagged `uncertain` when heading-shaped or with no backbone parent — the F04
-    worklist.
+    backbone, anchored at depth 0;
+  - **other numbered schemes** (side-lists) open one level under the
+    immediately-preceding node — numbered OR an unnumbered lead-in — so a list
+    nests under its real parent (a definition's roman sub-list under that
+    definition, a sub-clause's `(a)` list under that sub-clause); this keeps
+    depth-first render order equal to document order (every node attaches on the
+    current right spine);
+  - **within each scheme**, an **outline stack** of `(ilvl, depth)` frames maps
+    its `ilvl`s to depth: a same-`ilvl` item reuses that level's depth (sibling), a
+    deeper `ilvl` opens a new level at the absolute one-depth-per-`ilvl` target —
+    but **capped to the current right-spine tail** (`prev_depth + 1`). The cap makes
+    a genuinely skipped level compress (`ilvl 1->3` with nothing between → sibling
+    depth), while an intervening unnumbered leaf still becomes the real parent (a
+    definition's `(a)` sub-list nests under the definition → `1.1.72(a)`, not beside
+    it → `1.1(a)`). It also guarantees a parent exists, so no node is stranded as a
+    parentless root. This keeps `(a)(b)(c)` siblings even when `(a)` carries an
+    `(A)(B)` sub-list;
+  - **unnumbered blocks** attach as leaves under the current backbone clause; the
+    backbone advances on numbered **clauses only, never enumerated items**, so the
+    next definition after an `(a)…(e)` list returns to `1.1.73` instead of being
+    captured under `(e)`. Flagged `uncertain` when heading-shaped or with no
+    backbone parent — the F04 worklist.
 This keeps depth bounded by real nesting, not by how much prose a clause carries.
 """
 
@@ -54,18 +70,15 @@ def build_tree(doc: ParsedDocument) -> ParsedTree:
     ]
     counts = Counter(_scheme_key(b) for b in numbered)
     dominant = counts.most_common(1)[0][0] if counts else None
-    scheme_min: dict[int | None, int] = {}
-    for b in numbered:
-        lvl = b.list_level or 0
-        key = _scheme_key(b)
-        scheme_min[key] = min(scheme_min.get(key, lvl), lvl)
-    dom_min = scheme_min.get(dominant, 0)
 
     nodes: list[TreeNode] = []
     last_at_depth: dict[int, int] = {}  # depth -> index of most recent node there
     sib_count: dict[int | None, int] = {}
-    backbone_index: int | None = None
+    backbone_index: int | None = None  # dominant-scheme open clause — leaf attachment
     backbone_depth = -1
+    prev_depth = -1  # depth of the immediately-preceding added node (any kind)
+    # scheme -> its current open list as a stack of (ilvl, depth) frames
+    scheme_stack: dict[int | None, list[tuple[int, int]]] = {}
 
     def add(parent: int | None, depth: int, b: ExtractedBlock, numb: bool, unsure: bool) -> int:
         idx = len(nodes)
@@ -89,6 +102,8 @@ def build_tree(doc: ParsedDocument) -> ParsedTree:
                 numbered=numb,
                 uncertain=unsure,
                 is_bullet_list=b.is_bullet_list,
+                enumerated=b.enumerated,
+                enumerator_format=b.enumerator_format,
                 image_data=b.image_data,
                 image_mime=b.image_mime,
                 image_cx_emu=b.image_cx_emu,
@@ -102,31 +117,72 @@ def build_tree(doc: ParsedDocument) -> ParsedTree:
         for d in [k for k in last_at_depth if k > depth]:
             del last_at_depth[d]
 
+    def close_deeper(depth: int) -> None:
+        # A node at `depth` ends every open list frame sitting strictly deeper, so the next
+        # item of that scheme reopens a fresh run at the right place (and a list resumes as
+        # siblings only while its own frame survives).
+        for k in list(scheme_stack):
+            st = scheme_stack[k]
+            while st and st[-1][1] > depth:
+                st.pop()
+            if not st:
+                del scheme_stack[k]
+
     for b in doc.blocks:
         leaf_depth = backbone_depth + 1 if backbone_index is not None else 0
 
-        if b.kind == "table":
-            add(backbone_index, leaf_depth, b, numb=False, unsure=False)
-            continue
-
-        if b.kind == "attachment":
-            add(backbone_index, leaf_depth, b, numb=False, unsure=False)
+        if b.kind in ("table", "attachment"):
+            idx = add(backbone_index, leaf_depth, b, numb=False, unsure=False)
+            anchor(leaf_depth, idx)
+            close_deeper(leaf_depth)
+            prev_depth = leaf_depth
             continue
 
         if b.has_autonumber and b.num_id is not None:
             key = _scheme_key(b)
-            if key == dominant:
-                depth = max(0, (b.list_level or 0) - dom_min)
+            level = b.list_level or 0
+            # Map this scheme's ilvls to tree depth via an outline stack of (ilvl, depth)
+            # frames. Pop levels at or below `level`; a same-ilvl item REUSES that level's
+            # depth (sibling), a deeper ilvl opens a new level. A new level takes the
+            # absolute one-depth-per-ilvl target below its parent frame, CAPPED to the
+            # current right-spine tail (prev_depth + 1): a genuinely skipped source level
+            # compresses (ilvl 1->3 with nothing between -> sibling depth), while an
+            # intervening unnumbered leaf (a definition before its (a) sub-list) still
+            # becomes the real parent, so the (a) items nest under it (1.1.72(a)), not beside
+            # it (1.1(a)). The cap also guarantees parent = last_at_depth[depth-1] exists, so
+            # no node is ever stranded as a parentless root.
+            stack = scheme_stack.setdefault(key, [])
+            sib_depth: int | None = None
+            while stack and stack[-1][0] >= level:
+                popped = stack.pop()
+                if popped[0] == level:
+                    sib_depth = popped[1]
+            if sib_depth is not None:
+                depth = sib_depth
+            elif stack:
+                parent_ilvl, parent_depth = stack[-1]
+                depth = min(parent_depth + (level - parent_ilvl), prev_depth + 1)
+            elif key == dominant:
+                depth = 0  # the backbone anchors at the root, independent of front matter
             else:
-                base = backbone_depth + 1 if backbone_index is not None else 0
-                depth = base + ((b.list_level or 0) - scheme_min[key])
+                depth = prev_depth + 1  # a side-list's first item opens under the preceding node
+            depth = max(0, depth)
+            stack.append((level, depth))
             parent = None if depth == 0 else last_at_depth.get(depth - 1)
             idx = add(parent, depth, b, numb=True, unsure=parent is None and depth > 0)
             anchor(depth, idx)
-            if key == dominant:
+            close_deeper(depth)
+            prev_depth = depth
+            # The backbone (leaf-attachment anchor) follows the numbered-CLAUSE spine only;
+            # an enumerated item is skipped in numbering and must NOT capture the unnumbered
+            # nodes that follow it — the next definition returns to 1.1.73, not under (e).
+            if key == dominant and not b.enumerated:
                 backbone_index, backbone_depth = idx, depth
         else:
             unsure = _looks_like_heading(b.text) or backbone_index is None
-            add(backbone_index, leaf_depth, b, numb=False, unsure=unsure)
+            idx = add(backbone_index, leaf_depth, b, numb=False, unsure=unsure)
+            anchor(leaf_depth, idx)
+            close_deeper(leaf_depth)
+            prev_depth = leaf_depth
 
     return ParsedTree(nodes=nodes)

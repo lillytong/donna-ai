@@ -68,6 +68,7 @@ def tree_to_node_rows(tree: ParsedTree) -> list[NodeRow]:
                     uncertain=n.uncertain,
                     role=n.role,
                     has_placeholder=n.has_placeholder,
+                    enumerator_format=n.enumerator_format,
                 )
             )
     return rows
