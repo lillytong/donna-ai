@@ -59,6 +59,7 @@ class _FakeConn:
                     "plain_text": "New wording.",
                     "role": "clause",
                     "has_placeholder": False,
+                    "enumerator_format": None,
                 }
             ]
         return []

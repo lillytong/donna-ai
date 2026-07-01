@@ -2,7 +2,7 @@
 
 ## SPEC Health Tracker
 
-Edits since last health check: 0 (reset after the 18th check, 2026-06-29).
+Edits since last health check: 7 (DD-98/F03f session 2026-06-30: §6 block note + amend, F03f row + status churn through round 2). **HEALTH CHECK DUE (N≥5)** — run before next product request; mostly single-row churn on the in-flight F03f, but a structural+hygiene pass is owed.
 Latest check: 2026-06-29 (18th — F38-scoping session; F33/F32/F30 sign-offs; recommendation-engine pointer).
 - **Hygiene:** §8 DD-range stale (`DD-95`→`DD-96`, then `DD-97` for the F38 scope) fixed; **§6 `contracts` entity was missing the built `origin` column** (`schema.sql:76`) → ADDED — closes the standing 17th-check item #1 + the DD-84 reconciliation flag (schema↔spec drift, the last real open hygiene item from prior checks). F33 §5 status "pending Lilly UX acceptance"→operator-accepted. No new dangling refs introduced; **privacy CLEAN** — this session's edits use only generic labels (`us`/`our_legal`/`counterparty`, DD refs, generic contract-type abbrevs), zero client/counterparty/firm names.
 - **Structural:** SPEC §1–17 heading skeleton dumped + read end-to-end as a new reader — ordering sound, **no section refactor needed**. One new-reader gap fixed: the six recommendation F-rows (F32/F34/F35/F36/F37/F30) read as scattered built features with no signal they compose → added a §7 **"Donna's recommendation engine (the DD-93 pipeline)"** overview table + a §5 cross-pointer (substance-conserving navigation aid; DD-93 stays the canonical record). Verified the recent DDs against `schema.sql`: persisted `version_number` (DD-87, line 197) + `as_received_snapshot_id` (DD-94, line 232) both present — no drift. Both verdict lines present → counter reset to 0.

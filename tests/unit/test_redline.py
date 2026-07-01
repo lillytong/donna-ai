@@ -146,6 +146,7 @@ def _live_record(node_id: str, body: str) -> dict[str, Any]:
         "plain_text": body,
         "role": "clause",
         "has_placeholder": False,
+        "enumerator_format": None,
     }
 
 
@@ -307,6 +308,7 @@ def _live_rec(node_id: str, **kw: Any) -> dict[str, Any]:
         plain_text="Body.",
         role="clause",
         has_placeholder=False,
+        enumerator_format=None,
     )
     base.update(kw)
     return base

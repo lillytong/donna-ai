@@ -40,6 +40,7 @@ def _node_record(
         plain_text=body,
         role="clause",
         has_placeholder=False,
+        enumerator_format=None,
     )
 
 

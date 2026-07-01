@@ -43,7 +43,7 @@ class NodeNotEditable(Exception):
 
 _FETCH_NODE = """
 SELECT id, parent_id, order_index, content_type, heading, body, table_data,
-       plain_text, role, has_placeholder
+       plain_text, role, has_placeholder, enumerator_format
 FROM nodes
 WHERE id = $1 AND contract_id = $2 AND is_deleted = false
 """

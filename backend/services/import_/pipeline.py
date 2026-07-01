@@ -44,7 +44,7 @@ from backend.services.import_.classify import (
 )
 from backend.services.import_.detect import detect_entities
 from backend.services.import_.docx_reader import count_tracked_changes, read_docx
-from backend.services.import_.numbering import derive_numbers
+from backend.services.import_.numbering import derive_enumerators, derive_numbers
 from backend.services.import_.persist import tree_to_node_rows
 from backend.services.import_.tree_builder import build_tree
 
@@ -170,9 +170,21 @@ async def _classify_tree(path: str | Path, *, ai: bool) -> ParsedTree:
     return await asyncio.to_thread(_build_stamped, doc, classifications)
 
 
+def _number_for(
+    index: int, parent_index: int | None, numbers: dict[int, str], enums: dict[int, str]
+) -> str:
+    """Display number: decimal for clauses, parent-decimal + "(a)" for an auto-numbered
+    enumerated item (e.g. "1.2.1(b)", DD-98/DD-99), else "" (unnumbered)."""
+    if index in enums:
+        parent_num = numbers.get(parent_index, "") if parent_index is not None else ""
+        return f"{parent_num}{enums[index]}"
+    return numbers.get(index, "")
+
+
 def _preview_from_tree(tree: ParsedTree, path: str | Path) -> PreviewResponse:
     rows = tree_to_node_rows(tree)
     numbers = derive_numbers(tree)  # clause-role nodes only (DD-54)
+    enums = derive_enumerators(tree)  # auto-numbered enumerated items (DD-99)
     depth_for = {n.index: n.depth for n in tree.nodes}
     nodes = [
         CandidateNode(
@@ -180,7 +192,7 @@ def _preview_from_tree(tree: ParsedTree, path: str | Path) -> PreviewResponse:
             parent_index=r.parent_index,
             order_index=r.order_index,
             depth=depth_for[r.index],
-            number=numbers.get(r.index, ""),  # non-clause roles are unnumbered
+            number=_number_for(r.index, r.parent_index, numbers, enums),
             content_type=r.content_type,
             heading=r.heading,
             body=r.body,
@@ -189,6 +201,7 @@ def _preview_from_tree(tree: ParsedTree, path: str | Path) -> PreviewResponse:
             uncertain=r.uncertain,
             role=r.role,
             has_placeholder=r.has_placeholder,
+            enumerator_format=r.enumerator_format,
         )
         for r in rows
     ]

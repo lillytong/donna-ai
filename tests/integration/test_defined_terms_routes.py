@@ -37,6 +37,7 @@ def _node_record(node_id: str, body: str) -> dict[str, Any]:
         plain_text=body,
         role="clause",
         has_placeholder=False,
+        enumerator_format=None,
     )
 
 

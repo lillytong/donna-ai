@@ -12,14 +12,14 @@ from backend.models.imports import StoredNode
 _INSERT_NODE = """
 INSERT INTO nodes
     (contract_id, parent_id, order_index, content_type, heading, body, table_data,
-     plain_text, role, has_placeholder)
-VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
+     plain_text, role, has_placeholder, enumerator_format)
+VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11)
 RETURNING id
 """
 
 _FETCH_NODES = """
 SELECT id, parent_id, order_index, content_type, heading, body, table_data,
-       plain_text, role, has_placeholder
+       plain_text, role, has_placeholder, enumerator_format
 FROM nodes
 WHERE contract_id = $1 AND is_deleted = false
 ORDER BY order_index
@@ -46,6 +46,7 @@ async def insert_nodes(conn: Any, contract_id: str, rows: list[NodeRow]) -> dict
             r.plain_text,
             r.role,
             r.has_placeholder,
+            r.enumerator_format,
         )
         id_for_index[r.index] = str(new_id)
     return id_for_index
@@ -92,6 +93,7 @@ def _to_stored_node(record: Any) -> StoredNode:
         plain_text=record["plain_text"],
         role=record["role"],
         has_placeholder=record["has_placeholder"],
+        enumerator_format=record["enumerator_format"],
     )
 
 

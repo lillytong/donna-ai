@@ -56,6 +56,13 @@ _ABSTRACT_ID = 7777
 _NUM_ID = 7777
 _BULLET_ABSTRACT_ID = 7778
 _BULLET_NUM_ID = 7778
+# Block enumerated items (F03f/DD-99): one abstractNum AND one num per list RUN — each
+# run gets an independent counter so Word restarts every `(a)(b)(c)` list at its first
+# marker instead of continuing across the document. Bases kept clear of the decimal/
+# bullet ids above.
+_ENUM_ABSTRACT_BASE = 8000
+_ENUM_NUM_BASE = 8100
+_ENUM_FMTS = frozenset({"lowerLetter", "upperLetter", "lowerRoman", "upperRoman", "decimal"})
 
 # Numbering format per outline level for each scheme (DD-37). read_docx reads only
 # ilvl + numId off w:numPr, so these affect Word's display, not the round-trip.
@@ -125,6 +132,10 @@ def _plan(nodes: list[StoredNode]) -> list[tuple[StoredNode, str | None]]:
                 kind="table" if node.content_type == "table" else "prose",
                 text=(node.heading or node.body or ""),
                 role=node.role,
+                # Auto-numbered enumerated items carry no decimal number (DD-99); the
+                # flag makes derive_numbers skip them here exactly as on import.
+                enumerated=node.enumerator_format is not None,
+                enumerator_format=node.enumerator_format,
             )
         )
     numbers = derive_numbers(ParsedTree(nodes=tree_nodes))
@@ -234,7 +245,7 @@ def _inject_bullet_numbering(doc: Any, max_ilvl: int) -> None:
         # proportionally smaller at 180 twips.
         pPr_lvl = OxmlElement("w:pPr")
         ind = OxmlElement("w:ind")
-        ind.set(_w("left"), str(360 * ilvl))    # ilvl=0 → 0, ilvl=1 → 360, ilvl=2 → 720
+        ind.set(_w("left"), str(360 * ilvl))  # ilvl=0 → 0, ilvl=1 → 360, ilvl=2 → 720
         ind.set(_w("hanging"), "180")
         pPr_lvl.append(ind)
         lvl.append(pPr_lvl)
@@ -258,6 +269,106 @@ def _apply_bullet_numbering(paragraph: Any, ilvl: int) -> None:
     num_id.set(_w("val"), str(_BULLET_NUM_ID))
     numPr.append(num_id)
     pPr.append(numPr)
+
+
+def _plan_enum_numbering(
+    plan: list[tuple[StoredNode, str | None]],
+) -> tuple[dict[str, int], list[tuple[int, int, str]]]:
+    """Assign native Word numbering to auto-numbered enumerated items (F03f/DD-99).
+
+    Returns (node_id -> numId, [(numId, abstractNumId, numFmt)] per run).
+    A RUN is a MAXIMAL run of consecutive same-format SIBLINGS (one parent's children in
+    order), NOT a stretch of the DFS sequence — mirroring `derive_enumerators`. Each run
+    gets its OWN abstractNum (not one shared per format): a shared abstractNum makes Word
+    continue the counter across every list of that format ((a)(b)…(f)(g)…), so an
+    independent abstractNum per run is what restarts each list at `(a)`. The marker glyph
+    is left to Word (numPr), never injected."""
+    # Group children by parent in document order (the plan is DFS, so each parent's
+    # children appear in order_index order), then assign one run (its own numId + its own
+    # abstractNum, so Word restarts it at (a)) per MAXIMAL run of consecutive same-format
+    # siblings. This mirrors derive_enumerators: the run is the sibling group, NOT the DFS
+    # sequence — a sub-list nested under an item interleaves in DFS but must not split the
+    # parent's list (Word counts per numId, so shared-numId siblings still number correctly).
+    children: dict[str | None, list[StoredNode]] = {}
+    for node, _number in plan:
+        children.setdefault(node.parent_id, []).append(node)
+    runs: list[tuple[int, int, str]] = []
+    node_numid: dict[str, int] = {}
+    next_abstract = _ENUM_ABSTRACT_BASE
+    next_num = _ENUM_NUM_BASE
+    for sibs in children.values():
+        prev_fmt: str | None = None
+        cur_numid = 0
+        for node in sibs:
+            fmt = node.enumerator_format
+            if fmt is None or fmt not in _ENUM_FMTS:
+                prev_fmt = None
+                continue
+            if fmt != prev_fmt:
+                cur_numid = next_num
+                runs.append((cur_numid, next_abstract, fmt))
+                next_num += 1
+                next_abstract += 1
+                prev_fmt = fmt
+            node_numid[node.id] = cur_numid
+    return node_numid, runs
+
+
+def _inject_enum_abstract(doc: Any, abstract_id: int, num_fmt: str) -> None:
+    """One single-level abstractNum rendering "(a)"/"(i)" in `num_fmt` — the marker
+    lives in numbering, not the run text (the content-integrity boundary, DD-99)."""
+    numbering = doc.part.numbering_part.element
+    abstract = OxmlElement("w:abstractNum")
+    abstract.set(_w("abstractNumId"), str(abstract_id))
+    single = OxmlElement("w:multiLevelType")
+    single.set(_w("val"), "singleLevel")
+    abstract.append(single)
+    lvl = OxmlElement("w:lvl")
+    lvl.set(_w("ilvl"), "0")
+    start = OxmlElement("w:start")
+    start.set(_w("val"), "1")
+    lvl.append(start)
+    fmt = OxmlElement("w:numFmt")
+    fmt.set(_w("val"), num_fmt)
+    lvl.append(fmt)
+    text = OxmlElement("w:lvlText")
+    text.set(_w("val"), "(%1)")
+    lvl.append(text)
+    jc = OxmlElement("w:lvlJc")
+    jc.set(_w("val"), "left")
+    lvl.append(jc)
+    abstract.append(lvl)
+    numbering.insert(0, abstract)
+
+
+def _inject_enum_num(doc: Any, num_id: int, abstract_id: int) -> None:
+    numbering = doc.part.numbering_part.element
+    num = OxmlElement("w:num")
+    num.set(_w("numId"), str(num_id))
+    ref = OxmlElement("w:abstractNumId")
+    ref.set(_w("val"), str(abstract_id))
+    num.append(ref)
+    numbering.append(num)
+
+
+def _apply_enum_numbering(paragraph: Any, num_id: int, depth: int) -> None:
+    pPr = paragraph._p.get_or_add_pPr()
+    numPr = OxmlElement("w:numPr")
+    ilvl_el = OxmlElement("w:ilvl")
+    ilvl_el.set(_w("val"), "0")
+    numPr.append(ilvl_el)
+    nid = OxmlElement("w:numId")
+    nid.set(_w("val"), str(num_id))
+    numPr.append(nid)
+    pPr.append(numPr)
+    # Depth indent as a paragraph w:ind so a nested `(A)` under `(b)` steps in (the enum
+    # abstractNum is single-level, ilvl pinned at 0). left = depth * 360 twips (0.25"/level,
+    # matching the bullet scheme); hanging 180. read_docx reads only ilvl+numId and ignores
+    # w:ind, so this is round-trip-safe — ilvl and numId stay untouched (the hard constraint).
+    ind = OxmlElement("w:ind")
+    ind.set(_w("left"), str(360 * depth))
+    ind.set(_w("hanging"), "180")
+    pPr.append(ind)
 
 
 def _set_outline_level(paragraph: Any, ilvl: int) -> None:
@@ -418,6 +529,14 @@ def render_contract_docx(
     )
     _inject_bullet_numbering(doc, max_list_ilvl)
 
+    # Block enumerated items (F03f/DD-99): one abstractNum + one num per run, so Word
+    # renders + auto-renumbers each `(a)(b)(c)` list itself (no literal marker) and each
+    # separate list restarts at its own first marker (independent per-run counter).
+    enum_numid, enum_runs = _plan_enum_numbering(plan)
+    for run_num_id, run_abstract_id, run_fmt in enum_runs:
+        _inject_enum_abstract(doc, run_abstract_id, run_fmt)
+        _inject_enum_num(doc, run_num_id, run_abstract_id)
+
     for node, number in plan:
         depth = depth_of[node.id]
         if node.content_type == "attachment":
@@ -434,6 +553,14 @@ def render_contract_docx(
 
         is_heading = node.heading is not None
         paragraph = doc.add_paragraph()
+
+        # Auto-numbered block enumerated item (F03f/DD-99): native Word numbering
+        # carries the derived "(a)" marker — the body text has none, so nothing is
+        # injected into the run; Word renumbers the list on edit.
+        if node.id in enum_numid:
+            _apply_enum_numbering(paragraph, enum_numid[node.id], depth)
+            _emit_body(paragraph, text, style.font, style.body_font_size_pt)
+            continue
 
         # Appendix title: its own centred page (DD-37 house style).
         if node.role == "appendix_title":
@@ -452,8 +579,12 @@ def render_contract_docx(
             continue
 
         if node.content_type == "list":
-            list_level = max(0, depth - 1)
-            _apply_bullet_numbering(paragraph, list_level)
+            # A block enumerated item carries its own "(a)"/"(i)" marker as native
+            # text (DD-98/F03f); injecting a Word bullet on top would double the
+            # marker, so render it verbatim with no bullet.
+            if not _carries_enumerator(text, number):
+                list_level = max(0, depth - 1)
+                _apply_bullet_numbering(paragraph, list_level)
             _emit_body(paragraph, text, style.font, style.body_font_size_pt)
             continue
 

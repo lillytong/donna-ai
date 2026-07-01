@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import styles from "./review.module.css";
 import ContextStep, { type ContractContext } from "./ContextStep";
 import ImportTopBar, { type ImportStep } from "./ImportTopBar";
-import { deriveNumbers, deriveParents } from "../lib/numbering";
+import { deriveNumbers, deriveParents, isBlockEnumerator } from "../lib/numbering";
 import { renderRich } from "../lib/richText";
 import {
   commitTree,
@@ -135,6 +135,7 @@ function buildCommitNodes(rows: Row[]): NodeRow[] {
         uncertain: r.uncertain,
         role: r.role,
         has_placeholder: r.hasPlaceholder,
+        enumerator_format: null,
       };
     }
     if (r.typeLabel === "Table") {
@@ -150,6 +151,7 @@ function buildCommitNodes(rows: Row[]): NodeRow[] {
         uncertain: r.uncertain,
         role: r.role,
         has_placeholder: r.hasPlaceholder,
+        enumerator_format: null,
       };
     }
     const text = r.text || n.plain_text || "";
@@ -166,15 +168,28 @@ function buildCommitNodes(rows: Row[]): NodeRow[] {
       uncertain: r.uncertain,
       role: r.role,
       has_placeholder: r.hasPlaceholder,
+      // F03f/DD-99: round-trip the captured list format so commit re-persists it
+      // (it would otherwise default to NULL and the marker would be lost on re-read).
+      enumerator_format: n.enumerator_format,
     };
   });
 }
 
 // Numbers follow clause position only (DD-02 / DD-54): non-clause roles consume
-// no position, so the operative tree re-derives from the first real clause.
+// no position, so the operative tree re-derives from the first real clause. Block
+// enumerated items (F03f/DD-99) consume no clause position either and render their
+// derived "(a)"/"(1)" marker, so they survive operator edits (e.g. delete →
+// the rest of the run renumbers) instead of decimal-renumbering.
 function renumber(rows: Row[]): Row[] {
-  const clauseDepths = rows.filter((r) => r.role === "clause").map((r) => r.depth);
-  const numbers = deriveNumbers(clauseDepths);
+  const numbers = deriveNumbers(
+    rows
+      .filter((r) => r.role === "clause")
+      .map((r) => ({
+        depth: r.depth,
+        enumerated: r.node.enumerator_format !== null || isBlockEnumerator(r.text),
+        enumeratorFormat: r.node.enumerator_format,
+      })),
+  );
   let ci = 0;
   return rows.map((r) => (r.role === "clause" ? { ...r, number: numbers[ci++] } : { ...r, number: "" }));
 }
@@ -752,6 +767,7 @@ export default function ImportReview() {
       uncertain: false,
       role: orig.role,
       has_placeholder: detectPlaceholder(after),
+      enumerator_format: null,
     };
     const newRow: Row = {
       index: newIndex,

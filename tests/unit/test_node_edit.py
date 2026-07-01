@@ -31,6 +31,7 @@ def _node_record(**kw: Any) -> dict[str, Any]:
         plain_text="Original body.",
         role="clause",
         has_placeholder=False,
+        enumerator_format=None,
     )
     base.update(kw)
     return base

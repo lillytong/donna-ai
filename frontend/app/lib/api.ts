@@ -32,6 +32,7 @@ export interface ApiCandidateNode {
   uncertain: boolean;
   role: Role;
   has_placeholder: boolean;
+  enumerator_format: string | null; // F03f/DD-99: auto-numbered list format (marker derived)
 }
 
 export interface TrackedChangeReport {
@@ -68,6 +69,7 @@ export interface NodeRow {
   uncertain: boolean;
   role: Role;
   has_placeholder: boolean;
+  enumerator_format: string | null; // F03f/DD-99: round-tripped so commit preserves it
 }
 
 // Parse a .docx without persisting — returns the candidate tree for review (F04).
@@ -375,6 +377,7 @@ export interface NodeTreeItem {
   plain_text: string | null;
   role: Role;
   has_placeholder: boolean;
+  enumerator_format: string | null; // F03f/DD-99: auto-numbered list format (marker derived)
   children: NodeTreeItem[];
   images?: Array<{ id: string; mime_type: string }>;
 }

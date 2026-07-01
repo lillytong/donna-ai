@@ -5,7 +5,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import styles from "../cockpit.module.css";
-import { deriveNumbers } from "../../lib/numbering";
+import { deriveNumbers, isBlockEnumerator } from "../../lib/numbering";
 import {
   ApiError,
   askDonna,
@@ -79,6 +79,7 @@ interface FlatNode {
   isHeading: boolean;
   contentType: string; // structural kind source — "table" / "prose" (DD-56 labels)
   number: string; // "" for non-clause roles
+  enumeratorFormat: string | null; // F03f/DD-99: auto-numbered list format (marker derived)
   images: Array<{ id: string; mime_type: string }>;
 }
 
@@ -94,6 +95,7 @@ function flatten(nodes: NodeTreeItem[]): Omit<FlatNode, "number">[] {
       text,
       isHeading: !!n.heading && !n.body,
       contentType: n.content_type,
+      enumeratorFormat: n.enumerator_format ?? null,
       images: n.images ?? [],
     });
     for (const c of n.children) walk(c, depth + 1);
@@ -102,10 +104,19 @@ function flatten(nodes: NodeTreeItem[]): Omit<FlatNode, "number">[] {
   return out;
 }
 
-// Derive clause numbers from the clause-role depth sequence (mirrors the import
-// review: lib/numbering.deriveNumbers over clause depths only).
+// Derive clause numbers from the clause-role sequence (mirrors the import review:
+// lib/numbering.deriveNumbers). Block enumerated items render their derived "(a)"/"(1)"
+// marker under the parent decimal and consume no clause position (F03f/DD-99).
 function withNumbers(flat: Omit<FlatNode, "number">[]): FlatNode[] {
-  const numbers = deriveNumbers(flat.filter((f) => f.role === "clause").map((f) => f.depth));
+  const numbers = deriveNumbers(
+    flat
+      .filter((f) => f.role === "clause")
+      .map((f) => ({
+        depth: f.depth,
+        enumerated: f.enumeratorFormat !== null || isBlockEnumerator(f.text),
+        enumeratorFormat: f.enumeratorFormat,
+      })),
+  );
   let ci = 0;
   return flat.map((f) => (f.role === "clause" ? { ...f, number: numbers[ci++] } : { ...f, number: "" }));
 }
@@ -2287,6 +2298,7 @@ export default function Cockpit({ params }: { params: Promise<{ id: string }> })
         isHeading: false,
         contentType: stored.content_type,
         number: "",
+        enumeratorFormat: null,
         images: [],
       };
       setState((st) => {
